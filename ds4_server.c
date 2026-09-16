@@ -2980,7 +2980,9 @@ static void append_glm_tool_calls_text(buf *b, const tool_calls *calls,
         buf_puts(b, calls->raw_tool_text);
         return;
     }
-    buf_putc(b, '\n');
+    /* GLM's chat template emits the block inline, with no newline before or
+     * after it, so the reconstruction must not add one either: the rendered
+     * turn has to stay byte-identical to the sampled bytes. */
     for (int i = 0; i < calls->len; i++) {
         const tool_call *tc = &calls->v[i];
         const tool_schema_order *order =
@@ -2994,7 +2996,6 @@ static void append_glm_tool_calls_text(buf *b, const tool_calls *calls,
         }
         buf_puts(b, "</tool_call>");
     }
-    buf_putc(b, '\n');
 }
 
 /* Parameter values render as the template does: strings verbatim, other
@@ -18188,16 +18189,62 @@ static void test_render_glm_preserves_reasoning_with_tools(void) {
     TEST_ASSERT(prompt != NULL);
     const char *expected =
         "[gMASK]<sop><|system|>Reasoning Effort: High"
-        "<|user|>first<|assistant|><think>tool reasoning</think>\n"
+        "<|user|>first<|assistant|><think>tool reasoning</think>"
         "<tool_call>bash<arg_key>command</arg_key><arg_value>pwd</arg_value>"
         "</tool_call><tool_call>bash<arg_key>command</arg_key>"
-        "<arg_value>ls</arg_value></tool_call>\n"
+        "<arg_value>ls</arg_value></tool_call>"
         "<|observation|><tool_response>/tmp</tool_response>"
         "<|assistant|><think>";
     TEST_ASSERT(!strcmp(prompt, expected));
 
     free(prompt);
     tool_schema_orders_free(&orders);
+    chat_msgs_free(&msgs);
+}
+
+static void test_glm_tool_calls_render_matches_template(void) {
+    const char *tools = "[{\"type\":\"function\",\"function\":{\"name\":\"get_weather\","
+                        "\"parameters\":{\"type\":\"object\",\"properties\":"
+                        "{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}]";
+    const char *raw_block =
+        "<tool_call>get_weather<arg_key>city</arg_key><arg_value>Paris</arg_value></tool_call>";
+    chat_msgs msgs = {0};
+    chat_msg user = {0};
+    user.role = xstrdup("user");
+    user.content = xstrdup("What is the weather in Paris?");
+    chat_msgs_push(&msgs, user);
+    chat_msg assistant = {0};
+    assistant.role = xstrdup("assistant");
+    assistant.content = xstrdup("");
+    tool_call call = {0};
+    call.name = xstrdup("get_weather");
+    call.arguments = xstrdup("{\"city\":\"Paris\"}");
+    tool_calls_push(&assistant.calls, call);
+    chat_msgs_push(&msgs, assistant);
+    chat_msg tool = {0};
+    tool.role = xstrdup("tool");
+    tool.content = xstrdup("18C, light rain.");
+    chat_msgs_push(&msgs, tool);
+
+    char *canonical = render_chat_prompt_text_for_syntax(
+        SERVER_MODEL_SYNTAX_GLM, &msgs, tools, NULL, DS4_THINK_HIGH);
+    TEST_ASSERT(canonical != NULL);
+    TEST_ASSERT(strstr(canonical, raw_block) != NULL);
+    TEST_ASSERT(strstr(canonical, "</think><tool_call>") != NULL);
+    TEST_ASSERT(strstr(canonical, "</tool_call><|observation|>") != NULL);
+    TEST_ASSERT(strstr(canonical, "</think>\n<tool_call>") == NULL);
+    TEST_ASSERT(strstr(canonical, "</tool_call>\n") == NULL);
+
+    /* The live path splices the sampled block; both renders must be identical,
+     * which is what lets a restart replay match the visible key. */
+    msgs.v[1].calls.raw_tool_text = xstrdup(raw_block);
+    char *raw = render_chat_prompt_text_for_syntax(
+        SERVER_MODEL_SYNTAX_GLM, &msgs, tools, NULL, DS4_THINK_HIGH);
+    TEST_ASSERT(raw != NULL);
+    TEST_ASSERT(!strcmp(raw, canonical));
+
+    free(raw);
+    free(canonical);
     chat_msgs_free(&msgs);
 }
 
@@ -22056,6 +22103,7 @@ static void ds4_server_unit_tests_run(void) {
     test_qwen_reasoning_effort_levels();
     test_render_glm_drops_old_reasoning_without_tools();
     test_render_glm_preserves_reasoning_with_tools();
+    test_glm_tool_calls_render_matches_template();
     test_render_glm_groups_tool_results();
     test_tool_schema_order_from_anthropic_schema();
     test_tool_schema_order_from_openai_tools();
