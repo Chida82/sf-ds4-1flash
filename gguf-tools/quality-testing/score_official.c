@@ -22,7 +22,7 @@ static void die(const char *msg) {
 static void usage(const char *prog) {
     fprintf(stderr,
             "usage: %s MODEL manifest.tsv OUT.tsv [ctx] "
-            "[--quality] "
+            "[--quality] [--rendered-prompt] "
             "[--gpu-vram N[,N,...]|auto] [--gpu-devices N[,N,...]] "
             "[--cuda-tensor-parallel] "
             "[--ssd-streaming] [--ssd-streaming-cold] "
@@ -30,6 +30,8 @@ static void usage(const char *prog) {
             "[--ssd-streaming-preload-experts N] "
             "[--dump-first-logits PATH] "
             "[--max-cases N] "
+            "[--continued-prefill N] "
+            "[--session-batch N] "
             "[--tensor-parallel --role coordinator --listen HOST PORT "
             "[--transport auto|rdma|tcp]]\n",
             prog);
@@ -71,6 +73,42 @@ static int parse_positive_int(const char *s, const char *opt) {
     return (int)v;
 }
 
+/* Leave the last N prompt tokens for a second sync, exercising cached-prefix
+ * inference against exactly the same official continuation. */
+static int sync_prompt(ds4_session *session, const ds4_tokens *prompt,
+                       int continued, char *err, size_t errlen) {
+    if (continued) {
+        if (continued < 0 || continued >= prompt->len) {
+            snprintf(err, errlen, "continued prefill must be shorter than the prompt");
+            return 1;
+        }
+        ds4_tokens prefix = *prompt;
+        prefix.len -= continued;
+        const int rc = ds4_session_sync(session, &prefix, err, errlen);
+        if (rc) return rc;
+    }
+    return ds4_session_sync(session, prompt, err, errlen);
+}
+
+/* Score one official continuation among unrelated, independently advancing
+ * sessions. Rotate row order to catch scratch/state ownership mistakes. */
+#define SCORE_MAX_SESSIONS 8
+static int eval_with_companions(ds4_session **sessions, int count, int token,
+                                unsigned step, char *err, size_t errlen) {
+    if (count == 1) return ds4_session_eval(sessions[0], token, err, errlen);
+    ds4_decode_item items[SCORE_MAX_SESSIONS];
+    for (int row = 0; row < count; row++) {
+        const int i = (row + step) % (unsigned)count;
+        const int next = i ? ds4_session_argmax(sessions[i]) : token;
+        if (next < 0) {
+            snprintf(err, errlen, "companion session %d has invalid logits", i);
+            return 1;
+        }
+        items[row] = (ds4_decode_item){.session = sessions[i], .token = next};
+    }
+    return ds4_sessions_eval_batch(items, count, err, errlen);
+}
+
 static char *read_file(const char *path) {
     FILE *fp = fopen(path, "rb");
     if (!fp) {
@@ -102,6 +140,8 @@ typedef struct {
 
 typedef struct {
     double logprob;
+    unsigned char *bytes;
+    int len;
     api_alt *alts;
     int n_alts;
     int cap_alts;
@@ -268,6 +308,7 @@ static void api_alt_free(api_alt *alt) {
 }
 
 static void api_pos_free(api_pos *pos) {
+    free(pos->bytes);
     for (int i = 0; i < pos->n_alts; i++) api_alt_free(&pos->alts[i]);
     free(pos->alts);
     memset(pos, 0, sizeof(*pos));
@@ -380,6 +421,13 @@ static bool api_parse_pos(const char **pp, api_pos *pos) {
         p++;
         if (strcmp(key, "logprob") == 0) {
             if (!json_number(&p, &pos->logprob)) return false;
+        } else if (strcmp(key, "bytes") == 0) {
+            free(pos->bytes);
+            pos->bytes = NULL;
+            pos->len = 0;
+            p = json_ws(p);
+            if (strncmp(p, "null", 4) == 0) p += 4;
+            else if (!json_bytes_array(&p, &pos->bytes, &pos->len)) return false;
         } else if (strcmp(key, "top_logprobs") == 0) {
             if (!api_parse_alt_array(&p, pos)) return false;
         } else {
@@ -390,29 +438,41 @@ static bool api_parse_pos(const char **pp, api_pos *pos) {
     }
 }
 
-static bool api_ref_load(const char *path, api_ref *ref) {
-    memset(ref, 0, sizeof(*ref));
-    if (!path || !path[0]) return false;
-    char *json = read_file(path);
-    const char *p = strstr(json, "\"logprobs\"");
-    if (p) p = strstr(p, "\"content\"");
-    if (p) p = strchr(p, '[');
-    if (!p) {
-        free(json);
-        return false;
+static const char *json_member(const char *p, const char *name) {
+    if (!p || *(p = json_ws(p)) != '{') return NULL;
+    p++;
+    while (*p) {
+        char key[64];
+        if (!json_key(&p, key, sizeof(key))) return NULL;
+        p = json_ws(p);
+        if (*p++ != ':') return NULL;
+        p = json_ws(p);
+        if (!strcmp(key, name)) return p;
+        const char *end = json_skip_value(p);
+        if (end == p) return NULL;
+        p = json_ws(end);
+        if (*p++ != ',') return NULL;
     }
+    return NULL;
+}
+
+static bool api_ref_parse(const char *json, api_ref *ref) {
+    memset(ref, 0, sizeof(*ref));
+    const char *p = json_member(json, "choices");
+    if (!p || *p != '[') return false;
+    p = json_member(json_ws(p + 1), "logprobs");
+    p = json_member(p, "content");
+    if (!p || *p != '[') return false;
     p++;
     while (1) {
         p = json_ws(p);
         if (*p == ']') {
-            free(json);
             return ref->n_pos > 0;
         }
         api_pos pos = {0};
-        if (!api_parse_pos(&p, &pos)) {
+        if (!api_parse_pos(&p, &pos) || !isfinite(pos.logprob)) {
             api_pos_free(&pos);
             api_ref_free(ref);
-            free(json);
             return false;
         }
         api_ref_add_pos(ref, &pos);
@@ -421,10 +481,41 @@ static bool api_ref_load(const char *path, api_ref *ref) {
     }
 }
 
+static bool api_ref_load(const char *path, api_ref *ref) {
+    memset(ref, 0, sizeof(*ref));
+    if (!path || !path[0]) return false;
+    char *json = read_file(path);
+    bool ok = api_ref_parse(json, ref);
+    free(json);
+    return ok;
+}
+
+/* Equal token counts do not establish equal token boundaries. In particular,
+ * some APIs replace partial UTF-8 token bytes with replacement characters. */
+static bool api_ref_matches_target(ds4_engine *engine, const api_ref *ref,
+                                   const ds4_tokens *target) {
+    if (ref->n_pos != target->len) return false;
+    for (int i = 0; i < target->len; i++) {
+        const api_pos *pos = &ref->pos[i];
+        if (!pos->bytes || pos->len <= 0) return false;
+        size_t len = 0;
+        char *text = ds4_token_text(engine, target->v[i], &len);
+        bool same = text && len == (size_t)pos->len &&
+                    !memcmp(text, pos->bytes, len);
+        free(text);
+        if (!same) return false;
+    }
+    return true;
+}
+
 static int api_alt_token_id(ds4_engine *engine, const api_alt *alt) {
     if (!alt || !alt->bytes || alt->len <= 0) return -1;
     for (int i = 0; i < alt->len; i++) {
         if (alt->bytes[i] == 0) return -1;
+        /* A provider may have lost the original bytes of a split Unicode
+         * token. Do not mistake its replacement character for a token ID. */
+        if (i + 2 < alt->len && alt->bytes[i] == 0xef &&
+            alt->bytes[i + 1] == 0xbf && alt->bytes[i + 2] == 0xbd) return -1;
     }
     char *text = malloc((size_t)alt->len + 1);
     if (!text) die("out of memory");
@@ -565,6 +656,7 @@ int main(int argc, char **argv) {
     int ctx_size = 4096;
     bool ctx_set = false;
     bool quality = false;
+    bool rendered_prompt = false;
     const char *gpu_vram_arg = NULL;
     const char *gpu_devices_arg = NULL;
     bool cuda_tensor_parallel = false;
@@ -575,6 +667,8 @@ int main(int argc, char **argv) {
     uint32_t ssd_streaming_preload_experts = 0;
     const char *first_logits_path = NULL;
     int max_cases = 0;
+    int continued_prefill = 0;
+    int session_count = 1;
     ds4_dist_options dist = {0};
     ds4_tp_options tp = {0};
 
@@ -601,6 +695,8 @@ int main(int argc, char **argv) {
 
         if (!strcmp(arg, "--quality")) {
             quality = true;
+        } else if (!strcmp(arg, "--rendered-prompt")) {
+            rendered_prompt = true;
         } else if (!strcmp(arg, "--gpu-vram")) {
             gpu_vram_arg = need_arg(&i, argc, argv, arg);
         } else if (!strcmp(arg, "--gpu-devices")) {
@@ -628,6 +724,15 @@ int main(int argc, char **argv) {
             first_logits_path = need_arg(&i, argc, argv, arg);
         } else if (!strcmp(arg, "--max-cases")) {
             max_cases = parse_positive_int(need_arg(&i, argc, argv, arg), arg);
+        } else if (!strcmp(arg, "--continued-prefill")) {
+            continued_prefill = parse_positive_int(need_arg(&i, argc, argv, arg), arg);
+        } else if (!strcmp(arg, "--session-batch")) {
+            session_count = parse_positive_int(need_arg(&i, argc, argv, arg), arg);
+            if (session_count > SCORE_MAX_SESSIONS) {
+                fprintf(stderr, "score_official: --session-batch must be between 1 and %d\n",
+                        SCORE_MAX_SESSIONS);
+                return 2;
+            }
         } else if (arg[0] != '-' && !ctx_set) {
             ctx_size = parse_positive_int(arg, "ctx");
             ctx_set = true;
@@ -658,6 +763,8 @@ int main(int argc, char **argv) {
         .n_threads = 0,
         .context_size = ctx_size,
         .placement_ctx_hint = ctx_size,
+        .placement_session_count_hint = session_count,
+        .share_session_prefill_workspace = session_count > 1,
         .ssd_streaming_cache_experts = ssd_streaming_cache_experts,
         .ssd_streaming_cache_bytes = ssd_streaming_cache_bytes,
         .ssd_streaming_preload_experts = ssd_streaming_preload_experts,
@@ -736,6 +843,23 @@ int main(int argc, char **argv) {
 
     ds4_session *session = NULL;
     if (ds4_session_create(&session, engine, ctx_size) != 0) die("failed to create session");
+    ds4_session *sessions[SCORE_MAX_SESSIONS] = {session};
+    ds4_tokens companion_prompt[SCORE_MAX_SESSIONS] = {0};
+    static const char *companion_text[] = {
+        "List the integers from 1 to 100.",
+        "Explain how a hash table handles collisions, with an example.",
+        "Write a short story about a lighthouse keeper who discovers a letter.",
+        "Describe an algorithm for sorting a linked list and give its complexity.",
+        "Explain why the sky is blue.",
+        "Write a Python function that counts words, followed by three tests.",
+        "Compare three ways of storing a sparse matrix."
+    };
+    for (int i = 1; i < session_count; i++) {
+        if (ds4_session_create(&sessions[i], engine, ctx_size) != 0)
+            die("failed to create companion session");
+        ds4_encode_chat_prompt(engine, NULL, companion_text[i - 1], DS4_THINK_NONE,
+                               &companion_prompt[i]);
+    }
 
     const int n_vocab = ds4_engine_vocab_size(engine);
     float *logits = malloc((size_t)n_vocab * sizeof(logits[0]));
@@ -790,8 +914,19 @@ int main(int argc, char **argv) {
 
         ds4_tokens prompt = {0};
         ds4_tokens target = {0};
-        ds4_encode_chat_prompt(engine, NULL, prompt_text, DS4_THINK_NONE, &prompt);
+        if (rendered_prompt) {
+            ds4_tokenize_rendered_chat(engine, prompt_text, &prompt);
+        } else {
+            ds4_encode_chat_prompt(engine, NULL, prompt_text, DS4_THINK_NONE, &prompt);
+        }
         ds4_tokenize_text(engine, cont_text, &target);
+        if (getenv("DS4_SCORE_DEBUG")) {
+            fprintf(stderr, "%s prompt ids (%d):", id, prompt.len);
+            for (int i = 0; i < prompt.len; i++) fprintf(stderr, " %d", prompt.v[i]);
+            fprintf(stderr, "\n%s target ids (%d):", id, target.len);
+            for (int i = 0; i < target.len; i++) fprintf(stderr, " %d", target.v[i]);
+            fprintf(stderr, "\n");
+        }
 
         if (prompt.len + target.len + 1 >= ctx_size) {
             fprintf(stderr, "%s exceeds ctx=%d\n", id, ctx_size);
@@ -806,15 +941,28 @@ int main(int argc, char **argv) {
                         "%s warning: API token count %d != local target tokens %d; "
                         "API logprob agreement skipped\n",
                         id, ref.n_pos, target.len);
+            } else if (!api_ref_matches_target(engine, &ref, &target)) {
+                fprintf(stderr,
+                        "%s warning: API output bytes do not match local token boundaries; "
+                        "API logprob agreement skipped\n", id);
             } else {
                 api_aligned = true;
             }
         }
         total_api_ref_tokens += have_api ? ref.n_pos : 0;
 
-        if (ds4_session_sync(session, &prompt, err, sizeof(err)) != 0) {
+        if (sync_prompt(session, &prompt, continued_prefill, err, sizeof(err)) != 0) {
             fprintf(stderr, "%s sync failed: %s\n", id, err);
             return 1;
+        }
+        for (int row = 1; row < session_count; row++) {
+            if (companion_prompt[row].len + target.len + 1 >= ctx_size)
+                die("companion continuation exceeds context");
+            ds4_session_invalidate(sessions[row]);
+            if (ds4_session_sync(sessions[row], &companion_prompt[row], err, sizeof(err)) != 0) {
+                fprintf(stderr, "%s companion %d sync failed: %s\n", id, row, err);
+                return 1;
+            }
         }
 
         double nll = 0.0;
@@ -850,6 +998,11 @@ int main(int argc, char **argv) {
 
             if (api_aligned) {
                 const api_pos *ap = &ref.pos[i];
+                if (getenv("DS4_SCORE_DEBUG")) {
+                    const int ref_tok = ap->n_alts > 0 ? api_alt_token_id(engine, &ap->alts[0]) : -1;
+                    fprintf(stderr, "  pos %d: target=%d ref_top=%d target_lp=%.3f ref_lp=%.3f greedy=%d\n",
+                            i, target.v[i], ref_tok, target_lp, ap->logprob, greedy);
+                }
                 if (isfinite(ap->logprob)) {
                     const double delta = target_lp - ap->logprob;
                     cm.target_count++;
@@ -907,7 +1060,8 @@ int main(int argc, char **argv) {
                 }
             }
 
-            if (ds4_session_eval(session, target.v[i], err, sizeof(err)) != 0) {
+            if (eval_with_companions(sessions, session_count, target.v[i], (unsigned)i,
+                                     err, sizeof(err)) != 0) {
                 fprintf(stderr, "%s eval failed at target token %d: %s\n", id, i, err);
                 return 1;
             }
@@ -1005,7 +1159,10 @@ int main(int argc, char **argv) {
     fclose(out);
     fclose(mf);
     free(logits);
-    ds4_session_free(session);
+    for (int i = 0; i < session_count; i++) {
+        ds4_session_free(sessions[i]);
+        ds4_tokens_free(&companion_prompt[i]);
+    }
     close_engine(engine);
     return 0;
 }
