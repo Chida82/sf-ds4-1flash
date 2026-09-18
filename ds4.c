@@ -74926,6 +74926,23 @@ bool ds4_session_vision_state_matches(
            ds4_session_vision_prefix_matches(s, images, image_count);
 }
 
+bool ds4_session_vision_fingerprint_prefix_matches(
+        const ds4_session     *s,
+        const ds4_vision_span *images,
+        size_t                 image_count) {
+    if (!s || !s->checkpoint_valid) return false;
+    if ((image_count != 0 && !images)) return false;
+    if (s->checkpoint_image_count > image_count) return false;
+    for (size_t i = 0; i < s->checkpoint_image_count; i++) {
+        const ds4_vision_identity *old = &s->checkpoint_images[i];
+        const ds4_vision_span *current = &images[i];
+        if (old->token_count != current->embedding.token_count ||
+            memcmp(old->fingerprint, current->embedding.fingerprint,
+                   sizeof(old->fingerprint)) != 0) return false;
+    }
+    return true;
+}
+
 bool ds4_session_rebase_vision_state(const ds4_session *s,
                                      ds4_vision_span *images, size_t image_count) {
     if (!s || !s->checkpoint_valid || (image_count && !images) ||
@@ -85210,6 +85227,43 @@ void ds4_session_rewind(ds4_session *s, int pos) {
 
 int ds4_session_pos(ds4_session *s) {
     return s->checkpoint.len;
+}
+
+bool ds4_session_checkpoint_valid(const ds4_session *s) {
+    return s && s->checkpoint_valid;
+}
+
+ds4_session *ds4_session_new_test_checkpoint(const int *tokens, int n) {
+    ds4_session *s = xcalloc(1, sizeof(*s));
+    for (int i = 0; i < n; i++) token_vec_push(&s->checkpoint, tokens[i]);
+    s->checkpoint_valid = true;
+    return s;
+}
+
+void ds4_session_free_test_checkpoint(ds4_session *s) {
+    if (!s) return;
+    token_vec_free(&s->checkpoint);
+    free(s->checkpoint_images);
+    free(s);
+}
+
+void ds4_session_set_test_images(ds4_session *s,
+                                 const ds4_vision_span *images, size_t n) {
+    if (!s) return;
+    free(s->checkpoint_images);
+    s->checkpoint_images = NULL;
+    s->checkpoint_image_count = 0;
+    if (n == 0 || !images) return;
+    s->checkpoint_images = xcalloc(n, sizeof(*s->checkpoint_images));
+    for (size_t i = 0; i < n; i++) {
+        s->checkpoint_images[i].token_start = images[i].token_start;
+        s->checkpoint_images[i].token_count =
+            images[i].embedding.token_count;
+        memcpy(s->checkpoint_images[i].fingerprint,
+               images[i].embedding.fingerprint,
+               sizeof(s->checkpoint_images[i].fingerprint));
+    }
+    s->checkpoint_image_count = n;
 }
 
 int ds4_session_ctx(ds4_session *s) {
