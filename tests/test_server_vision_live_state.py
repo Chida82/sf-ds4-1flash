@@ -128,17 +128,18 @@ def eviction_section(args):
     assert cached == 0, "alien1: an unrelated request reused a checkpoint"
     assert not logged_evictions(args.log), \
         "an unrelated request evicted a checkpoint while empty slots existed"
-    continue_chat(args, alien, alien1, "alien1-again", "Reply with exactly ALIEN.",
-                  usage["total_tokens"])
+    _, _, alien_usage = continue_chat(
+        args, alien, alien1, "alien1-again", "Reply with exactly ALIEN.",
+        usage["total_tokens"])
 
     a3, cached, usage = continue_chat(args, a2_messages, a2, "A3-image",
                                       "Reply with exactly STILL.", a2_frontier)
     a_frontier = usage["total_tokens"]
     a3_messages = a2_messages + [a2, {"role": "user", "content": "Reply with exactly STILL."}]
 
-    # Fill the remaining slots.  short0 is deliberately the smallest resident so
-    # the forced eviction below has an unambiguous victim.
-    short_frontiers = []
+    # Include every competing resident: the alien conversation can be smaller
+    # than short0, depending on the model's tokenizer and generated answer.
+    short_frontiers = [alien_usage["total_tokens"]]
     for label, count in (("short0", 8), ("short1", 512)):
         messages = [{"role": "user",
                      "content": words(count) + " Reply with exactly OK."}]
@@ -250,7 +251,6 @@ def main():
     parser.add_argument("--section", choices=["eviction", "tool-409"], required=True)
     parser.add_argument("--log", type=Path,
                         help="server stderr log, for the eviction assertions")
-    global args
     args = parser.parse_args()
     if args.section == "eviction":
         eviction_section(args)

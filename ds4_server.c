@@ -11672,14 +11672,16 @@ static slot_reuse slot_probe_reuse_locked(server *s, server_slot *slot,
     }
 
     const int common = ds4_session_common_prefix(slot->session, &req->prompt);
+    const bool token_image_prefix = ds4_session_vision_prefix_matches(
+        slot->session, req->images, req->image_count);
     const int rewind_to = live_prefix_rewind_target(
         ds4_engine_is_glm_dsa(s->engine), live_pos, req->prompt.len, common);
-    if (rewind_to >= 0) {
+    if (rewind_to >= 0 && token_image_prefix) {
         pr.kind = REUSE_MEMORY_REWIND;
         pr.reuse_tokens = rewind_to;
         return pr;
     }
-    if (common == live_pos && req->prompt.len >= live_pos) {
+    if (common == live_pos && req->prompt.len >= live_pos && token_image_prefix) {
         pr.kind = REUSE_MEMORY_TOKEN;
         pr.reuse_tokens = common;
         return pr;
@@ -11750,11 +11752,12 @@ static bool live_continuation_unavailable(const request *req, bool materialized)
  * the memory-text probe stays a pure memcmp and never detokenizes under
  * tool_mu. */
 static void slot_refresh_live_text(server *s, server_slot *slot) {
+    if (!slot) return;
     free(slot->live_text);
     slot->live_text = NULL;
     slot->live_text_len = 0;
     slot->live_text_pos = 0;
-    if (!s || !slot || !slot->session ||
+    if (!s || !slot->session ||
         !ds4_session_checkpoint_valid(slot->session))
     {
         return;
@@ -16535,6 +16538,26 @@ static void test_slot_probe_vision_tiers(void) {
     const time_t now = 1000000;
     int ckpt_tok[10];
     for (int i = 0; i < 10; i++) ckpt_tok[i] = i + 1;
+
+    /* Token equality cannot authenticate a moved image. Unlike a visible
+     * continuation, this tier does not rebuild or rebase the image spans. */
+    {
+        server_slot slot = {0};
+        slot.session = ds4_session_new_test_checkpoint(ckpt_tok, 10);
+        ds4_vision_span image = {.token_start = 2,
+            .embedding = {.token_count = 2, .fingerprint = {7}}};
+        ds4_session_set_test_images(slot.session, &image, 1);
+        request req = {0};
+        for (int i = 0; i < 10; i++) ds4_tokens_push(&req.prompt, ckpt_tok[i]);
+        ds4_tokens_push(&req.prompt, 11);
+        req.images = &image;
+        req.image_count = 1;
+        TEST_ASSERT(slot_probe_reuse_locked(&s, &slot, &req).kind == REUSE_MEMORY_TOKEN);
+        image.token_start++;
+        TEST_ASSERT(slot_probe_reuse_locked(&s, &slot, &req).kind == REUSE_NONE);
+        ds4_tokens_free(&req.prompt);
+        ds4_session_free_test_checkpoint(slot.session);
+    }
 
     /* 1. Text checkpoint + appended image reuses via memory-text. The old
      *    exact-state gate returned REUSE_NONE here (first-image live miss:
