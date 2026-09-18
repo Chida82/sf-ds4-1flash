@@ -7188,12 +7188,16 @@ typedef struct {
     openai_tool_stream tool;
 } openai_stream;
 
+static bool stream_needs_second_reasoning_guard(const request *r) {
+    return ds4_think_mode_enabled(r->think_mode) && r->has_tools &&
+           r->model_syntax != SERVER_MODEL_SYNTAX_QWEN;
+}
+
 static void openai_stream_start(const request *r, openai_stream *st) {
     memset(st, 0, sizeof(*st));
     st->active = true;
     st->mode = ds4_think_mode_enabled(r->think_mode) ? OPENAI_STREAM_THINKING : OPENAI_STREAM_TEXT;
-    st->guard_second_reasoning =
-        ds4_think_mode_enabled(r->think_mode) && r->has_tools;
+    st->guard_second_reasoning = stream_needs_second_reasoning_guard(r);
 }
 
 static void openai_tool_stream_free(openai_tool_stream *ts) {
@@ -9201,8 +9205,7 @@ static bool anthropic_sse_start_live(int fd, const request *r, const char *id,
     memset(st, 0, sizeof(*st));
     st->active = ok;
     st->mode = ds4_think_mode_enabled(r->think_mode) ? ANTH_STREAM_THINKING : ANTH_STREAM_TEXT;
-    st->guard_second_reasoning =
-        ds4_think_mode_enabled(r->think_mode) && r->has_tools;
+    st->guard_second_reasoning = stream_needs_second_reasoning_guard(r);
     return ok;
 }
 
@@ -16749,6 +16752,37 @@ static void test_openai_stream_reroutes_second_reasoning_pass(void) {
     close(sv[1]);
 }
 
+static void test_openai_qwen_tool_stream_sends_answer_before_finish(void) {
+    int sv[2];
+    TEST_ASSERT(socketpair(AF_UNIX, SOCK_STREAM, 0, sv) == 0);
+    if (sv[0] < 0 || sv[1] < 0) return;
+
+    request r;
+    request_init(&r, REQ_CHAT, 128);
+    r.api = API_OPENAI;
+    r.model_syntax = SERVER_MODEL_SYNTAX_QWEN;
+    r.stream = true;
+    r.think_mode = DS4_THINK_HIGH;
+    r.has_tools = true;
+
+    openai_stream st;
+    openai_stream_start(&r, &st);
+    const char *partial = "<think>first pass</think>first answer chunk";
+    TEST_ASSERT(openai_sse_stream_update(sv[0], NULL, &r, "chatcmpl_qwen_stream",
+                                         &st, partial, strlen(partial), false));
+    shutdown(sv[0], SHUT_WR);
+    char *out = read_socket_text(sv[1]);
+
+    TEST_ASSERT(strstr(out, "\"reasoning_content\":\"first pass\"") != NULL);
+    TEST_ASSERT(strstr(out, "\"content\":\"first answer chunk\"") != NULL);
+
+    free(out);
+    openai_stream_free(&st);
+    request_free(&r);
+    close(sv[0]);
+    close(sv[1]);
+}
+
 static void test_openai_stream_usage_reports_cache_details(void) {
     int sv[2];
     TEST_ASSERT(socketpair(AF_UNIX, SOCK_STREAM, 0, sv) == 0);
@@ -22127,6 +22161,7 @@ static void ds4_server_unit_tests_run(void) {
     test_anthropic_tool_stream_sends_live_tool_use();
     test_openai_tool_stream_sends_incremental_text();
     test_openai_stream_reroutes_second_reasoning_pass();
+    test_openai_qwen_tool_stream_sends_answer_before_finish();
     test_openai_stream_usage_reports_cache_details();
     test_responses_usage_reports_cache_details();
     test_openai_chat_stream_splits_reasoning_without_tools();
