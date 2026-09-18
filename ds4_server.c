@@ -1066,7 +1066,8 @@ static bool parse_reasoning_effort_value(const char **p, ds4_think_mode *out) {
     if (json_lit(p, "null")) return true;
     char *effort = NULL;
     if (!json_string(p, &effort)) return false;
-    bool ok = parse_reasoning_effort_name(effort, out);
+    bool ok = parse_reasoning_effort_name(effort, out) ||
+              ds4_think_mode_parse_level(effort, out);
     free(effort);
     return ok;
 }
