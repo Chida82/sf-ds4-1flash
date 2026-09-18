@@ -18,9 +18,9 @@ static int check_jpeg(const char *path, uint32_t width, uint32_t height,
         fprintf(stderr, "decode failed for %s: %s\n", path, error);
         return 0;
     }
-    char got[65];
-    int ok = image.width == width && image.height == height &&
-             hex_fingerprint(image.fingerprint, got, sizeof(got)) &&
+    char got[65] = {0};
+    int ok = hex_fingerprint(image.fingerprint, got, sizeof(got)) &&
+             image.width == width && image.height == height &&
              strcmp(got, expected_fp) == 0;
     if (!ok) {
         fprintf(stderr, "%s: got %ux%u fp=%s, expected %ux%u fp=%s\n",
