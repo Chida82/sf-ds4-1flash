@@ -16814,6 +16814,49 @@ static void test_openai_stream_usage_reports_cache_details(void) {
     close(sv[1]);
 }
 
+static void test_qwen_stream_split_reasoning_close(void) {
+    const char *raw = "<think>first pass</think>first answer chunk";
+    const size_t split = strlen("<think>first pass</thi");
+    for (int anthropic = 0; anthropic < 2; anthropic++) {
+        int sv[2];
+        TEST_ASSERT(socketpair(AF_UNIX, SOCK_STREAM, 0, sv) == 0);
+        request r;
+        request_init(&r, REQ_CHAT, 128);
+        r.api = anthropic ? API_ANTHROPIC : API_OPENAI;
+        r.model_syntax = SERVER_MODEL_SYNTAX_QWEN;
+        r.stream = true;
+        r.think_mode = DS4_THINK_HIGH;
+        r.has_tools = true;
+        openai_stream oa;
+        anthropic_stream an;
+        if (anthropic) {
+            TEST_ASSERT(anthropic_sse_start_live(sv[0], &r, "msg_qwen", 5, &an));
+            TEST_ASSERT(anthropic_sse_stream_update(sv[0], NULL, &r, "msg_qwen",
+                                                    &an, raw, split, false));
+            TEST_ASSERT(anthropic_sse_stream_update(sv[0], NULL, &r, "msg_qwen",
+                                                    &an, raw, strlen(raw), false));
+        } else {
+            openai_stream_start(&r, &oa);
+            TEST_ASSERT(openai_sse_stream_update(sv[0], NULL, &r, "chatcmpl_qwen",
+                                                 &oa, raw, split, false));
+            TEST_ASSERT(openai_sse_stream_update(sv[0], NULL, &r, "chatcmpl_qwen",
+                                                 &oa, raw, strlen(raw), false));
+        }
+        shutdown(sv[0], SHUT_WR);
+        char *out = read_socket_text(sv[1]);
+        TEST_ASSERT(strstr(out, anthropic ? "\"text\":\"first answer chunk\"" :
+                                           "\"content\":\"first answer chunk\"") != NULL);
+        TEST_ASSERT(strstr(out, "</thi") == NULL);
+        TEST_ASSERT(strstr(out, "message_stop") == NULL);
+        TEST_ASSERT(strstr(out, "[DONE]") == NULL);
+        free(out);
+        if (anthropic) anthropic_stream_free(&an);
+        else openai_stream_free(&oa);
+        request_free(&r);
+        close(sv[0]); close(sv[1]);
+    }
+}
+
 static void test_responses_usage_reports_cache_details(void) {
     request r;
     request_init(&r, REQ_CHAT, 128);
@@ -22162,6 +22205,7 @@ static void ds4_server_unit_tests_run(void) {
     test_openai_tool_stream_sends_incremental_text();
     test_openai_stream_reroutes_second_reasoning_pass();
     test_openai_qwen_tool_stream_sends_answer_before_finish();
+    test_qwen_stream_split_reasoning_close();
     test_openai_stream_usage_reports_cache_details();
     test_responses_usage_reports_cache_details();
     test_openai_chat_stream_splits_reasoning_without_tools();
