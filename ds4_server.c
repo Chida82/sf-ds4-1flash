@@ -17482,6 +17482,24 @@ static void test_api_thinking_controls_parse(void) {
     mode = DS4_THINK_HIGH;
     TEST_ASSERT(parse_reasoning_effort_value(&openai_effort, &mode));
     TEST_ASSERT(mode == DS4_THINK_HIGH);
+
+    const int levels[] = {0, 1, 25, 50, 99, 100};
+    for (size_t i = 0; i < sizeof(levels) / sizeof(levels[0]); i++) {
+        char value[16];
+        snprintf(value, sizeof(value), "\"%d\"", levels[i]);
+        const char *p = value;
+        mode = DS4_THINK_NONE;
+        TEST_ASSERT(parse_reasoning_effort_value(&p, &mode) && *p == '\0');
+        TEST_ASSERT(ds4_think_mode_level(mode) == levels[i]);
+    }
+    const char *invalid[] = {"\"\"", "\"-1\"", "\"101\"", "\"1.5\"",
+                             "\"50x\"", "\" 50\"", "\"999999999999999999999\""};
+    for (size_t i = 0; i < sizeof(invalid) / sizeof(invalid[0]); i++) {
+        const char *p = invalid[i];
+        mode = DS4_THINK_MEDIUM;
+        TEST_ASSERT(!parse_reasoning_effort_value(&p, &mode));
+        TEST_ASSERT(mode == DS4_THINK_MEDIUM);
+    }
 }
 
 static void test_render_think_max_prompt_prefix(void) {
