@@ -191,6 +191,12 @@ static int request_order(const void *a, const void *b) {
 }
 
 enum { ENGRAM_READERS = 16 };
+#ifdef __APPLE__
+enum { ENGRAM_PARALLEL_MIN_ROWS = 8 };
+#else
+/* Unlike dispatch's shared pool, this path creates threads for each batch. */
+enum { ENGRAM_PARALLEL_MIN_ROWS = 256 };
+#endif
 
 typedef struct {
     const ds4_engram_table *table;
@@ -269,10 +275,7 @@ bool ds4_engram_read_batch(const ds4_engram_table *t, const uint32_t *rows,
             .out = out + start * DS4_ENGRAM_COLS * DS4_ENGRAM_DIM, .readers = 1};
         /* Fixed concurrency hides random-read latency without caching the table.
          * Each worker owns disjoint output rows; all finish before GPU use. */
-        /* Single-token decode asks for DS4_ENGRAM_COLS rows per table, far
-         * below 256, so it never reached the concurrent path and paid full
-         * random-read latency on every row, in series, before any GPU work. */
-        if (count >= 8) {
+        if (count >= ENGRAM_PARALLEL_MIN_ROWS) {
             batch.readers = ENGRAM_READERS;
 #ifdef __APPLE__
             dispatch_apply_f(batch.readers,
