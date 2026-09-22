@@ -78,15 +78,61 @@ All in one block of the `Makefile`, each read at exactly one place:
 `DS4_*` environment variables are upstream's and are **not renamed**. Set them
 inline (`DS4_METAL_CB_TIMES=1 ./sf-ds4-1flash ...`), never `export`.
 
-## Speculative decoding contract
+## Speculative decoding: none
 
-Follow the Identity row exactly. A DSpark-only child keeps its separate support
-GGUF loader, `--dspark*`, `--mtp-model`, `--mtp-exact-sampling`, DSpark tests,
-and shared speculative helpers even when their names contain `mtp`; it removes
-`DS4_SUPPORT_MTP_LEGACY`, `--mtp`, `--mtp-draft`, `--mtp-margin`,
-`--mtp-timing`, `DS4_TEST_MTP`, and `mtp-verify-depth`. A built-in-MTP child
-keeps only its model's MTP path. A `none` child removes both. Do not infer the
-mechanism from an identifier's name.
+This child has no speculative decoding at all, and it is the only one of the
+four where that is true. `--mtp`, `--mtp-model`, `--mtp-draft`, `--mtp-margin`,
+`--mtp-timing`, `--mtp-exact-sampling`, `--dspark`, `--dspark-confidence` and
+`--dspark-strict` do not exist in any frontend; `ds4_engine_has_mtp()` returns
+false and `ds4_engine_mtp_draft_tokens()` returns 0.
+
+Do not reintroduce them, and do not infer a mechanism from an identifier's
+name: `glm_mtp` was the built-in-MTP switch every MTP model shared, not a GLM
+thing, and it is pinned false here.
+
+The DSpark draft/verify engine is still compiled in, marked `sf-keep` in
+`ds4.c`. It hangs off `ds4_gpu_graph`, the DeepSeek V4 Flash/PRO Metal graph
+that this model never allocates: `ds4_session_create` early-returns for
+`DS4_MODEL_FAMILY_DEEPSEEK41` into `ds41_graph_alloc`. So it is unreachable at
+runtime but still structurally reachable from live session helpers that clear
+its state unconditionally. Removing it means removing the whole `ds4_gpu_graph`
+session path, which also hosts twelve `metal_graph_*` helpers the `ds41_*`
+graph does call. That is a separately measured ablation.
+
+## Names that lie: do not remove by name, verify by reachability
+
+Upstream grew several models in one tree, so many identifiers carry the name of
+the model they were written for, not of the code they now serve. What this
+child has established:
+
+| Name family | What it really is here | Evidence |
+|---|---|---|
+| `glm_graph_*` | **dead in this tree**, unlike in `sf-q3-8flash` where it is the shared Metal graph host. The GLM-DSA session opens only under `DS4_MODEL_FAMILY_GLM_DSA`; V4.1 uses `ds41_graph_alloc` | `ds4.c` `ds4_session_create`: the DEEPSEEK41 early-return precedes any glm_graph code |
+| `glm_graph_env_value`, `glm_graph_host_memory_bytes`, `qwen4_prefill_chunk_tokens` | shared helpers wearing a foreign name, called from live V4.1 paths | a prefix sweep over `glm_graph_*`/`qwen4_*` breaks memory admission |
+| `ds4_gpu_mgpu.h` | not a CUDA header: the only reachable definer of `DS4_MAX_GPUS`, `struct ds4_gpu_tensor` and `ds4_gpu_config` for **both** the Metal and the CPU build | `ds4.c` includes it unconditionally; it sizes ~190 live graph arrays |
+| `ds4_gpu_args.c/.h` | the opposite trap: the name says CUDA, `nm` says two pure-C string functions. Removed because the `--gpu*` flags went, not because it was CUDA code | `nm -u` resolved no CUDA symbol |
+| `metal_graph_cuda_*`, `engine_cuda_tp_*` | the Metal graph host, named after the feature CUDA had first. Live, and not guarded by any CUDA macro | ~40 functions with live call sites |
+| `glm53_quantize.py`, `glm53_validate_gguf.py`, `glm53_manifest.py`, `deepseek4_vision.py` | dependencies of **this model's** converters | `deepseek41_quantize.py`, `deepseek41_validate_gguf.py` and `deepseek41_vision.py` import them |
+| `metal/deepseek4_vision.metal`, `metal/glm53_bf16.metal`, `metal/glm53_vision.metal` | required by the V4.1 vision encoder | deleting them breaks vision, not GLM |
+| `tests/vision-fixtures/glm53/` | plain PNG/JPEG test data read by four kept tests | see that directory's README |
+
+Two oracles that the compiler cannot give you:
+
+- `-Wunused-function` is a front-end diagnostic. A call inside a branch the
+  optimiser folds away still counts as a reference, so a guard has to be
+  removed as **text** before anything downstream falls out. And only `ds4.o`
+  reports: `ds4_cpu.o` and `ds4_cpu_test_hooks.o` compile the same source with
+  `-Wno-unused-function`, so they are verifiers, not oracles.
+- `ds4_metal.m` separates models by function **name**, not by any family test,
+  and its functions are exported. There the linker is the oracle: `nm -g` on
+  `ds4_metal.o` against `nm -u` on every other object, with references internal
+  to the same object closed over first.
+
+The Metal library is assembled at **runtime** by concatenating `metal/*.metal`
+from a hard-coded table in `ds4_metal.m`. A deleted kernel file must lose its
+row there or startup fails with "Metal source not found", and no build step
+catches it. `make test-mxfp4-metal` compiles the library and dispatches, so it
+is the runtime oracle for that table.
 
 ## Models, build, test, verify
 

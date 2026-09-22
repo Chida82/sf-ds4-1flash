@@ -1,4 +1,14 @@
-# StarForge parity prompts. TAB-separated extra flags are optional.
+# StarForge parity prompts for sf-ds4-1flash. TAB-separated extra flags are optional.
+#
+# No steering prompt here, and that is deliberate: DeepSeek V4.1 Flash REFUSES to
+# start when --dir-steering-file is passed (ds4.c, "V4.1 requires Metal ...;
+# DSpark, steering and legacy diagnostics are not supported"), so both binaries
+# would exit without generating and the oracle would read that as "a binary
+# produced no output". Steering parity for this child is the separate claim that
+# upstream and this fork refuse it identically; it is not a generation prompt.
+#
+# No speculative-decoding prompt either: this child's registry entry is "none".
+# The distinctive V4.1 surface exercised instead is --think-level.
 Explain what a Redis stream is in one paragraph.
 Write a C function that reverses a singly linked list. Only code.
 List the prime numbers below 50, comma separated.
@@ -7,3 +17,5 @@ Given the JSON {"a":1,"b":[1,2,3]} return the sum of all numbers. Answer with th
 Scrivi tre righe su Palermo.
 What is the capital of Australia? One word.
 Summarize the plot of Hamlet in exactly two sentences.
+A train leaves at 09:15 and arrives at 13:40 after two stops of 12 and 7 minutes. How long was it moving? Answer with the number of minutes only.	--think-level 25
+Write a haiku about compilers.	--nothink

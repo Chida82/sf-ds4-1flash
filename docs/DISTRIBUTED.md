@@ -20,11 +20,6 @@ Routed experts are sharded; attention partitioning depends on the model. Both
 GPUs work on the same token and exchange partial results. This can reduce generation
 latency, but the gain depends on the model, link, and comparison setup.
 
-Two 128 GB Macs are useful for V4 Flash Q4/MXFP4 or GLM 5.3 Flash Q4.
-GLM 5.2 IQ2_XXS is another tested capacity setup. V4.1 Flash Q2 also runs
-on two 128 GB Macs, with disk-only Engram tables.
-A larger quant may need larger machines even though its tensor layout is supported.
-
 ### Link setup
 
 Use a Thunderbolt cable. RDMA requires an active verbs device with an
@@ -58,21 +53,15 @@ raising a limit on your machine.
 
 ### Start the pair
 
-Download the same model on both machines. For GLM 5.3 Flash Q4:
-
-```sh
-./download_model.sh glm53-q4
-```
-
 Start the worker first; it retries while the coordinator loads:
 
 ```sh
 # Machine B.
-./ds4 --tensor-parallel --role worker \
+./sf-ds4-1flash --tensor-parallel --role worker \
   --coordinator 10.99.0.2 9911 --transport rdma --ctx 8192
 
 # Machine A.
-./ds4 --tensor-parallel --role coordinator \
+./sf-ds4-1flash --tensor-parallel --role coordinator \
   --listen 10.99.0.2 9911 --transport rdma --ctx 8192
 ```
 
@@ -84,13 +73,6 @@ with `curl` or `nc`: it may treat the connection as a worker handshake.
 Keep workers running in a terminal or managed session and retain both logs.
 Do not treat repeated handshake or RDMA timeouts as successful QA merely
 because a retry works.
-
-The coordinator can be `sf-ds4-1flash`, `sf-ds4-1flash-server`, or
-`sf-ds4-1flash-bench`; workers run `sf-ds4-1flash`. For models with vision
-support, pass the same `--vision FILE` to both for image input.
-For GLM MTP, enable `--mtp` on both. For DeepSeek DSpark, both need the
-matching support model and DSpark options. V4.1 supports vision but not
-speculative decoding.
 
 TP disk-cache restore currently rebuilds the exact saved token prefix on both
 ranks rather than restoring the coordinator alone. Expect prefill on restore.
@@ -107,10 +89,10 @@ Replace the example address with your coordinator's reachable address:
 
 ```sh
 # Machine A.
-./ds4 --role coordinator --layers 0:19 --listen 10.99.0.2 9911
+./sf-ds4-1flash --role coordinator --layers 0:19 --listen 10.99.0.2 9911
 
 # Machine B.
-./ds4 --role worker --layers 20:output --coordinator 10.99.0.2 9911
+./sf-ds4-1flash --role worker --layers 20:output --coordinator 10.99.0.2 9911
 ```
 
 Normally give the output head to the final worker. With several workers,
@@ -127,19 +109,7 @@ long-prefill throughput, not as a guaranteed decode speedup.
 
 For two 512 GB Mac Studios, use the split artifacts:
 
-```sh
-# Machine A.
-./download_model.sh pro-q4-layers00-30
-./ds4 -m gguf/DeepSeek-V4-Pro-Q4K-Layers00-30.gguf \
-  --role coordinator --layers 0:30 --listen 10.99.0.2 9911
-
-# Machine B.
-./download_model.sh pro-q4-layers31-output
-./ds4 -m gguf/DeepSeek-V4-Pro-Q4K-Layers-31-output.gguf \
-  --role worker --layers 31:output --coordinator 10.99.0.2 9911
-```
-
-These downloads do not change `ds4flash.gguf`. Startup is expensive because
+These downloads do not change `deepseek-v4.1-flash.gguf`. Startup is expensive because
 each side must make its model slice resident.
 
 ### Tuning and recovery

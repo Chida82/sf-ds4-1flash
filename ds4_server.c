@@ -1212,17 +1212,13 @@ static bool model_alias_enables_thinking(const char *model) {
 }
 
 static server_model_syntax server_model_syntax_for_engine(ds4_engine *engine) {
-    if (ds4_engine_is_qwen4(engine)) return SERVER_MODEL_SYNTAX_QWEN;
     return ds4_engine_is_glm_dsa(engine) ?
            SERVER_MODEL_SYNTAX_GLM : ds4_engine_is_deepseek41(engine) ?
            SERVER_MODEL_SYNTAX_DEEPSEEK41 : SERVER_MODEL_SYNTAX_DEEPSEEK;
 }
 
 static const char *server_model_id_from_engine(ds4_engine *engine) {
-    if (ds4_engine_is_deepseek41(engine)) return "deepseek-v4.1-flash";
-    if (ds4_engine_is_qwen4(engine)) return "qwen3.8-flash-next";
-    if (ds4_engine_is_glm53(engine)) return "glm-5.3-flash";
-    if (ds4_engine_is_glm_dsa(engine)) return "glm-5.2";
+    return "deepseek-v4.1-flash";
     return ds4_engine_model_id(engine) == 1 ?
            "deepseek-v4-pro" : "deepseek-v4-flash";
 }
@@ -12409,10 +12405,6 @@ static void server_prefill_leave(server *s) {
 static int server_prefill_quantum_for(const server *s,
                                       bool generation_active) {
     int quantum = generation_active ? s->mixed_prefill_quantum : 2048;
-    if (generation_active && quantum < 1024 && s->engine &&
-        ds4_engine_is_glm53(s->engine)) {
-        quantum = 1024;
-    }
     return quantum;
 }
 
@@ -13953,7 +13945,6 @@ decode_again:
         if (greedy_tool_syntax) {
             temperature = 0.0f;
         }
-        const int eos_token = ds4_token_eos(s->engine);
         int token = j->req.ignore_eos ?
             ds4_session_argmax_ignoring_eos(slot->session,
                                             j->req.think_mode) :
@@ -13976,28 +13967,7 @@ decode_again:
         int toks[17];
         int ntok = 0;
         const int block_start = ds4_session_pos(slot->session);
-        if (!s->batched_mode &&
-            ds4_engine_mtp_draft_tokens(s->engine) > 1 &&
-            getenv("DS4_MTP_SPEC_DISABLE") == NULL)
-        {
-            if (j->req.ignore_eos) {
-                ntok = ds4_session_eval_speculative_argmax_ignoring_eos(
-                    slot->session, token, max_tokens - completion,
-                    eos_token, j->req.think_mode,
-                    toks, (int)(sizeof(toks) / sizeof(toks[0])),
-                    err, sizeof(err));
-            } else {
-                ntok = ds4_session_eval_speculative(
-                    slot->session, token, max_tokens - completion,
-                    eos_token, temperature, top_k, top_p, min_p, &rng,
-                    toks, (int)(sizeof(toks) / sizeof(toks[0])),
-                    err, sizeof(err));
-            }
-            if (ntok < 0) {
-                finish = "error";
-                break;
-            }
-        } else if (s->batched_mode && s->qwen4_batch_mtp &&
+        if (s->batched_mode && s->qwen4_batch_mtp &&
                    max_tokens - completion >= 2 && !j->req.ignore_eos &&
                    (!ds4_engine_mtp_exact_sampling(s->engine) || temperature == 0.0f) &&
                    getenv("DS4_MTP_SPEC_DISABLE") == NULL) {
@@ -15135,28 +15105,8 @@ static bool send_model(server *s, int fd, const char *id) {
 static bool send_models(server *s, int fd) {
     buf b = {0};
     buf_puts(&b, "{\"object\":\"list\",\"data\":[");
-    if (ds4_engine_is_deepseek41(s->engine)) {
+    {
         append_model_json(&b, s, server_model_id_from_engine(s->engine));
-    } else if (ds4_engine_is_qwen4(s->engine)) {
-        append_model_json(&b, s, "qwen3.8-flash-next");
-        buf_putc(&b, ',');
-        append_model_json(&b, s, "qwen3.8-flash-next-chat");
-        buf_putc(&b, ',');
-        append_model_json(&b, s, "qwen3.8-flash-next-reasoner");
-    } else if (ds4_engine_is_glm_dsa(s->engine)) {
-        const char *base = server_model_id_from_engine(s->engine);
-        char variant[64];
-        append_model_json(&b, s, base);
-        buf_putc(&b, ',');
-        snprintf(variant, sizeof(variant), "%s-chat", base);
-        append_model_json(&b, s, variant);
-        buf_putc(&b, ',');
-        snprintf(variant, sizeof(variant), "%s-reasoner", base);
-        append_model_json(&b, s, variant);
-    } else {
-        append_model_json(&b, s, "deepseek-v4-flash");
-        buf_putc(&b, ',');
-        append_model_json(&b, s, "deepseek-v4-pro");
     }
     buf_puts(&b, "]}\n");
     bool ok = http_response(fd, s->enable_cors, 200, "application/json", b.ptr);
@@ -15553,8 +15503,6 @@ static server_config parse_options(int argc, char **argv) {
         .engine = {
             .model_path = SF_DEFAULT_MODEL, /* sf: child-specific default model. */
             .backend = default_server_backend(),
-            .mtp_draft_tokens = 1,
-            .mtp_margin = 3.0f,
         },
         .host = "127.0.0.1",
         .port = SF_DEFAULT_PORT, /* sf: child-specific default port. */
@@ -15613,29 +15561,6 @@ static server_config parse_options(int argc, char **argv) {
             c.engine.model_path = need_arg(&i, argc, argv, arg);
         } else if (!strcmp(arg, "--vision")) {
             c.engine.vision_path = need_arg(&i, argc, argv, arg);
-        } else if (!strcmp(arg, "--mtp")) {
-            c.engine.glm_mtp = true;
-        } else if (!strcmp(arg, "--mtp-model")) {
-            c.engine.mtp_path = need_arg(&i, argc, argv, arg);
-        } else if (!strcmp(arg, "--mtp-draft")) {
-            c.engine.mtp_draft_tokens = parse_int_arg(need_arg(&i, argc, argv, arg), arg);
-        } else if (!strcmp(arg, "--mtp-margin")) {
-            c.engine.mtp_margin = parse_float_arg(need_arg(&i, argc, argv, arg), arg, 0.0f, 1000.0f);
-        } else if (!strcmp(arg, "--mtp-timing")) {
-            c.engine.glm_mtp = true;
-            c.engine.glm_mtp_timing = true;
-        } else if (!strcmp(arg, "--dspark")) {
-            c.engine.dspark = true;
-        } else if (!strcmp(arg, "--dspark-confidence")) {
-            c.engine.dspark = true;
-            c.engine.dspark_confidence_threshold =
-                parse_float_arg(need_arg(&i, argc, argv, arg), arg, 0.0f, 1.0f);
-            c.engine.dspark_confidence_threshold_set = true;
-        } else if (!strcmp(arg, "--dspark-strict")) {
-            c.engine.dspark = true;
-            c.engine.dspark_strict = true;
-        } else if (!strcmp(arg, "--mtp-exact-sampling")) {
-            c.engine.dspark_exact_sampling = true;
         } else if (!strcmp(arg, "-c") || !strcmp(arg, "--ctx")) {
             c.ctx_size = parse_int_arg(need_arg(&i, argc, argv, arg), arg);
         } else if (!strcmp(arg, "-n") || !strcmp(arg, "--tokens")) {
@@ -15940,10 +15865,6 @@ int main(int argc, char **argv) {
                    server_prefill_quantum_for(&s, false),
                    server_prefill_quantum_for(&s, true),
                    server_decode_coalesce_us());
-        if (ds4_engine_mtp_draft_tokens(engine) > 1 && !s.qwen4_batch_mtp) {
-            server_log(DS4_LOG_DEFAULT,
-                       "ds4-server: MTP speculative decoding is disabled while native session batching is active");
-        }
     }
     if (cfg.trace_path) {
         s.trace = fopen(cfg.trace_path, "w");

@@ -1,9 +1,5 @@
 # DS4 Imatrix Pipeline
 
-This directory contains the calibration dataset and instructions used to build
-activation importance matrices for DeepSeek V4 Flash and Pro GGUF
-quantization.
-
 The current imatrix target is the routed MoE path.  Flash has 43 layers and
 256 routed experts per layer.  Pro has 61 layers and 384 routed experts per
 layer.  Both variants expose three routed expert tensors per layer:
@@ -39,7 +35,7 @@ It contains DS4-rendered chat prompts, separated by visible
 - Long-context snippets.
 - Agent/tool-call prompts using DS4's DSML syntax.
 - Language/prose rewriting, summarization, extraction, and translation prompts.
-- `ds4-eval` GPQA Diamond, SuperGPQA, and AIME2025 benchmark prompts.
+- `sf-ds4-1flash-eval` GPQA Diamond, SuperGPQA, and AIME2025 benchmark prompts.
 - Both thinking and non-thinking assistant prefixes.
 
 The current tracked dataset has 4682 rendered prompts and roughly 2.91M tokens
@@ -56,7 +52,7 @@ Flash and Pro.
 Flash example:
 
 ```sh
-./ds4 \
+./sf-ds4-1flash \
   -m ../deepseek-v4-quants/gguf/DeepSeek-V4-Flash-Q4KExperts-F16HC-F16Compressor-F16Indexer-Q8Attn-Q8Shared-Q8Out-chat-v2.gguf \
   --imatrix-dataset gguf-tools/imatrix/dataset/rendered_prompts.txt \
   --imatrix-out ../deepseek-v4-quants/imatrix/DeepSeek-V4-Flash-chat-v2-routed-moe-ds4-1p5m.dat \
@@ -66,7 +62,7 @@ Flash example:
 Pro example with a smaller calibration budget:
 
 ```sh
-./ds4 \
+./sf-ds4-1flash \
   -m ../deepseek-v4-quants/gguf/DeepSeek-V4-Pro-IQ2XXS-w2Q2K-AProjQ8-SExpQ8-OutQ8-Instruct.gguf \
   --imatrix-dataset gguf-tools/imatrix/dataset/rendered_prompts.txt \
   --imatrix-out ../deepseek-v4-quants/imatrix/DeepSeek-V4-Pro-Instruct-routed-moe-ds4-small.dat \
@@ -78,7 +74,7 @@ Pro example with a smaller calibration budget:
 Useful smoke-test limits:
 
 ```sh
-./ds4 \
+./sf-ds4-1flash \
   -m MODEL.gguf \
   --imatrix-dataset gguf-tools/imatrix/dataset/rendered_prompts.txt \
   --imatrix-out /tmp/ds4-test.imatrix.dat \
@@ -162,9 +158,6 @@ gguf-tools/quality-testing/
 `misc/quant_eval.c` compares local GGUF variants by greedy/top-logit behavior.
 `gguf-tools/quality-testing/` can score local GGUFs against official DeepSeek
 API continuations by target-token negative log likelihood.
-
-The Q4 imatrix file uploaded to Hugging Face was tested on 100 official
-DeepSeek V4 Flash continuations:
 
 ```text
 old Q4 avg NLL:         0.177357819

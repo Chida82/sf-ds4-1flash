@@ -3,7 +3,6 @@
 
 #include <stdbool.h>
 #include <stdint.h>
-#include "ds4_qwen4_vision.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -3471,9 +3470,6 @@ int ds4_gpu_qwen4_gdn_front_tensor(
 /* Encode one image: patches [n_patches][3*P*P] in 2x2 window order plus the
  * resampled position embedding [n_patches][n_embd]; out receives
  * [n_patches/4][n_out].  Weights are read from the mapped mmproj GGUF. */
-int ds4_gpu_qwen4_vision_encode(float *out, const float *patches, const float *pos_embed, uint32_t n_patches,
-                                uint32_t grid_w, const void *model_map, uint64_t model_size,
-                                const ds4_qwen4_vision_weights *w);
 /* prefill dense GEMM (f32/f16/q8_0 rows, 32x32 tiles) and the batched hc mix
  * pieces */
 int ds4_gpu_qwen4_dense_mm_tensor(

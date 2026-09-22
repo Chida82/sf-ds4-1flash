@@ -5,7 +5,7 @@
 Start the server first:
 
 ```sh
-./ds4-server --ctx 100000 --kv-disk-dir /tmp/ds4-kv --kv-disk-space-mb 8192
+./sf-ds4-1flash-server --ctx 100000 --kv-disk-dir /tmp/ds4-kv --kv-disk-space-mb 8192
 ```
 
 Set the client's context limit no higher than the server's. Output tokens also
@@ -21,7 +21,7 @@ Add this provider to `~/.pi/agent/models.json`:
 {
   "providers": {
     "ds4": {
-      "baseUrl": "http://127.0.0.1:8000/v1",
+      "baseUrl": "http://127.0.0.1:8002/v1",
       "api": "openai-completions",
       "apiKey": "dsv4-local",
       "compat": {
@@ -68,7 +68,7 @@ Merge the provider into `~/.config/opencode/opencode.json`:
       "name": "DwarfStar",
       "npm": "@ai-sdk/openai-compatible",
       "options": {
-        "baseURL": "http://127.0.0.1:8000/v1",
+        "baseURL": "http://127.0.0.1:8002/v1",
         "apiKey": "dsv4-local"
       },
       "models": {
@@ -91,7 +91,7 @@ Use the Responses API. Add a provider to the Codex configuration:
 ```toml
 [model_providers.ds4]
 name = "DwarfStar"
-base_url = "http://127.0.0.1:8000/v1"
+base_url = "http://127.0.0.1:8002/v1"
 wire_api = "responses"
 stream_idle_timeout_ms = 1000000
 ```
@@ -108,7 +108,7 @@ model for the main agent and its secondary model roles:
 ```sh
 #!/bin/sh
 unset ANTHROPIC_API_KEY
-export ANTHROPIC_BASE_URL="http://127.0.0.1:8000"
+export ANTHROPIC_BASE_URL="http://127.0.0.1:8002"
 export ANTHROPIC_AUTH_TOKEN="dsv4-local"
 export ANTHROPIC_MODEL="deepseek-v4-flash"
 export ANTHROPIC_DEFAULT_SONNET_MODEL="deepseek-v4-flash"

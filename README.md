@@ -1,18 +1,17 @@
-<p align="center">
-  <img src="logo.svg" alt="DwarfStar logo" width="220">
-</p>
+# sf-ds4-1flash
 
-**DwarfStar** aims to be the best way to run a few excellent large
-language models on consumer hardware (that is, hardware that people
-can actually own). To reach this goal, we are building
-a small native inference engine optimized first for
-**DeepSeek V4 Flash** (including the experimental vision model),
-**DeepSeek V4.1 Flash** (Metal),
-and additionally **GLM 5.2 and 5.3**, **GLM 5.3 Flash** and
-**DeepSeek V4 PRO**, and **Qwen3.8 Flash Next** (Metal and CUDA). The code is self-contained and
-deliberately narrow, not a general GGUF runner: you need to use the
-GGUF files the project produces, that are part of the project
-itself.
+`sf-ds4-1flash` is a specialized fork of [ds4 / DwarfStar](https://github.com/antirez/ds4)
+by Salvatore Sanfilippo and contributors, reduced to **DeepSeek V4.1 Flash** on
+**Apple Metal**. The upstream commit this fork sits on is not written here:
+ask git, which cannot go stale --
+`git describe --tags --match 'sync-*' --abbrev=0` for the last sync, or
+`git merge-base HEAD upstream/main` for the base itself.
+Everything that works here works because of ds4, llama.cpp and GGML; see
+`LICENSE` and the acknowledgements below.
+
+The code is self-contained and deliberately narrow, not a general GGUF runner:
+it loads the GGUF files the ds4 project produces, and refuses anything whose
+`general.architecture` is not `deepseek41`.
 
 We test things in integration: model loading, prompt rendering,
 tool calls, KV state, and the HTTP server are built and tested together.
@@ -22,26 +21,23 @@ The repository also includes tools and data for GGUF, imatrix, quality, and spee
 
 * **Metal**, the primary target, on Macs with 96 GB or more. Smaller machines
   can use SSD streaming. SSD streaming is also needed in order to run very
-  large models such as full GLM 5.x (not Flash) on 128GB systems.
+  larger quantizations on 128 GB systems.
 
 This project would not exist without **llama.cpp and GGML**, make sure to read
 the acknowledgements section, a big thank you to Georgi Gerganov and all the
 other contributors.
 
-**Model support is intentionally opportunistic**. The project follows the best open
-weights for useful local machine sizes, especially 128 GB laptops and 256/512 GB
-workstations. A model may be removed when a better replacement arrives.
 
 # So, what can I do with this software?
 
 * You can run a very capable models in your consumer hardware, a MacBook for example. Even if you have not enough RAM, with SSD streaming, you can run it at a decent speed.
-* Using two 128 GB Macs connected with RDMA, you can run 4-bit DeepSeek Flash or GLM 5.3 Flash with tensor parallelism. Larger GLM 5.2 quants need larger machines, such as Mac Studios.
+* Using two 128 GB Macs connected with RDMA, you can run this model resident with tensor parallelism.
 * You can also use pipeline paralellism to glue together multiple systems to sum their RAM and run larger models.
 
 ## Motivations
 
 * Capable open-weight models now fit on high-end personal machines.
-* DeepSeek V4 Flash and PRO, GLM 5.2, tolerate aggressive routed-expert quantization.
+* DeepSeek V4.1 Flash tolerates aggressive routed-expert quantization.
 * Compressed KV caches and fast local SSDs make long contexts practical.
 * The idea of an inference system specialized for a few models.
 
@@ -80,8 +76,8 @@ So, while this project attempts to be usable for the featured models and the mos
 ## Start Here
 
 ```sh
-git clone https://github.com/antirez/ds4.git
-cd ds4
+git clone https://github.com/Chida82/sf-ds4-1flash.git
+cd sf-ds4-1flash
 ```
 
 Choose your build. The platform guides cover prerequisites, memory sizing,
@@ -91,32 +87,34 @@ and hardware-specific setups:
 | --- | --- |
 | [Metal on Apple Silicon](docs/METAL.md) | `make` |
 
-For a first run on a 96 or 128 GB machine, download DeepSeek V4 Flash Q2:
+For a first run on a 96 or 128 GB machine, download the Q2 release:
 
 ```sh
-./download_model.sh ds4f-q2
+./download.sh q2
 ```
 
-Downloads go in `gguf/`. Repeat the command to resume an interrupted download.
-Leave memory for the context and runtime buffers as well as the model.
-See [other models](docs/MODELS.md) or use [SSD streaming](docs/SSD_STREAMING.md)
-on a smaller Mac.
+The model itself lives once in the shared Hugging Face cache; `gguf/` holds
+symlinks to it and `./deepseek-v4.1-flash.gguf` points at the main model.
+Repeat the command to verify or resume. Leave memory for the context and
+runtime buffers as well as the model. See [the model guide](docs/MODELS.md)
+or use [SSD streaming](docs/SSD_STREAMING.md) on a smaller Mac.
 
 ## Everyday Use
 
 Once built and with a model downloaded:
 
 ```sh
-./ds4
-./ds4 -p "Explain Redis streams in one paragraph."
-./ds4-server --ctx 32768
+./sf-ds4-1flash
+./sf-ds4-1flash -p "Explain Redis streams in one paragraph."
+./sf-ds4-1flash-server --ctx 32768
 ```
 
-The default model is `ds4flash.gguf`, a link updated by main-model downloads.
-Pass `-m FILE` to choose explicitly. Commands normally run from the repository
-root; use `--chdir /path/to/ds4` when launching elsewhere.
+The default model is `deepseek-v4.1-flash.gguf`, a link updated by
+`./download.sh q2`. Pass `-m FILE` to choose explicitly. Commands normally run
+from the repository root; use `--chdir /path/to/sf-ds4-1flash` when launching
+elsewhere.
 
-The server listens at `http://127.0.0.1:8000` by default; see [serving](docs/SERVER.md)
+The server listens at `http://127.0.0.1:8002` by default; see [serving](docs/SERVER.md)
 for API access and multiple sessions.
 
 The interactive CLI keeps a multi-turn conversation. Use `/help`, `/read FILE`,
@@ -126,44 +124,19 @@ Run each binary with `--help` for its full options.
 For Pi, OpenCode, Codex CLI, or Claude Code, use `sf-ds4-1flash-server` and
 follow the [client setup guide](docs/CLIENTS.md).
 
-### Models, images, and speculation
+### Model, images, and memory
 
-[Models and vision](docs/MODELS.md) lists the supported downloads and memory
-requirements. DeepSeek Vision Experimental uses a different checkpoint from
-Flash 0731; GLM 5.3 Flash and Qwen3.8 Flash Next add vision to the same text
-model through a separate encoder.
+[The model guide](docs/MODELS.md) lists the downloads and memory requirements.
 
-DeepSeek V4.1 Flash text and vision run on Metal.
-Q2 runs with SSD streaming on one 128 GB Mac, or resident across two
-Macs using RDMA. Q4 needs SSD streaming or a 512 GB Mac.
-Engram tables remain on disk in every mode, so use a fast
-local SSD. See the [model guide](docs/MODELS.md#deepseek-v41-flash) for downloads
-and setup.
+DeepSeek V4.1 Flash text and vision run on Metal. Q2 runs with SSD streaming on
+one 128 GB Mac, or resident across two Macs using RDMA. Engram tables remain on
+disk in every mode, so use a fast local SSD.
 
-With the matching encoder passed as `--vision FILE`, use `/read image.png`
-in the CLI.
+With the encoder downloaded (`./download.sh vision`) and passed as
+`--vision FILE`, use `/read image.png` in the CLI.
 
-Qwen3.8's smaller Q2 release has **41.73 GiB** of main/MTP weights,
-with imatrix IQ2_XXS gate/up experts and padded Q2_K down projections.
-It is the starting option for 64 GB Macs.
-The GGUF also contains 95.37 GiB of original BF16 n-grams, read directly
-from disk rather than loaded into RAM. Keep it on a fast SSD. Start with 8K context:
-
-```sh
-./download_model.sh qwen38-q2
-./ds4 --ctx 8192 --prefill-chunk 1024
-```
-
-The download fetches one 137.10 GiB file and updates `ds4flash.gguf`.
-Add `--mtp` for speculative decoding. The larger
-`qwen38-q4k` target is also available. Download the optional vision encoder
-with `./download_model.sh qwen38-vision` and pass it with `--vision`.
-See [Qwen setup](docs/QWEN38_FLASH_NEXT.md) for details.
-
-Speculative decoding is opt-in. GLM and Qwen use `--mtp`; V4 Flash DSpark needs a matching
-support GGUF. It can improve generation, but not every workload benefits.
-Read [speculative decoding](docs/SPECULATIVE_DECODING.md) for setup and the
-difference between default opportunistic sampling and `--mtp-exact-sampling`.
+This model has no speculative decoding: `--mtp`, `--dspark` and the external
+support GGUF do not exist here.
 
 ### Output and power
 
@@ -176,13 +149,13 @@ Changing the level in a conversation rebuilds its cached prefix.
 The normal sampling defaults are temperature 1, top-p 1, and min-p 0.05;
 `--temp 0` selects greedy output.
 
-For DeepSeek V4, `--power N` trades throughput for lower sustained GPU load.
-The default is 100. V4.1 and GLM currently require `--power 100`.
+`--power N` trades throughput for lower sustained GPU load, but this model
+requires `--power 100`.
 
-DeepSeek V4 Flash and GLM 5.3 Flash also support directional steering. Load a
-vector with `--dir-steering-file FILE`; `/steer F` adjusts its scale for
-subsequent tokens in a local CLI or agent session, without rebuilding the
-existing KV cache. See [steering documentation](dir-steering/README.md).
+Directional steering is present in the build and documented under
+[dir-steering/](dir-steering/README.md), but DeepSeek V4.1 Flash does not
+support it: passing `--dir-steering-file` makes the engine refuse to start,
+exactly as it does upstream.
 
 `--prefix-file FILE` preloads complete `USER:` / `ASSISTANT:` pairs before
 the live conversation. A turn marker must start a line, roles must alternate,
@@ -190,13 +163,13 @@ and the last turn must be `ASSISTANT:`.
 
 ## Capability Evaluation
 
-`ds4-eval` runs embedded capability regression tests against a real GGUF.
+`sf-ds4-1flash-eval` runs embedded capability regression tests against a real GGUF.
 These are DwarfStar integration checks, not official leaderboard scores.
 
 ```sh
-./ds4-eval -m ds4flash.gguf --trace /tmp/ds4-eval.txt
-./ds4-eval -m ds4flash.gguf --suite hard-smoke
-./ds4-eval -m ds4flash.gguf --suite hard --retry-incomplete
+./sf-ds4-1flash-eval -m deepseek-v4.1-flash.gguf --trace /tmp/ds4-eval.txt
+./sf-ds4-1flash-eval -m deepseek-v4.1-flash.gguf --suite hard-smoke
+./sf-ds4-1flash-eval -m deepseek-v4.1-flash.gguf --suite hard --retry-incomplete
 ```
 
 The default suite is `core`; `--suite all` runs core and hard cases.
@@ -207,22 +180,18 @@ For inference correctness and release checks, read [testing](docs/TESTING.md).
 
 ## Speed
 
-This recorded DeepSeek V4 Flash Q2 sweep uses an M5 Max with 128 GB RAM,
-2048-token continued-prefill intervals, and 128 greedy generation tokens per
-frontier. It is a baseline, not a fresh benchmark of every commit.
-
-![M5 Max Flash Q2 throughput](speed-bench/m5_max_ts.svg)
+No DeepSeek V4.1 Flash baseline has been recorded for this fork yet. The
+curves under `speed-bench/` were measured on other models and are not relabelled
+here; regenerate them with `sf-ds4-1flash-bench` before quoting a number.
 
 See [performance and benchmarking](docs/PERFORMANCE.md) for the full numbers,
 comparison conditions, and benchmark commands.
 
 ## Detailed Guides
 
-- [Models and vision](docs/MODELS.md): Flash, PRO, GLM, Qwen, and matching encoders.
-- [Qwen3.8 Flash Next](docs/QWEN38_FLASH_NEXT.md): model setup, MTP, vision, and validation.
+- [The model and vision](docs/MODELS.md): downloads, memory, and the encoder.
 - [SSD streaming](docs/SSD_STREAMING.md): run larger than RAM and size the cache.
 - [Inference across machines](docs/DISTRIBUTED.md): two-Mac TP/RDMA and layer pipelines.
-- [Speculative decoding](docs/SPECULATIVE_DECODING.md): DSpark, GLM and Qwen MTP, and sampling.
 - [Serving](docs/SERVER.md): APIs, images, batching, and disk KV caches.
 - [Coding agent clients](docs/CLIENTS.md): Pi, OpenCode, Codex CLI, and Claude Code.
 - [Performance](docs/PERFORMANCE.md): reproducible measurements and recorded baselines.

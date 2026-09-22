@@ -9,10 +9,10 @@ run is not a speed result.
 
 ## Context sweeps
 
-`ds4-bench` measures prefill and generation at successive context frontiers:
+`sf-ds4-1flash-bench` measures prefill and generation at successive context frontiers:
 
 ```sh
-./ds4-bench -m ds4flash.gguf \
+./sf-ds4-1flash-bench -m deepseek-v4.1-flash.gguf \
   --prompt-file speed-bench/promessi_sposi.txt \
   --ctx-start 2048 --ctx-max 65536 --step-incr 2048 --gen-tokens 128
 ```
@@ -27,41 +27,13 @@ prefill throughput, generation throughput, and snapshot size when available.
 The prompt is the cleaned public-domain *I Promessi Sposi* text in
 [speed-bench](../speed-bench/README.md).
 
-Prefill defaults are configuration-specific: ordinary DeepSeek uses 4096-token
-chunks and long PRO prompts may use 8192. GLM chooses its
-own chunks and rejects `--prefill-chunk`. The strict DeepSeek API-vector test
-pins 2048; do not generalize that setting to every benchmark.
+## Recorded baselines
 
-## Recorded Flash Q2 baseline
-
-These existing sweeps use 2048-token intervals and 128 generation tokens per
-frontier. They are recorded baselines, not measurements of every subsequent
-commit. Full data: [M5 Max](../speed-bench/m5_max.csv).
-
-| Machine | Context | Prefill | Generation |
-| --- | ---: | ---: | ---: |
-| M5 Max, 128 GB | 2048 | 790.18 t/s | 39.35 t/s |
-| M5 Max, 128 GB | 16384 | 572.53 t/s | 36.14 t/s |
-| M5 Max, 128 GB | 32768 | 557.04 t/s | 34.36 t/s |
-| M5 Max, 128 GB | 65536 | 398.50 t/s | 27.64 t/s |
-
-![M5 Max Flash Q2 throughput](../speed-bench/m5_max_ts.svg)
-
-Historical PRO Q2 measurements on the M3 Ultra are retained in this chart:
-
-![PRO Q2 on M3 Ultra](../speed-bench/pro_model_m3_ultra_ts.svg)
+sf-ablate(ds4): none yet. The sweeps that used to fill this section were
+measured on DeepSeek V4 Flash and V4 PRO, which this fork does not run, and
+were deleted rather than relabelled: a throughput number carried over from
+another model is worse than an empty section. Record a DeepSeek V4.1 Flash
+sweep with the command above and add the CSV under `speed-bench/`.
 
 ## What to compare next
 
-- For SSD streaming, record the effective cache and distinguish cold startup
-  from a warm cache.
-- For multiple sessions, report both individual latency and aggregate
-  throughput. Ordered fallback is not native batching.
-- For DSpark/MTP, compare plain decode too. A faster drafter path can still be
-  slower than ordinary decoding on an unpredictable prompt.
-- For TP, keep quantization and prompt equal; comparing resident Q4 on two
-  machines with streamed Q4 on one measures capacity benefits as well as parallelism.
-
-Recent focused TP and DSpark comparisons, including their limitations, live in
-[QA_BEFORE_RELEASES.md](../QA_BEFORE_RELEASES.md). Use its speed-regression
-procedure rather than accumulating one-off timings in the main README.

@@ -37,21 +37,7 @@ Useful narrower checks:
 
 What they cover:
 
-- `--server`: request parsing, chat rendering, streaming, tool-call parsing,
-  thinking controls, KV disk-cache bookkeeping, and other server-side logic.
-  This is the best quick check for API and prompt-rendering changes.
-- `--logprob-vectors`: compares local token bytes and top-logprob slices against
-  official DeepSeek V4 Flash continuation vectors. This catches tokenizer,
-  template, attention, and logits regressions.
-- `--long-context`: runs a long-context story fact-recall regression from
-  `tests/long_context_story_prompt.txt`. The model must retrieve spelled-out
-  person-number assignments from a long prose prompt and return `Name=number`
-  lines that the test parses.
-- `--tool-call-quality`: exercises actual model behavior for DSML tool-call
-  emission in both fast and exact paths.
-- `--metal-kernels`: isolated Metal kernel numeric checks.
-
-The runner defaults to `ds4flash.gguf`. Override paths when needed:
+The runner defaults to `deepseek-v4.1-flash.gguf`. Override paths when needed:
 
 ```sh
 DS4_TEST_MODEL=/path/to/model.gguf ./ds4_test --logprob-vectors
@@ -70,10 +56,6 @@ target. Remember that executing the CPU path on Metal can crash the system
 because of a kernel bug in macOS.
 
 ## Quality Checks For Quantization Changes
-
-For GGUF or quantization work, use the official-continuation scorer in
-`gguf-tools/quality-testing`. The test compares how much probability a local
-GGUF assigns to official DeepSeek V4 Flash continuations, token by token.
 
 Build the scorer:
 
@@ -99,7 +81,7 @@ continuations.
 
 ## Speed Regression Tests
 
-Use `ds4-bench` for throughput regressions. It reports instantaneous prefill and
+Use `sf-ds4-1flash-bench` for throughput regressions. It reports instantaneous prefill and
 generation speed at context frontiers, not one whole-run average. Prefill is
 incremental: each row measures only the newly processed suffix since the
 previous frontier.
@@ -107,8 +89,8 @@ previous frontier.
 Default linear sweep:
 
 ```sh
-./ds4-bench \
-  -m ds4flash.gguf \
+./sf-ds4-1flash-bench \
+  -m deepseek-v4.1-flash.gguf \
   --prompt-file speed-bench/promessi_sposi.txt \
   --ctx-start 2048 \
   --ctx-max 65536 \
@@ -133,5 +115,5 @@ python3 speed-bench/plot_speed.py /tmp/ds4-speed.csv --title "Machine t/s"
 For debugging a failing generation, keep the trace:
 
 ```sh
-./ds4-server --trace /tmp/ds4-trace.txt ...
+./sf-ds4-1flash-server --trace /tmp/ds4-trace.txt ...
 ```

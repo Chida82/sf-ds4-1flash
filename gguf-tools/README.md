@@ -5,105 +5,6 @@ V4 Flash GGUF files for `ds4`.
 
 The important pieces are:
 
-- `deepseek4-quantize.c`: C HF-safetensors to GGUF quantizer.
-- `quants.[ch]`: the deliberately small local quantization implementation used
-  by the quantizer.  It implements the DS4 output formats we actually ship:
-  `q8_0`, `q8_K`, `q4_K`, `q2_K`, and `iq2_xxs`.
-- `imatrix/`: dataset and instructions for collecting routed-MoE activation
-  importance with `ds4`.
-- `quality-testing/`: prompts and scripts used to compare local GGUF variants
-  against official DeepSeek V4 Flash continuations.
-
-## Qwen3.8 IQ2_XXS experiment
-
-`qwen4_iq2.py` builds mixed IQ2_XXS/MXFP4 main weights with
-embedded MTP. It quantizes the 48 trunk layers' gate/up experts directly from
-the official BF16 checkpoint using the same pinned imatrix as the Q4_K pack.
-It then copies every other tensor from an existing combined Q4_K `qwen4exp`
-GGUF, including MXFP4 down projections, dense/control weights and MTP.
-This isolates the gate/up precision change for a quality comparison.
-
-The Python environment needs NumPy and `huggingface_hub`. Build the existing
-native quantizer library with `make -C gguf-tools quants-shared`, then run:
-
-```sh
-python3 gguf-tools/qwen4_iq2.py quantize \
-  --source /path/to/official-bf16-checkpoint \
-  --imatrix /path/to/imatrix_unsloth.gguf_file \
-  --library gguf-tools/libds4quants.dylib \
-  --experts-dir /path/to/iq2-experts --threads 8
-
-python3 gguf-tools/qwen4_iq2.py assemble \
-  --template /path/to/combined-q4k-mtp-pleext.gguf \
-  --experts-dir /path/to/iq2-experts \
-  --out /path/to/Qwen3.8-Flash-Next-IQ2XXSImatrix-MXFP4Down-MTP.gguf
-```
-
-The first stage can run beside the source checkpoint on another machine;
-transfer the complete experts directory, including `experts.json`, for
-assembly. Repeating the first command verifies completed tensors before
-resuming. Assembly refuses existing outputs and verifies every written tensor
-before publishing the completed GGUF and its JSON manifest.
-
-The intermediate main model is approximately 50.3 GB. Finish it with the
-[native n-gram packer](#native-qwen-n-grams) before inference. Quantization
-changes model outputs; fitting weights on disk does not establish a 64 GB
-runtime fit or acceptable reasoning quality. Compare with the same evaluator
-settings using `ds4-eval --suite hard`.
-### Experimental padded Q2_K down projections
-
-Use `--projection down` on both stages to quantize the 48 trunk down
-projections directly from BF16, with the pinned imatrix. Their 640 logical
-inputs are zero-padded to 768 for three Q2_K blocks per row. Assemble against
-the existing IQ2_XXS/MXFP4 combined model, using a new experts directory and
-output path. All other tensors, including MTP, are copied unchanged:
-
-```sh
-uv run --with numpy --with huggingface_hub python gguf-tools/qwen4_iq2.py quantize \
-  --projection down --source /path/to/official-bf16-checkpoint \
-  --imatrix /path/to/imatrix_unsloth.gguf_file \
-  --library gguf-tools/libds4quants.dylib \
-  --experts-dir /path/to/q2-down-experts --threads 8
-uv run --with numpy --with huggingface_hub python gguf-tools/qwen4_iq2.py assemble \
-  --projection down --template /path/to/IQ2XXSImatrix-MXFP4Down-MTP.gguf \
-  --experts-dir /path/to/q2-down-experts \
-  --out /path/to/IQ2XXSImatrix-Q2KDownPad768-MTP.gguf
-```
-
-This layout requires the padded-down Qwen runtime support. The GGUF stores
-physical dimensions `[768, 2560, 512]`; the architecture's expert width remains
-640. Metal decode and prefill use the padded weight stride while reading only
-640 activation columns. The CPU reference supplies zero activation padding.
-The shared expert and MTP retain their original dimensions and formats.
-Saving 88 bytes per trunk down row reduces the main model by 5.15625 GiB;
-quality and speed must be evaluated for this new recipe.
-
-### Native Qwen n-grams
-
-Finish main-only packs with the original BF16 n-gram shards, not the old
-quantized sidecar:
-
-```sh
-python3 gguf-tools/qwen4_native_ngrams.py \
-  --model /path/to/IQ2XXSImatrix-Q2KDownPad768-MTP.gguf \
-  --source /path/to/Qwen3.8-Flash-Next \
-  --source-revision de4b8e4d43b917e7706784d8bb445c9af86a3540 \
-  --output gguf/Qwen3.8-Flash-Next-Q2.gguf
-```
-
-The source directory needs its index and the safetensors shards containing
-`ple.ple_embedding` tensors. The packer checks the hash constants, copies all
-main/MTP tensor bytes unchanged, and appends the original BF16 table at a
-page-aligned offset. It verifies every copied payload before publishing the
-file and its checksum report. Allow space for the complete new file plus
-16 GiB spare. An incomplete output is never a runnable release artifact.
-
-For the Q4 pack, use its main GGUF as `--model`. `--source` can also be a
-previously verified native n-gram GGUF from the same pinned checkpoint.
-This avoids keeping a second copy of the original safetensors. The final
-Q2 and Q4 files include 95.37 GiB of disk-only n-grams; no table precision
-is lost, and the main-model quantization is unchanged.
-
 ## Build
 
 ```sh
@@ -125,7 +26,7 @@ python3 gguf-tools/imatrix/dataset/build_ds4_imatrix_dataset.py
 Then collect activation statistics with the DS4 runtime:
 
 ```sh
-./ds4 \
+./sf-ds4-1flash \
   -m gguf/DeepSeek-V4-Flash-Q4KExperts-F16HC-F16Compressor-F16Indexer-Q8Attn-Q8Shared-Q8Out-chat-v2.gguf \
   --imatrix-dataset gguf-tools/imatrix/dataset/rendered_prompts.txt \
   --imatrix-out gguf/DeepSeek-V4-Flash-chat-v2-routed-moe-ds4.dat \
@@ -222,12 +123,6 @@ python3 gguf-tools/deepseek41_quantize.py \
   --out gguf/DeepSeek-V4.1-Flash-IQ2_XXS-Q2_K-bootstrap.gguf --dry-run
 ```
 
-Omit `--dry-run` to write the file. Add `--resume` after an interrupted conversion.
-Gate/up experts use IQ2_XXS and down experts use
-Q2_K; attention, shared experts and the output head use Q8_0. Engram rows retain
-their original FP8 values and scales, packed together at the end of the GGUF for
-disk lookups. Vision and DSpark weights are not included.
-
 The first conversion uses weight-energy importance for IQ2_XXS. After runtime
 calibration, add `--imatrix FILE` and choose a new output filename to regenerate
 from the original safetensors. Do not requantize the first GGUF.
@@ -249,54 +144,6 @@ For a calibrated file, pass the same `--imatrix FILE` used during conversion.
 Pass `--quant q4` to the audit as well when checking a Q4 file.
 The audit checks the complete layout, all non-expert tensors, sampled experts
 and native Engram rows. It does not replace [inference quality tests](quality-testing/deepseek-v4.1-flash-20260910/README.md).
-
-## Convert A DSpark Support Checkpoint
-
-The DSpark Flash checkpoint is published as Hugging Face safetensors and stores
-the draft module under `mtp.0`, `mtp.1`, and `mtp.2`.  Before writing a support
-GGUF, inspect the official index and verify that every DSpark tensor name is
-understood by the converter:
-
-```sh
-gguf-tools/deepseek4-quantize \
-  --hf ../deepseek-v4-quants/hf/DeepSeek-V4-Flash-0731 \
-  --dspark-manifest > /tmp/dspark-manifest.tsv
-```
-
-The manifest reads only `model.safetensors.index.json`; it does not require the
-large shard files to be present.  The final summary should report three DSpark
-stages and zero unknown DSpark tensors before attempting a full conversion.
-
-To build the support GGUF used by `ds4 --mtp`, run the DSpark support mode.  This
-mode writes standalone DSpark metadata plus the packed `mtp.*` tensor payloads;
-it does not require a base-model GGUF template:
-
-```sh
-gguf-tools/deepseek4-quantize \
-  --hf ../deepseek-v4-quants/hf/DeepSeek-V4-Flash-0731 \
-  --dspark-support \
-  --out DeepSeek-V4-Flash-DSpark-support-0731.gguf
-```
-
-`--dspark-support --dry-run` reads safetensors shard headers to derive exact
-GGUF shapes and types, but it does not read tensor payloads.  The DSpark metadata
-defaults match the published Flash DSpark config: block size 5, target layers
-40,41,42, Markov rank 256, and noise token 128799.  Override them with
-`--dspark-block-size`, `--dspark-target-layers`, `--dspark-markov-rank`, and
-`--dspark-noise-token-id` if converting a different checkpoint.
-
-Before a full write, regenerate one support tensor and record its checksum:
-
-```sh
-gguf-tools/deepseek4-quantize \
-  --hf ../deepseek-v4-quants/hf/DeepSeek-V4-Flash-0731 \
-  --dspark-support \
-  --compare-tensor mtp.0.main_proj.weight
-```
-
-This reads only the payloads needed for that tensor.  Add `--compare-gguf
-DeepSeek-V4-Flash-DSpark-support-0731.gguf` to byte-compare against an existing
-support GGUF.
 
 ## When No Imatrix Is Given
 
@@ -322,35 +169,3 @@ make -C gguf-tools quality-score
 gguf-tools/quality-testing/score_official MODEL.gguf gguf-tools/quality-testing/data/manifest.tsv /tmp/model.tsv 4096
 python3 gguf-tools/quality-testing/compare_scores.py /tmp/old.tsv /tmp/new.tsv
 ```
-
-## Qwen3.8 Flash Next
-
-`qwen4_exp_convert.py` wraps llama.cpp's `convert_hf_to_gguf.py` and writes
-the `qwen4exp` schema DS4 loads, including the MTP block as `blk.<n>.nextn.*`.
-It needs a llama.cpp master checkout (b96806d96 or newer, found through
-`--llama-cpp` or `$LLAMA_CPP`) and a Python with torch, safetensors and
-transformers, such as llama.cpp's own venv:
-
-```sh
-python gguf-tools/qwen4_exp_convert.py --src /path/to/Qwen3.8-Flash-Next \
-  --source-revision de4b8e4d43b917e7706784d8bb445c9af86a3540 \
-  --out Qwen3.8-Flash-Next-Q8.gguf --outtype q8_0
-python gguf-tools/qwen4_exp_convert.py --src /path/to/Qwen3.8-Flash-Next \
-  --source-revision de4b8e4d43b917e7706784d8bb445c9af86a3540 \
-  --out Qwen3.8-Flash-Next-MXFP4.gguf --outtype q8_0 --experts mxfp4
-```
-
-Options: `--outtype q8_0|f32` (dense projections), `--experts
-q8_0|mxfp4|q4_k|f32` (routed experts; `--experts-down` picks the 640-wide down
-projection type when the gate/up type needs 256-wide rows), `--hc-type f16|f32|q8_0`
-(hyper-connection mixers), `--indexer bf16|f16|q8_0|f32` (the QSA indexer
-projections, kept at the released BF16 by default), `--no-mtp` and
-`--dry-run`. Norms, conv kernels, `ssm_a`, dt biases and the routers stay F32.
-N-grams always retain the original BF16 bytes. The converter finishes through
-the native packer above; its temporary main-weight file is removed on success.
-`gen_qwen4_unicode.py` regenerates `ds4_qwen4_unicode.inc` for the `qwen35`
-pre-tokenizer from a current `regex` release.
-
-`make test-qwen4-kernels` runs the Metal kernel tests and
-`make test-qwen4-vision` checks the vision tower against the HF implementation
-(`tests/qwen4_vision_ref.py`).

@@ -518,14 +518,14 @@ static void build_prompt(ds4_engine *engine, const cli_generation_options *gen, 
     }
 }
 
+/* sf-ablate(glm): the GLM-DSA sampling defaults (temperature 1.0, top-p 0.95,
+ * min-p 0) applied only to that family, so nothing is overridden here and the
+ * engine's own defaults stand. */
 static void cli_apply_model_sampling_defaults(
         ds4_engine             *engine,
         cli_generation_options *gen) {
-    if (!engine || !gen || !ds4_engine_is_glm_dsa(engine)) return;
-
-    if (!gen->temperature_set) gen->temperature = 1.0f;
-    if (!gen->top_p_set) gen->top_p = 0.95f;
-    if (!gen->min_p_set) gen->min_p = 0.0f;
+    (void)engine;
+    (void)gen;
 }
 
 static int run_sampled_generation(ds4_engine *engine, const cli_config *cfg, const ds4_tokens *prompt) {
@@ -607,22 +607,7 @@ static int run_sampled_generation(ds4_engine *engine, const cli_config *cfg, con
 
         int toks[17];
         int ntok = 0;
-        if (ds4_engine_mtp_draft_tokens(engine) > 1 &&
-            getenv("DS4_MTP_SPEC_DISABLE") == NULL) {
-            cli_dist_busy_set(cfg, true);
-            ntok = ds4_session_eval_speculative(
-                session, token, max_tokens - generated,
-                ds4_token_eos(engine), cfg->gen.temperature, 0,
-                cfg->gen.top_p, cfg->gen.min_p, &rng,
-                toks, (int)(sizeof(toks) / sizeof(toks[0])),
-                err, sizeof(err));
-            cli_dist_busy_set(cfg, false);
-            if (ntok < 0) {
-                fprintf(stderr, "ds4: decode failed: %s\n", err);
-                ds4_session_free(session);
-                return 1;
-            }
-        } else {
+        {
             size_t piece_len = 0;
             char *piece = ds4_token_text(engine, token, &piece_len);
             token_printer_write_text(&printer, piece, piece_len);
@@ -643,7 +628,6 @@ static int run_sampled_generation(ds4_engine *engine, const cli_config *cfg, con
             }
             continue;
         }
-
         bool stop = false;
         for (int j = 0; j < ntok; j++) {
             if (ds4_token_is_stop_for_think_mode(engine, toks[j], think_mode)) {
@@ -1229,11 +1213,7 @@ static int run_generation(ds4_engine *engine, const cli_config *cfg) {
                     ds4_backend_name(cfg->engine.backend));
         }
     } else {
-        if (cfg->engine.distributed.role == DS4_DISTRIBUTED_COORDINATOR ||
-            cfg->engine.tp.role == DS4_TP_LEADER ||
-            getenv("DS4_CLI_FORCE_SESSION") != NULL ||
-            cfg->gen.temperature > 0.0f ||
-            ds4_engine_mtp_draft_tokens(engine) > 1) {
+        if (cfg->engine.distributed.role == DS4_DISTRIBUTED_COORDINATOR || cfg->engine.tp.role == DS4_TP_LEADER || getenv("DS4_CLI_FORCE_SESSION") != NULL || cfg->gen.temperature > 0.0f) {
             /* TP leaders always drive the session path: the sync/eval
              * mirroring that keeps the worker in lockstep lives there.
              * The env override exists so TP-vs-single-node validation
@@ -1401,7 +1381,7 @@ static bool repl_chat_apply_think_prefix(ds4_engine *engine,
                                          ds4_think_mode mode) {
     ds4_tokens prefix = {0};
     repl_chat_build_think_prefix(engine, mode, &prefix);
-    if (ds4_engine_is_deepseek41(engine) && chat->initial_system_text && !prefix.len)
+    if (chat->initial_system_text && !prefix.len)
         ds4_chat_append_message(engine, &prefix, "system", "");
 
     bool same = chat->think_prefix_tokens == prefix.len;
@@ -1623,21 +1603,7 @@ static int run_chat_turn(ds4_engine *engine, cli_config *cfg, repl_chat *chat,
 
         int toks[17];
         int ntok = 0;
-        if (ds4_engine_mtp_draft_tokens(engine) > 1 &&
-            getenv("DS4_MTP_SPEC_DISABLE") == NULL) {
-            cli_dist_busy_set(cfg, true);
-            ntok = ds4_session_eval_speculative(
-                chat->session, token, max_tokens - generated,
-                ds4_token_eos(engine), cfg->gen.temperature, 0,
-                cfg->gen.top_p, cfg->gen.min_p, &rng,
-                toks, (int)(sizeof(toks) / sizeof(toks[0])),
-                err, sizeof(err));
-            cli_dist_busy_set(cfg, false);
-            if (ntok < 0) {
-                fprintf(stderr, "ds4: decode failed: %s\n", err);
-                return 1;
-            }
-        } else {
+        {
             size_t piece_len = 0;
             char *piece = ds4_token_text(engine, token, &piece_len);
             ds4_tokens_push(&chat->transcript, token);
@@ -1657,7 +1623,6 @@ static int run_chat_turn(ds4_engine *engine, cli_config *cfg, repl_chat *chat,
             if (generated >= max_tokens) break;
             continue;
         }
-
         bool stop = false;
         for (int j = 0; j < ntok; j++) {
             if (ds4_token_is_stop_for_think_mode(engine, toks[j], think_mode)) {
@@ -1752,8 +1717,7 @@ static int run_repl(ds4_engine *engine, cli_config *cfg) {
                    (cmd[6] == '\0' || isspace((unsigned char)cmd[6]))) {
             const char *arg = trim_inplace(cmd + 6);
             ds4_think_mode mode = DS4_THINK_HIGH;
-            if (arg[0] && (!ds4_engine_is_deepseek41(engine) ||
-                           !ds4_think_mode_parse_level(arg, &mode))) {
+            if (!ds4_think_mode_parse_level(arg, &mode)) {
                 fprintf(stderr, "ds4: /think N requires V4.1 and a level from 0 to 100\n");
             } else if (repl_chat_apply_think_prefix(engine, &chat, mode)) {
                 cfg->gen.think_mode = mode;
@@ -1925,8 +1889,6 @@ static cli_config parse_options(int argc, char **argv) {
         .engine = {
             .model_path = SF_DEFAULT_MODEL, /* sf: child-specific default model. */
             .backend = default_backend(),
-            .mtp_draft_tokens = 1,
-            .mtp_margin = 3.0f,
         },
         .gen = {
             .prompt = NULL,
@@ -2018,29 +1980,6 @@ static cli_config parse_options(int argc, char **argv) {
             c.engine.model_path = need_arg(&i, argc, argv, arg);
         } else if (!strcmp(arg, "--vision")) {
             c.engine.vision_path = need_arg(&i, argc, argv, arg);
-        } else if (!strcmp(arg, "--mtp")) {
-            c.engine.glm_mtp = true;
-        } else if (!strcmp(arg, "--mtp-model")) {
-            c.engine.mtp_path = need_arg(&i, argc, argv, arg);
-        } else if (!strcmp(arg, "--mtp-draft")) {
-            c.engine.mtp_draft_tokens = parse_int(need_arg(&i, argc, argv, arg), arg);
-        } else if (!strcmp(arg, "--mtp-margin")) {
-            c.engine.mtp_margin = parse_float_range(need_arg(&i, argc, argv, arg), arg, 0.0f, 1000.0f);
-        } else if (!strcmp(arg, "--mtp-timing")) {
-            c.engine.glm_mtp = true;
-            c.engine.glm_mtp_timing = true;
-        } else if (!strcmp(arg, "--dspark")) {
-            c.engine.dspark = true;
-        } else if (!strcmp(arg, "--dspark-confidence")) {
-            c.engine.dspark = true;
-            c.engine.dspark_confidence_threshold =
-                parse_float_range(need_arg(&i, argc, argv, arg), arg, 0.0f, 1.0f);
-            c.engine.dspark_confidence_threshold_set = true;
-        } else if (!strcmp(arg, "--dspark-strict")) {
-            c.engine.dspark = true;
-            c.engine.dspark_strict = true;
-        } else if (!strcmp(arg, "--mtp-exact-sampling")) {
-            c.engine.dspark_exact_sampling = true;
         } else if (!strcmp(arg, "-n") || !strcmp(arg, "--tokens")) {
             c.gen.n_predict = parse_int(need_arg(&i, argc, argv, arg), arg);
         } else if (!strcmp(arg, "-c") || !strcmp(arg, "--ctx")) {
@@ -2282,14 +2221,6 @@ int main(int argc, char **argv) {
         ds4_dist_options_free(cfg.dist);
         free(cfg.prompt_owned);
         return 1;
-    }
-    if (ds4_think_mode_level(cfg.gen.think_mode) >= 0 && !ds4_engine_is_deepseek41(engine)) {
-        fprintf(stderr, "ds4: --think-level requires a DeepSeek V4.1 model\n");
-        ds4_engine_close(engine);
-        ds4_dist_options_free(cfg.dist);
-        ds4_prompt_prefix_free(&cfg.gen.prefix);
-        free(cfg.prompt_owned);
-        return 2;
     }
     cli_apply_model_sampling_defaults(engine, &cfg.gen);
     if (cfg.engine.tp.role == DS4_TP_WORKER) {

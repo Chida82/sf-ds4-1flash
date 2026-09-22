@@ -1,8 +1,0 @@
-# Mutex vs. Atomic Counter
-
-## Core Conceptual Difference
-
-| Aspect | Mutex | Atomic Counter |
-|--------|-------|----------------|
-| **Purpose** | Mutual exclusion (protects a *critical section*) | Lock-free synchronization for a *single value* |
-| **Mechanism** | Blocks

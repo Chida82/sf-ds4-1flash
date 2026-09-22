@@ -12,12 +12,6 @@ xcode-select --install
 
 From the repository root:
 
-```sh
-make
-./download_model.sh ds4f-q2
-./ds4
-```
-
 The same build supports M3 and M5 Macs. Hardware-specific fast paths are
 selected automatically; no environment variable is needed to enable them.
 Leave other GPU and memory-heavy applications idle when comparing performance.
@@ -28,26 +22,12 @@ Leave other GPU and memory-heavy applications idle when comparing performance.
 | --- | --- |
 | 64 GB | Flash Q2 with `--ssd-streaming` |
 | 96 GB | Flash Q2; leave room for the context and other applications |
-| 128 GB | Flash Q2, or GLM 5.3 Flash Q2 with modest initial context |
-| 256 GB | Flash Q4/MXFP4 or GLM 5.3 Flash Q4 |
 | 512 GB | Larger models, including PRO Q2 |
-
-Here, Flash means DeepSeek V4 Flash. V4.1 Flash has different memory
-requirements; see its [model guide](MODELS.md#deepseek-v41-flash).
-
-These are starting points, not guarantees that every context or session count
-will fit. GLM 5.3 Flash Q2 is about 90 GiB before runtime allocations.
-Stop other memory-heavy workloads before loading it resident.
-
-```sh
-./download_model.sh glm53-q2
-./ds4 -m gguf/GLM-5.3-Flash-Q2.gguf --ctx 32768
-```
 
 For a model larger than RAM, start with automatic cache sizing:
 
 ```sh
-./ds4 --ssd-streaming
+./sf-ds4-1flash --ssd-streaming
 ```
 
 See [SSD streaming](SSD_STREAMING.md) before increasing the expert cache.
@@ -62,10 +42,3 @@ For more than two machines, use [pipeline parallelism](DISTRIBUTED.md#pipeline-p
 
 ## Next steps
 
-- [Vision and GLM models](MODELS.md)
-- [DSpark and GLM MTP](SPECULATIVE_DECODING.md)
-- [Batched serving](SERVER.md#multiple-sessions)
-- [Benchmarking](PERFORMANCE.md)
-
-For DeepSeek V4 Flash and PRO, `--power 70` trades throughput for lower
-sustained GPU load. V4.1 and GLM currently require `--power 100`.
