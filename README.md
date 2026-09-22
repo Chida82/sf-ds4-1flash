@@ -7,7 +7,7 @@ language models on consumer hardware (that is, hardware that people
 can actually own). To reach this goal, we are building
 a small native inference engine optimized first for
 **DeepSeek V4 Flash** (including the experimental vision model),
-**DeepSeek V4.1 Flash** (Metal, and text inference on CUDA),
+**DeepSeek V4.1 Flash** (Metal),
 and additionally **GLM 5.2 and 5.3**, **GLM 5.3 Flash** and
 **DeepSeek V4 PRO**, and **Qwen3.8 Flash Next** (Metal and CUDA). The code is self-contained and
 deliberately narrow, not a general GGUF runner: you need to use the
@@ -15,7 +15,7 @@ GGUF files the project produces, that are part of the project
 itself.
 
 We test things in integration: model loading, prompt rendering,
-tool calls, KV state, the HTTP server, and the coding agent are built and tested together.
+tool calls, KV state, and the HTTP server are built and tested together.
 The repository also includes tools and data for GGUF, imatrix, quality, and speed.
 
 ## Supported hardware
@@ -23,8 +23,6 @@ The repository also includes tools and data for GGUF, imatrix, quality, and spee
 * **Metal**, the primary target, on Macs with 96 GB or more. Smaller machines
   can use SSD streaming. SSD streaming is also needed in order to run very
   large models such as full GLM 5.x (not Flash) on 128GB systems.
-* **NVIDIA CUDA**, the DGX Spark is our main gaol. DwarfStar also supports multi-GPU systems that are not supported by other backends, for instance it can run DeepSeek v4 Flash on Ada Lovelace cards.
-* **ROCm** on Strix Halo systems such as the Framework Desktop.
 
 This project would not exist without **llama.cpp and GGML**, make sure to read
 the acknowledgements section, a big thank you to Georgi Gerganov and all the
@@ -36,8 +34,7 @@ workstations. A model may be removed when a better replacement arrives.
 
 # So, what can I do with this software?
 
-* You can run a very capable models in your consumer hardware, a MacBook, a DGX Spark, or a Strix Halo for example. Even if you have not enough RAM, with SSD streaming, you can run it at a decent speed.
-* You can use multiple CUDA cards as a multi-user LLM server. Ada Lovelace, including L40S, is supported: newer models can run here even when their other inference implementations require newer GPUs. Our eight-L40S Flash setup has reached about 126 t/s aggregate generation with 16 sessions.
+* You can run a very capable models in your consumer hardware, a MacBook for example. Even if you have not enough RAM, with SSD streaming, you can run it at a decent speed.
 * Using two 128 GB Macs connected with RDMA, you can run 4-bit DeepSeek Flash or GLM 5.3 Flash with tensor parallelism. Larger GLM 5.2 quants need larger machines, such as Mac Studios.
 * You can also use pipeline paralellism to glue together multiple systems to sum their RAM and run larger models.
 
@@ -93,9 +90,6 @@ and hardware-specific setups:
 | Platform guide | Build |
 | --- | --- |
 | [Metal on Apple Silicon](docs/METAL.md) | `make` |
-| [DGX Spark](docs/DGX_SPARK.md) | `make cuda-spark` |
-| [Strix Halo / Framework Desktop](docs/STRIX_HALO.md) | `make strix-halo` |
-| [One or more CUDA cards, including Ada/L40S](docs/CUDA_MULTI_GPU.md) | `make cuda-generic` |
 
 For a first run on a 96 or 128 GB machine, download DeepSeek V4 Flash Q2:
 
@@ -115,7 +109,6 @@ Once built and with a model downloaded:
 ```sh
 ./ds4
 ./ds4 -p "Explain Redis streams in one paragraph."
-./ds4-agent
 ./ds4-server --ctx 32768
 ```
 
@@ -130,33 +123,8 @@ The interactive CLI keeps a multi-turn conversation. Use `/help`, `/read FILE`,
 `/ctx N`, and `/quit`. Ctrl+C interrupts generation and returns to the prompt.
 Run each binary with `--help` for its full options.
 
-### Native coding agent
-
-`ds4-agent` runs inference directly, without a separate HTTP server. It keeps
-the token history and live model state together, shows prefill progress, and
-uses the model's native tool format. DeepSeek and GLM have their own templates.
-
-Use `/hints on` for occasional, brief explanations of the programming choices
-behind the work, and `/hints off` to stop them. Changes take effect at the next
-conversation boundary without rebuilding the cached context. New and resumed
-sessions start with hints off.
-
-Sessions are stored in `~/.ds4/kvcache`:
-
-| Command | Action |
-| --- | --- |
-| `/save` | Save the current session |
-| `/list` | List saved sessions |
-| `/switch <sha>` | Resume a session |
-| `/del <sha>` | Delete a saved session |
-| `/strip <sha>` | Keep text and title, removing the large KV payload |
-
-Compatible local KV snapshots avoid rebuilding the prompt. Stripped sessions
-and network TP restores require prefill. Sessions containing images cannot yet
-be saved. Saved conversations and traces may contain private information.
-
-For Pi, OpenCode, Codex CLI, or Claude Code, use `ds4-server` instead and follow
-the [client setup guide](docs/CLIENTS.md).
+For Pi, OpenCode, Codex CLI, or Claude Code, use `sf-ds4-1flash-server` and
+follow the [client setup guide](docs/CLIENTS.md).
 
 ### Models, images, and speculation
 
@@ -165,15 +133,15 @@ requirements. DeepSeek Vision Experimental uses a different checkpoint from
 Flash 0731; GLM 5.3 Flash and Qwen3.8 Flash Next add vision to the same text
 model through a separate encoder.
 
-DeepSeek V4.1 Flash text and vision run on Metal; text also runs on a DGX Spark.
-Q2 runs with SSD streaming on one 128 GB Mac or Spark, or resident across two
-Macs or two Sparks using RDMA. Q4 needs SSD streaming or a 512 GB Mac.
+DeepSeek V4.1 Flash text and vision run on Metal.
+Q2 runs with SSD streaming on one 128 GB Mac, or resident across two
+Macs using RDMA. Q4 needs SSD streaming or a 512 GB Mac.
 Engram tables remain on disk in every mode, so use a fast
 local SSD. See the [model guide](docs/MODELS.md#deepseek-v41-flash) for downloads
 and setup.
 
 With the matching encoder passed as `--vision FILE`, use `/read image.png`
-in the CLI or `view_image` in the native agent.
+in the CLI.
 
 Qwen3.8's smaller Q2 release has **41.73 GiB** of main/MTP weights,
 with imatrix IQ2_XXS gate/up experts and padded Q2_K down projections.
@@ -201,9 +169,9 @@ difference between default opportunistic sampling and `--mtp-exact-sampling`.
 
 Thinking is enabled by default. Use `--nothink` or `/nothink` for direct
 answers, and `--think` or `/think` to enable it again.
-For V4.1, `ds4` and `ds4-agent` also accept
-`--think-level 25` or `/think 25`: 1 to 100 sets the reasoning effort, and
-0 disables thinking. `--think` selects 75, `--think-max` selects 100.
+For V4.1, `sf-ds4-1flash` also accepts `--think-level 25` or `/think 25`:
+1 to 100 sets the reasoning effort, and 0 disables thinking. `--think`
+selects 75, `--think-max` selects 100.
 Changing the level in a conversation rebuilds its cached prefix.
 The normal sampling defaults are temperature 1, top-p 1, and min-p 0.05;
 `--temp 0` selects greedy output.
@@ -246,7 +214,7 @@ frontier. It is a baseline, not a fresh benchmark of every commit.
 ![M5 Max Flash Q2 throughput](speed-bench/m5_max_ts.svg)
 
 See [performance and benchmarking](docs/PERFORMANCE.md) for the full numbers,
-DGX Spark results, comparison conditions, and benchmark commands.
+comparison conditions, and benchmark commands.
 
 ## Detailed Guides
 

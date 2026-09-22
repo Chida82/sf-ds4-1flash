@@ -62,12 +62,12 @@ def check(reference, tokenizer_path, model, executable):
                                      f"actual={actual}\nexpected={expected}")
             if level in ["high", "max", 0, 1, 25, 100]:
                 option = ["--think" if level == "high" else "--think-max"] if isinstance(level, str) else ["--think-level", str(level)]
-                dumped = subprocess.run(["./ds4", "-m", model, "--dump-tokens",
+                dumped = subprocess.run(["./sf-ds4-1flash", "-m", model, "--dump-tokens",
                                          "--ctx", "256", "-sys", system, "-p", prompt] + option,
                                         check=True, capture_output=True, text=True)
                 assert json.loads(dumped.stdout.splitlines()[0]) == expected
             cases += 1
-    for binary in ["./ds4", "./ds4-agent"]:
+    for binary in ["./sf-ds4-1flash"]:
         for bad in ["-1", "101", "25.0", "foo", "1 2", "999999999999"]:
             result = subprocess.run([binary, "-m", "/nonexistent", "--think-level", bad],
                                     capture_output=True, text=True)

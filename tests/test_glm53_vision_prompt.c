@@ -64,10 +64,6 @@ int main(int argc, char **argv) {
     options.backend = DS4_BACKEND_CUDA;
 #endif
     options.context_size = 4096;
-#ifdef DS4_ROCM_BUILD
-    options.ssd_streaming = true;
-    options.ssd_streaming_cache_bytes = UINT64_C(32) << 30;
-#endif
 
     ds4_dist_options dist = {0};
     int generate = 48;

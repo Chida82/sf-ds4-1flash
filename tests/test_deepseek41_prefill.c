@@ -37,9 +37,6 @@ static int check_dispatch(void) {
                 uint32_t expected = cold[i];
 #ifdef __APPLE__
                 if (warm && cache == half && remaining[i] < 1024) expected = 1;
-#elif !defined(DS4_ROCM_BUILD)
-                if (remaining[i] > 2048 && remaining[i] < 8192 && remaining[i] % 2048 >= 256)
-                    expected = remaining[i];
 #endif
                 if (ds41_prefill_count(&g, remaining[i]) != expected)
                     fprintf(stderr, "dispatch cache=%u configured=%u warm=%u remaining=%u expected=%u actual=%u\n",
@@ -56,17 +53,6 @@ static int check_dispatch(void) {
         }
     }
     g.pos = 0;
-#if !defined(__APPLE__) && !defined(DS4_ROCM_BUILD)
-    CHECK(ds41_prefill_count(&g, 2303) == 2048);
-    CHECK(ds41_prefill_count(&g, 2304) == 2304);
-    CHECK(ds41_prefill_count(&g, 3241) == 3241);
-    CHECK(setenv("DS4_CUDA_DISABLE_SSD_MEDIUM_SWEEP", "1", 1) == 0);
-    CHECK(ds41_prefill_count(&g, 3241) == 2048);
-    CHECK(unsetenv("DS4_CUDA_DISABLE_SSD_MEDIUM_SWEEP") == 0);
-    g.prefill_cap = 1024;
-    CHECK(ds41_prefill_count(&g, 3241) == 1024);
-    g.prefill_cap = 8192;
-#endif
     g.tp_world = 2;
     g.streaming = false;
     for (size_t i = 0; i < sizeof(remaining) / sizeof(*remaining); i++) {

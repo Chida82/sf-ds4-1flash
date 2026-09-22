@@ -59,13 +59,6 @@ DS4_TEST_VECTOR_FILE=/path/to/official.vec ./ds4_test --logprob-vectors
 DS4_TEST_LONG_PROMPT=/path/to/prompt.txt ./ds4_test --long-context
 ```
 
-For CUDA-specific changes, test on a CUDA machine:
-
-```sh
-make
-make cuda-regression
-```
-
 For CPU portability, at least verify that the CPU target still builds:
 
 ```sh

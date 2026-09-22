@@ -613,9 +613,6 @@ int ds4_tp_validate_engine_options(
         return 1;
     }
     bool supported_backend = opt->backend == DS4_BACKEND_METAL;
-#if !defined(__APPLE__) && !defined(DS4_ROCM_BUILD) && !defined(DS4_NO_GPU)
-    supported_backend |= opt->backend == DS4_BACKEND_CUDA;
-#endif
     if (!supported_backend) {
         tp_set_err(err, errlen, "network tensor parallelism requires Metal or supported CUDA models");
         return 0;

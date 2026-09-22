@@ -75,8 +75,6 @@ The startup line reports both figures.
 | Metal, GLM 5.2 | Ordered fallback |
 | Metal, GLM 5.3 | Native batching through 2051 visible tokens; ordered fallback afterward |
 | Metal, Qwen3.8 Flash Next | Native batching of the shared work; recurrent state, caches and PLE history stay per session |
-| CUDA, supported multi-GPU Flash TP layout | Native grouped decode and mixed prefill/decode |
-| Single-GPU CUDA, including Spark | Ordered fallback |
 
 Fallback executes the rows separately. It provides concurrency and scheduling
 fairness, not the aggregate speedup of native batching. Native grouping may
@@ -89,7 +87,6 @@ Session-batched serving uses ordinary target decoding, except Qwen3.8 on
 Metal, where `--mtp` also batches speculative decoding. Its
 `--mtp-exact-sampling` mode uses ordinary batches for nonzero-temperature
 requests. Other models do not use MTP/DSpark while session batching is active.
-For the eight-L40S example, see [CUDA GPUs](CUDA_MULTI_GPU.md#serve-multiple-users).
 
 ## Images
 

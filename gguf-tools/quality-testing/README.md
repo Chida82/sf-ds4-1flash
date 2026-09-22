@@ -169,8 +169,7 @@ native-weight inference.
 make -C gguf-tools quality-score
 ```
 
-The scorer links against the DS4 runtime, using Metal on macOS and CUDA on
-Linux. On a DGX Spark, pass `CUDA_ARCH=sm_121` to the build command.
+The scorer links against the DS4 runtime, using Metal on macOS.
 
 Build the optional llama.cpp control scorer with:
 
@@ -358,7 +357,7 @@ Compare complete vocabulary dumps from `ds4-bench --dump-frontier-logits-dir`:
 ```sh
 python3 gguf-tools/quality-testing/compare_frontier_logits.py \
   /tmp/old-logits /tmp/new-logits --frontiers 2048 4096 --ctx 8192 \
-  --model /models/model.gguf --backend rocm --quality false --quant-bits 2 --vocab 129280 \
+  --model /models/model.gguf --quality false --quant-bits 2 --vocab 129280 \
   --output /tmp/frontiers.json
 ```
 

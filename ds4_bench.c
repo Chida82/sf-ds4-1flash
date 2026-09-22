@@ -1,6 +1,5 @@
 #include "ds4.h"
 #include "ds4_distributed.h"
-#include "ds4_gpu_args.h"
 #include "ds4_help.h"
 #include "ds4_tp.h"
 
@@ -42,8 +41,6 @@ typedef struct {
     const char *system;
     const char *csv_path;
     const char *expert_profile_path;
-    const char *gpu_vram_arg;
-    const char *gpu_devices_arg;
     ds4_backend backend;
     int threads;
     int ctx_start;
@@ -148,28 +145,17 @@ static const char *need_arg(int *i, int argc, char **argv, const char *opt) {
 
 static ds4_backend parse_backend(const char *s, const char *opt) {
     if (!strcmp(s, "metal")) return DS4_BACKEND_METAL;
-#ifdef DS4_ROCM_BUILD
-    if (!strcmp(s, "rocm")) return DS4_BACKEND_CUDA;
-#else
-    if (!strcmp(s, "cuda")) return DS4_BACKEND_CUDA;
-#endif
     if (!strcmp(s, "cpu")) return DS4_BACKEND_CPU;
     fprintf(stderr, "ds4-bench: invalid value for %s: %s\n", opt, s);
-#ifdef DS4_ROCM_BUILD
-    fprintf(stderr, "ds4-bench: valid backends are: metal, rocm, cpu\n");
-#else
-    fprintf(stderr, "ds4-bench: valid backends are: metal, cuda, cpu\n");
-#endif
+    fprintf(stderr, "ds4-bench: valid backends are: metal, cpu\n");
     exit(2);
 }
 
 static ds4_backend default_backend(void) {
 #ifdef DS4_NO_GPU
     return DS4_BACKEND_CPU;
-#elif defined(__APPLE__)
-    return DS4_BACKEND_METAL;
 #else
-    return DS4_BACKEND_CUDA;
+    return DS4_BACKEND_METAL;
 #endif
 }
 
@@ -214,7 +200,7 @@ static char *read_file(const char *path) {
 
 static bench_config parse_options(int argc, char **argv) {
     bench_config c = {
-        .model_path = "ds4flash.gguf",
+        .model_path = SF_DEFAULT_MODEL, /* sf: child-specific default model. */
         .system = "You are a helpful assistant.",
         .backend = default_backend(),
         .ctx_start = 2048,
@@ -311,19 +297,6 @@ static bench_config parse_options(int argc, char **argv) {
             c.backend = parse_backend(need_arg(&i, argc, argv, arg), arg);
         } else if (!strcmp(arg, "--metal")) {
             c.backend = DS4_BACKEND_METAL;
-#ifdef DS4_ROCM_BUILD
-        } else if (!strcmp(arg, "--rocm")) {
-            c.backend = DS4_BACKEND_CUDA;
-#else
-        } else if (!strcmp(arg, "--cuda")) {
-            c.backend = DS4_BACKEND_CUDA;
-#endif
-        } else if (!strcmp(arg, "--gpu-vram")) {
-            c.gpu_vram_arg = need_arg(&i, argc, argv, arg);
-        } else if (!strcmp(arg, "--gpu-devices")) {
-            c.gpu_devices_arg = need_arg(&i, argc, argv, arg);
-        } else if (!strcmp(arg, "--cuda-tensor-parallel")) {
-            c.cuda_tensor_parallel = true;
         } else if (!strcmp(arg, "--cpu")) {
             c.backend = DS4_BACKEND_CPU;
         } else if (!strcmp(arg, "--quality")) {
@@ -631,19 +604,9 @@ int main(int argc, char **argv) {
     int placement_ctx_hint = cfg.ctx_max;
     if (cfg.ctx_alloc > placement_ctx_hint) placement_ctx_hint = cfg.ctx_alloc;
 
-    ds4_gpu_config gpu_cfg = {0};
-    bool skip_cuda = false;
-    const bool have_gpu_config = cfg.gpu_vram_arg || cfg.gpu_devices_arg;
-    if (have_gpu_config) {
-        char gpu_err[256];
-        if (parse_gpu_vram_arg(cfg.gpu_vram_arg, cfg.gpu_devices_arg,
-                               &gpu_cfg, &skip_cuda,
-                               gpu_err, sizeof(gpu_err)) != 0) {
-            fprintf(stderr, "ds4-bench: %s\n", gpu_err);
-            return 2;
-        }
-        cfg.backend = skip_cuda ? DS4_BACKEND_CPU : DS4_BACKEND_CUDA;
-    }
+/* sf-ablate(cuda): --gpu-vram/--gpu-devices selected CUDA devices for
+ * multi-GPU placement, and ds4_gpu_args.c parsed them.  This child has one
+ * backend and one GPU, so the engine always opens through ds4_engine_open. */
 
     ds4_engine_options opt = {
         .model_path = cfg.model_path,
@@ -682,21 +645,7 @@ int main(int argc, char **argv) {
         return 2;
     }
     ds4_engine *engine = NULL;
-    if (have_gpu_config && !skip_cuda) {
-        const bool was_auto =
-            (cfg.gpu_vram_arg && !strcmp(cfg.gpu_vram_arg, "auto")) ||
-            (!cfg.gpu_vram_arg && cfg.gpu_devices_arg);
-        char layout[256];
-        if (format_gpu_layout_line(&gpu_cfg, was_auto,
-                                   layout, sizeof(layout)) > 0) {
-            fprintf(stdout, "%s\n", layout);
-            fflush(stdout);
-        }
-        if (ds4_engine_create_with_gpu_config(
-                &engine, &opt, &gpu_cfg) != 0) return 1;
-    } else if (ds4_engine_open(&engine, &opt) != 0) {
-        return 1;
-    }
+    if (ds4_engine_open(&engine, &opt) != 0) return 1;
     ds4_tp *tp_leader = NULL;
     if (cfg.tp.role == DS4_TP_LEADER) {
         ds4_tp_identity tp_id = {

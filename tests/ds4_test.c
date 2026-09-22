@@ -522,12 +522,7 @@ static void test_session_snapshot_roundtrip(void) {
     int reference_counts[GLM_MTP_SNAPSHOT_CYCLES] = {0};
     int reference_total = 0;
     const bool test_glm_mtp = test_env_bool("DS4_TEST_GLM_MTP");
-#ifdef DS4_ROCM_BUILD
-    const float continued_logit_tolerance =
-        ds4_engine_is_glm53(engine) ? 1e-5f : 1e-6f;
-#else
     const float continued_logit_tolerance = 1e-6f;
-#endif
 
     uint32_t ctx = test_env_u32("DS4_TEST_SNAPSHOT_CTX");
     if (ctx == 0) ctx = 1024;

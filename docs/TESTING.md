@@ -4,17 +4,16 @@
 
 Read [CONTRIBUTING.md](../CONTRIBUTING.md) before proposing an inference change.
 The [release QA guide](../QA_BEFORE_RELEASES.md) defines the hardware matrix,
-checkpoint-matched quality tests, long-context agent tasks, and speed checks.
-It also records which checks were not completed. A smoke test is not full QA.
+checkpoint-matched quality tests, and speed checks. It also records which
+checks were not completed. A smoke test is not full QA.
 
 ## Focused checks
 
 Model-free checks include:
 
 ```sh
-make ds4_test ds4_agent_test test-session-state
+make ds4_test test-session-state
 ./ds4_test --server
-./ds4_agent_test
 ```
 
 On Metal, small GPU tensor tests are available without loading a full GGUF:
@@ -28,7 +27,7 @@ make tests/test_session_state_gpu tests/test_glm53_kda tests/test_mxfp4_metal
 
 `make test` also includes model-backed tests. Select the right GGUF and ensure
 that it fits before running it; do not accidentally load a large model on a
-single device during multi-GPU QA. ROCm has `make test-rocm`.
+single device during multi-GPU QA.
 
 Official-vector tests must use continuations from the same checkpoint as the
 GGUF. Flash 0731 and Vision Experimental are not interchangeable fixtures.

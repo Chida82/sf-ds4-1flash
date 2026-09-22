@@ -5,6 +5,19 @@
 #include <string.h>
 #include <unistd.h>
 
+/* sf: the child identity comes from the Makefile's SF_DEFS block.  Guard it
+ * before the first use below, so a stray `cc ds4_help.c` reports this instead
+ * of a syntax error on the first macro that stayed unexpanded. */
+#if !defined(SF_DEFAULT_MODEL) || !defined(SF_DEFAULT_PORT)
+#error "build through the Makefile"
+#endif
+
+/* sf: SF_DEFAULT_PORT is numeric and opt() takes a string, so it needs the
+ * two-level stringify.  SF_DEFAULT_MODEL is already a string literal and
+ * concatenates directly. */
+#define SF_STR_(x) #x
+#define SF_STR(x) SF_STR_(x)
+
 typedef struct {
     const char *off;
     const char *cyan;
@@ -102,29 +115,26 @@ static bool topic_is(const char *topic, const char *name) {
 
 static const char *tool_name(ds4_help_tool tool) {
     switch (tool) {
-    case DS4_HELP_DS4: return "ds4";
-    case DS4_HELP_SERVER: return "ds4-server";
-    case DS4_HELP_AGENT: return "ds4-agent";
-    case DS4_HELP_BENCH: return "ds4-bench";
-    case DS4_HELP_EVAL: return "ds4-eval";
+    case DS4_HELP_DS4: return "sf-ds4-1flash";
+    case DS4_HELP_SERVER: return "sf-ds4-1flash-server";
+    case DS4_HELP_BENCH: return "sf-ds4-1flash-bench";
+    case DS4_HELP_EVAL: return "sf-ds4-1flash-eval";
     }
-    return "ds4";
+    return "sf-ds4-1flash";
 }
 
 static const char *tool_usage(ds4_help_tool tool) {
     switch (tool) {
     case DS4_HELP_DS4:
-        return "Usage: ds4 [(-p PROMPT | --prompt-file FILE)] [options]";
+        return "Usage: sf-ds4-1flash [(-p PROMPT | --prompt-file FILE)] [options]";
     case DS4_HELP_SERVER:
-        return "Usage: ds4-server [options]";
-    case DS4_HELP_AGENT:
-        return "Usage: ds4-agent [options]";
+        return "Usage: sf-ds4-1flash-server [options]";
     case DS4_HELP_BENCH:
-        return "Usage: ds4-bench (--prompt-file FILE | --chat-prompt-file FILE) [options]";
+        return "Usage: sf-ds4-1flash-bench (--prompt-file FILE | --chat-prompt-file FILE) [options]";
     case DS4_HELP_EVAL:
-        return "Usage: ds4-eval [options]";
+        return "Usage: sf-ds4-1flash-eval [options]";
     }
-    return "Usage: ds4 [options]";
+    return "Usage: sf-ds4-1flash [options]";
 }
 
 static const char *tool_summary(ds4_help_tool tool) {
@@ -133,8 +143,6 @@ static const char *tool_summary(ds4_help_tool tool) {
         return "Chat with a local DwarfStar model, run one-shot prompts, inspect models, or coordinate distributed inference.";
     case DS4_HELP_SERVER:
         return "Serve one loaded DwarfStar model through OpenAI, Responses, Anthropic, and completion-compatible HTTP APIs.";
-    case DS4_HELP_AGENT:
-        return "Run the native terminal coding agent with live tools, session save/restore, and a responsive prompt while the model works.";
     case DS4_HELP_BENCH:
         return "Measure prefill, decode, context growth, and KV-cache size across repeatable context frontiers.";
     case DS4_HELP_EVAL:
@@ -146,22 +154,15 @@ static const char *tool_summary(ds4_help_tool tool) {
 static void print_model_runtime(FILE *fp, const help_colors *c,
                                 ds4_help_tool tool, bool full) {
     title(fp, c, "Model And Runtime");
-    opt(fp, c, "-m, --model FILE", "GGUF model path. Default: ds4flash.gguf");
-    if (tool == DS4_HELP_DS4 || tool == DS4_HELP_AGENT || tool == DS4_HELP_SERVER) {
+    opt(fp, c, "-m, --model FILE", "GGUF model path. Default: " SF_DEFAULT_MODEL);
+    if (tool == DS4_HELP_DS4 || tool == DS4_HELP_SERVER) {
         opt(fp, c, "--vision FILE", "Vision encoder GGUF for the selected model.");
     }
-#ifdef DS4_ROCM_BUILD
-    opt(fp, c, "--metal | --rocm | --cpu", "Select the backend explicitly.");
-    opt(fp, c, "--backend NAME", "Backend name: metal, rocm, or cpu.");
-#else
     opt(fp, c, "--metal | --cuda | --cpu", "Select the backend explicitly.");
     opt(fp, c, "--backend NAME", "Backend name: metal, cuda, or cpu.");
-    opt(fp, c, "--gpu-vram N[,N,...]|auto", "CUDA VRAM budgets per device, in GiB, or auto-detect free VRAM.");
-    opt(fp, c, "--gpu-devices N[,N,...]", "CUDA device indices used by multi-GPU placement.");
     if (tool != DS4_HELP_EVAL) {
         opt(fp, c, "--cuda-tensor-parallel", "Enable the paired DeepSeek tensor/expert path on an even multi-GPU CUDA placement.");
     }
-#endif
     if (tool != DS4_HELP_BENCH) {
         opt(fp, c, "-c, --ctx N", "Allocated context tokens.");
     }
@@ -181,7 +182,7 @@ static void print_model_runtime(FILE *fp, const help_colors *c,
         if (tool == DS4_HELP_EVAL || tool == DS4_HELP_BENCH) {
             opt(fp, c, "--mtp-model FILE", "External MTP or DSpark support GGUF.");
         }
-        if (tool == DS4_HELP_DS4 || tool == DS4_HELP_AGENT || tool == DS4_HELP_SERVER) {
+        if (tool == DS4_HELP_DS4 || tool == DS4_HELP_SERVER) {
             opt(fp, c, "--mtp", "Enable model-embedded MTP speculation.");
             opt(fp, c, "--mtp-model FILE", "External MTP or DSpark support GGUF.");
             opt(fp, c, "--mtp-draft N", "Maximum autoregressive MTP draft tokens. Default: 1");
@@ -214,7 +215,7 @@ static void print_sampling(FILE *fp, const help_colors *c, bool full, ds4_help_t
     para(fp, c, "GLM CLI and agent runs default to temperature 1.0, top-p 0.95, and min-p 0 unless those options are set explicitly.");
     opt(fp, c, "--think", "Use normal thinking mode (V4.1: effort 75).");
     opt(fp, c, "--think-max", "Use maximum thinking (V4.1: 100; V4: requires ctx >= 393216).");
-    if (tool == DS4_HELP_DS4 || tool == DS4_HELP_AGENT)
+    if (tool == DS4_HELP_DS4)
         opt(fp, c, "--think-level N", "V4.1 thinking effort, 1..100; 0 disables thinking.");
     opt(fp, c, "--nothink", "Disable thinking and ask for direct replies.");
     if (full) {
@@ -266,9 +267,9 @@ static void print_cli_diagnostics(FILE *fp, const help_colors *c);
 
 static void print_cli_specific(FILE *fp, const help_colors *c, bool full) {
     title(fp, c, "CLI Modes");
-    opt(fp, c, "ds4", "Start the interactive prompt.");
-    opt(fp, c, "ds4 -p TEXT", "Run one prompt and exit.");
-    opt(fp, c, "ds4 --prompt-file FILE", "Run a long prompt from a file and exit.");
+    opt(fp, c, "sf-ds4-1flash", "Start the interactive prompt.");
+    opt(fp, c, "sf-ds4-1flash -p TEXT", "Run one prompt and exit.");
+    opt(fp, c, "sf-ds4-1flash --prompt-file FILE", "Run a long prompt from a file and exit.");
     opt(fp, c, "--prefix-file FILE", "Preload complete alternating USER:/ASSISTANT: turns before the live conversation.");
     fputc('\n', fp);
     if (full) {
@@ -311,41 +312,14 @@ static void print_cli_commands(FILE *fp, const help_colors *c) {
     fputc('\n', fp);
 }
 
-static void print_agent_specific(FILE *fp, const help_colors *c) {
-    title(fp, c, "Agent Options");
-    opt(fp, c, "-p, --prompt TEXT", "Submit an initial prompt after startup.");
-    opt(fp, c, "--prompt-file FILE", "Read the initial prompt from FILE.");
-    opt(fp, c, "--prefix-file FILE", "Preload complete alternating USER:/ASSISTANT: turns before the live task.");
-    opt(fp, c, "--non-interactive", "Run without TUI. With an initial prompt: one turn; otherwise: repeated stdin prompts.");
-    opt(fp, c, "--raw-prompt", "Non-interactive initial prompt only: omit agent chat/tool text.");
-    opt(fp, c, "--edit-upto", "Enable anchored [upto] edits and automatic marker insertion.");
-    opt(fp, c, "-sys, --system TEXT", "Extra system prompt. Empty disables extra text.");
-    opt(fp, c, "--trace FILE", "Write prompt, token, and DSML debug trace.");
-    opt(fp, c, "--chdir DIR", "Change working directory before loading runtime assets.");
-    fputc('\n', fp);
-}
-
-static void print_agent_sessions(FILE *fp, const help_colors *c) {
-    title(fp, c, "Agent Runtime Commands");
-    opt(fp, c, "/save", "Save the current session in ~/.ds4/kvcache.");
-    opt(fp, c, "/compact", "Compact the current session context now.");
-    opt(fp, c, "/list", "List saved sessions, sorted by recent update time.");
-    opt(fp, c, "/switch ID", "Load a saved session and show recent history.");
-    opt(fp, c, "/del ID", "Delete a saved session.");
-    opt(fp, c, "/strip ID", "Remove KV payload; the text history can be rebuilt later.");
-    opt(fp, c, "/history [N]", "Show N recent user turns from the current session.");
-    opt(fp, c, "/hints on|off", "Enable or disable brief programming hints. New and resumed sessions start off.");
-    opt(fp, c, "/think [N]", "V4.1: set effort 0..100 (default 75) after this turn; rebuilds the prefix.");
-    opt(fp, c, "/power N", "Set GPU duty cycle percentage, 1..100.");
-    opt(fp, c, "/new", "Start a fresh session from the system prompt.");
-    opt(fp, c, "/quit, /exit", "Exit.");
-    fputc('\n', fp);
-}
+/* sf-ablate(agent): print_agent_specific and print_agent_sessions removed with
+ * the ds4-agent binary. --chdir survives in ds4_server.c and docs/SERVER.md,
+ * but the agent was the only help tool that printed it. */
 
 static void print_server_api(FILE *fp, const help_colors *c) {
     title(fp, c, "HTTP API");
     opt(fp, c, "--host HOST", "Bind address. Default: 127.0.0.1");
-    opt(fp, c, "--port N", "Bind port. Default: 8000");
+    opt(fp, c, "--port N", "Bind port. Default: " SF_STR(SF_DEFAULT_PORT));
     opt(fp, c, "--cors", "Add Access-Control-Allow-* headers for browser JS clients.");
     opt(fp, c, "--trace FILE", "Write prompts, cache decisions, output, and tool calls.");
     opt(fp, c, "--batched-session N", "Keep N resident sessions and batch decode-ready requests.");
@@ -427,16 +401,14 @@ static bool tool_has_topic(ds4_help_tool tool, const char *topic) {
     if (streq(topic, "all")) return true;
     if (streq(topic, "runtime") || streq(topic, "distributed")) return true;
     if (streq(topic, "sampling"))
-        return tool == DS4_HELP_DS4 || tool == DS4_HELP_AGENT || tool == DS4_HELP_EVAL;
+        return tool == DS4_HELP_DS4 || tool == DS4_HELP_EVAL;
     if (streq(topic, "steering"))
-        return tool == DS4_HELP_DS4 || tool == DS4_HELP_SERVER || tool == DS4_HELP_AGENT;
+        return tool == DS4_HELP_DS4 || tool == DS4_HELP_SERVER;
     switch (tool) {
     case DS4_HELP_DS4:
         return streq(topic, "diagnostics") || streq(topic, "commands");
     case DS4_HELP_SERVER:
         return streq(topic, "api") || streq(topic, "kv-cache") || streq(topic, "thinking");
-    case DS4_HELP_AGENT:
-        return streq(topic, "sessions") || streq(topic, "commands") || streq(topic, "tools");
     case DS4_HELP_BENCH:
         return streq(topic, "benchmark");
     case DS4_HELP_EVAL:
@@ -472,10 +444,6 @@ static void print_more_info(FILE *fp, const help_colors *c, ds4_help_tool tool) 
         more_line(fp, c, "HTTP API:", "api");
         more_line(fp, c, "Disk KV cache:", "kv-cache");
         more_line(fp, c, "Thinking behavior:", "thinking");
-    } else if (tool == DS4_HELP_AGENT) {
-        more_line(fp, c, "Agent sessions:", "sessions");
-        more_line(fp, c, "Agent commands:", "commands");
-        more_line(fp, c, "Agent tool system:", "tools");
     } else if (tool == DS4_HELP_BENCH) {
         more_line(fp, c, "Benchmark sweep:", "benchmark");
     } else if (tool == DS4_HELP_EVAL) {
@@ -487,43 +455,37 @@ static void print_more_info(FILE *fp, const help_colors *c, ds4_help_tool tool) 
 static void print_examples(FILE *fp, const help_colors *c, ds4_help_tool tool, const char *topic) {
     title(fp, c, "Examples");
     if (topic_is(topic, "distributed")) {
-        opt(fp, c, "worker", "./ds4 --role worker --layers 21:output --coordinator 192.168.0.181 9000 -m ds4flash.gguf");
-        opt(fp, c, "coordinator", "./ds4 --role coordinator --layers 0:20 --listen 0.0.0.0 9000 -p \"Hello\" -m ds4flash.gguf");
+        opt(fp, c, "worker", "./sf-ds4-1flash --role worker --layers 21:output --coordinator 192.168.0.181 9000 -m " SF_DEFAULT_MODEL);
+        opt(fp, c, "coordinator", "./sf-ds4-1flash --role coordinator --layers 0:20 --listen 0.0.0.0 9000 -p \"Hello\" -m " SF_DEFAULT_MODEL);
     } else if (topic_is(topic, "runtime")) {
         if (tool == DS4_HELP_SERVER) {
-            opt(fp, c, "Metal API", "./ds4-server -m ds4flash.gguf --metal --ctx 100000");
-            opt(fp, c, "quiet API", "./ds4-server --power 60 --host 127.0.0.1 --port 8000");
-        } else if (tool == DS4_HELP_AGENT) {
-            opt(fp, c, "agent", "./ds4-agent -m ds4flash.gguf --ctx 100000");
-            opt(fp, c, "quiet agent", "./ds4-agent --power 50");
+            opt(fp, c, "Metal API", "./sf-ds4-1flash-server -m " SF_DEFAULT_MODEL " --metal --ctx 100000");
+            opt(fp, c, "quiet API", "./sf-ds4-1flash-server --power 60 --host 127.0.0.1 --port 8002");
         } else if (tool == DS4_HELP_BENCH) {
-            opt(fp, c, "bench", "./ds4-bench --prompt-file long.txt --ctx-max 32768");
-            opt(fp, c, "quiet bench", "./ds4-bench --prompt-file long.txt --power 70");
+            opt(fp, c, "bench", "./sf-ds4-1flash-bench --prompt-file long.txt --ctx-max 32768");
+            opt(fp, c, "quiet bench", "./sf-ds4-1flash-bench --prompt-file long.txt --power 70");
         } else if (tool == DS4_HELP_EVAL) {
-            opt(fp, c, "eval", "./ds4-eval --questions 10 --ctx 100000");
-            opt(fp, c, "CPU debug", "./ds4-eval --cpu --questions 1 --tokens 32");
+            opt(fp, c, "eval", "./sf-ds4-1flash-eval --questions 10 --ctx 100000");
+            opt(fp, c, "CPU debug", "./sf-ds4-1flash-eval --cpu --questions 1 --tokens 32");
         } else {
-            opt(fp, c, "Metal", "./ds4 -m ds4flash.gguf --metal -c 100000");
-            opt(fp, c, "quiet thermals", "./ds4 -p \"Summarize README\" --power 50");
+            opt(fp, c, "Metal", "./sf-ds4-1flash -m " SF_DEFAULT_MODEL " --metal -c 100000");
+            opt(fp, c, "quiet thermals", "./sf-ds4-1flash -p \"Summarize README\" --power 50");
         }
     } else if (topic_is(topic, "steering")) {
-        opt(fp, c, "steer FFN", "./ds4 -p \"Write tersely\" --dir-steering-file dir.bin --dir-steering-ffn 0.8");
+        opt(fp, c, "steer FFN", "./sf-ds4-1flash -p \"Write tersely\" --dir-steering-file dir.bin --dir-steering-ffn 0.8");
     } else if (tool == DS4_HELP_SERVER || topic_is(topic, "api") || topic_is(topic, "kv-cache")) {
-        opt(fp, c, "local API", "./ds4-server --ctx 100000 --kv-disk-dir ~/.ds4/server-kv --kv-disk-space-mb 8192");
-        opt(fp, c, "curl", "curl http://127.0.0.1:8000/v1/models");
-    } else if (tool == DS4_HELP_AGENT || topic_is(topic, "sessions") || topic_is(topic, "tools")) {
-        opt(fp, c, "interactive", "./ds4-agent");
-        opt(fp, c, "one shot", "./ds4-agent --non-interactive -p \"Create /tmp/hello.c\"");
+        opt(fp, c, "local API", "./sf-ds4-1flash-server --ctx 100000 --kv-disk-dir ~/.sf/ds4-1flash/kv --kv-disk-space-mb 8192");
+        opt(fp, c, "curl", "curl http://127.0.0.1:8002/v1/models");
     } else if (tool == DS4_HELP_BENCH || topic_is(topic, "benchmark")) {
-        opt(fp, c, "csv", "./ds4-bench --prompt-file long.txt --ctx-max 32768 --csv speed.csv");
-        opt(fp, c, "prefill only", "./ds4-bench --prompt-file long.txt --gen-tokens 0");
+        opt(fp, c, "csv", "./sf-ds4-1flash-bench --prompt-file long.txt --ctx-max 32768 --csv speed.csv");
+        opt(fp, c, "prefill only", "./sf-ds4-1flash-bench --prompt-file long.txt --gen-tokens 0");
     } else if (tool == DS4_HELP_EVAL || topic_is(topic, "evaluation")) {
-        opt(fp, c, "first 10", "./ds4-eval --questions 10 --trace eval.trace");
-        opt(fp, c, "plain", "./ds4-eval --plain --nothink --tokens 512");
+        opt(fp, c, "first 10", "./sf-ds4-1flash-eval --questions 10 --trace eval.trace");
+        opt(fp, c, "plain", "./sf-ds4-1flash-eval --plain --nothink --tokens 512");
     } else {
-        opt(fp, c, "chat", "./ds4");
-        opt(fp, c, "one shot", "./ds4 -p \"Explain mmap in C\"");
-        opt(fp, c, "long prompt", "./ds4 --think-max --prompt-file prompt.txt --ctx 393216");
+        opt(fp, c, "chat", "./sf-ds4-1flash");
+        opt(fp, c, "one shot", "./sf-ds4-1flash -p \"Explain mmap in C\"");
+        opt(fp, c, "long prompt", "./sf-ds4-1flash --think-max --prompt-file prompt.txt --ctx 393216");
     }
     fputc('\n', fp);
 }
@@ -541,9 +503,6 @@ static void print_topic(FILE *fp, const help_colors *c, ds4_help_tool tool, cons
             print_server_api(fp, c);
             print_server_thinking(fp, c);
             print_kv_cache(fp, c);
-        } else if (tool == DS4_HELP_AGENT) {
-            print_agent_specific(fp, c);
-            print_agent_sessions(fp, c);
         } else if (tool == DS4_HELP_BENCH) {
             print_bench_specific(fp, c);
         } else if (tool == DS4_HELP_EVAL) {
@@ -561,15 +520,7 @@ static void print_topic(FILE *fp, const help_colors *c, ds4_help_tool tool, cons
     else if (tool == DS4_HELP_SERVER && streq(topic, "api")) print_server_api(fp, c);
     else if (tool == DS4_HELP_SERVER && streq(topic, "kv-cache")) print_kv_cache(fp, c);
     else if (tool == DS4_HELP_SERVER && streq(topic, "thinking")) print_server_thinking(fp, c);
-    else if (tool == DS4_HELP_AGENT && streq(topic, "sessions")) print_agent_sessions(fp, c);
-    else if (tool == DS4_HELP_AGENT && streq(topic, "commands")) print_agent_sessions(fp, c);
-    else if (tool == DS4_HELP_AGENT && streq(topic, "tools")) {
-        title(fp, c, "Agent Tool System");
-        para(fp, c, "The agent can read, search, write, edit, run bash, and browse through Chrome-backed web tools.");
-        para(fp, c, "DeepSeek-family models emit DSML tool calls; GLM models use native <tool_call> syntax. Both are rendered live in the terminal.");
-        para(fp, c, "Edit uses exact old/new replacement. --edit-upto enables anchored replacements between a unique head and tail.");
-        fputc('\n', fp);
-    } else if (tool == DS4_HELP_BENCH && streq(topic, "benchmark")) print_bench_specific(fp, c);
+    else if (tool == DS4_HELP_BENCH && streq(topic, "benchmark")) print_bench_specific(fp, c);
     else if (tool == DS4_HELP_EVAL && streq(topic, "evaluation")) print_eval_specific(fp, c);
 }
 
@@ -582,9 +533,6 @@ static void print_default(FILE *fp, const help_colors *c, ds4_help_tool tool) {
     } else if (tool == DS4_HELP_SERVER) {
         print_server_api(fp, c);
         print_kv_cache(fp, c);
-    } else if (tool == DS4_HELP_AGENT) {
-        print_agent_specific(fp, c);
-        print_agent_sessions(fp, c);
     } else if (tool == DS4_HELP_BENCH) {
         print_bench_specific(fp, c);
     } else if (tool == DS4_HELP_EVAL) {

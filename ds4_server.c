@@ -1,7 +1,6 @@
 #include "ds4.h"
 #include "ds4_tool_text.h"
 #include "ds4_distributed.h"
-#include "ds4_gpu_args.h"
 #include "ds4_help.h"
 #include "ds4_kvstore.h"
 #include "ds4_tp.h"
@@ -12580,9 +12579,10 @@ static bool append_rendered_suffix_to_live_session(server *s, server_slot *slot,
     return ok;
 }
 
-/* A recurrent cache cannot always be truncated in place. Match the agent's
- * boundary handling and rebuild the retained prefix when rewind invalidates
- * it, retaining image conditioning as well. */
+/* A recurrent cache cannot always be truncated in place. Rebuild the retained
+ * prefix when rewind invalidates it, retaining image conditioning as well.
+ * sf-ablate(agent): upstream described this as matching ds4-agent's boundary
+ * handling; that binary is gone, the behaviour is the server's own. */
 static int server_generation_rewind(server *s, server_slot *slot,
                                      const request *r, int pos,
                                      char *err, size_t errlen) {
@@ -15409,8 +15409,6 @@ static void set_client_socket_nonblocking(int fd) {
 
 typedef struct {
     ds4_engine_options engine;
-    const char *gpu_vram_arg;
-    const char *gpu_devices_arg;
     const char *host;
     int port;
     int ctx_size;
@@ -15536,41 +15534,30 @@ static void usage(FILE *fp, const char *topic) {
 
 static ds4_backend parse_backend_arg(const char *s, const char *arg) {
     if (!strcmp(s, "metal")) return DS4_BACKEND_METAL;
-#ifdef DS4_ROCM_BUILD
-    if (!strcmp(s, "rocm")) return DS4_BACKEND_CUDA;
-#else
-    if (!strcmp(s, "cuda")) return DS4_BACKEND_CUDA;
-#endif
     if (!strcmp(s, "cpu")) return DS4_BACKEND_CPU;
     server_log(DS4_LOG_DEFAULT, "ds4-server: invalid %s value: %s", arg, s);
-#ifdef DS4_ROCM_BUILD
-    server_log(DS4_LOG_DEFAULT, "ds4-server: valid server backends are: metal, rocm, cpu");
-#else
     server_log(DS4_LOG_DEFAULT, "ds4-server: valid server backends are: metal, cuda, cpu");
-#endif
     exit(2);
 }
 
 static ds4_backend default_server_backend(void) {
 #ifdef DS4_NO_GPU
     return DS4_BACKEND_CPU;
-#elif defined(__APPLE__)
-    return DS4_BACKEND_METAL;
 #else
-    return DS4_BACKEND_CUDA;
+    return DS4_BACKEND_METAL;
 #endif
 }
 
 static server_config parse_options(int argc, char **argv) {
     server_config c = {
         .engine = {
-            .model_path = "ds4flash.gguf",
+            .model_path = SF_DEFAULT_MODEL, /* sf: child-specific default model. */
             .backend = default_server_backend(),
             .mtp_draft_tokens = 1,
             .mtp_margin = 3.0f,
         },
         .host = "127.0.0.1",
-        .port = 8000,
+        .port = SF_DEFAULT_PORT, /* sf: child-specific default port. */
         .ctx_size = 32768,
         .default_tokens = 393216,
         .tool_memory_max_ids = DS4_TOOL_MEMORY_DEFAULT_MAX_IDS,
@@ -15752,19 +15739,6 @@ static server_config parse_options(int argc, char **argv) {
             c.engine.warm_weights = true;
         } else if (!strcmp(arg, "--metal")) {
             c.engine.backend = DS4_BACKEND_METAL;
-#ifdef DS4_ROCM_BUILD
-        } else if (!strcmp(arg, "--rocm")) {
-            c.engine.backend = DS4_BACKEND_CUDA;
-#else
-        } else if (!strcmp(arg, "--cuda")) {
-            c.engine.backend = DS4_BACKEND_CUDA;
-#endif
-        } else if (!strcmp(arg, "--gpu-vram")) {
-            c.gpu_vram_arg = need_arg(&i, argc, argv, arg);
-        } else if (!strcmp(arg, "--gpu-devices")) {
-            c.gpu_devices_arg = need_arg(&i, argc, argv, arg);
-        } else if (!strcmp(arg, "--cuda-tensor-parallel")) {
-            c.engine.cuda_tensor_parallel = true;
         } else if (!strcmp(arg, "--backend")) {
             c.engine.backend = parse_backend_arg(need_arg(&i, argc, argv, arg), arg);
         } else if (!strcmp(arg, "--cpu")) {
@@ -15854,35 +15828,10 @@ int main(int argc, char **argv) {
         cfg.batched_sessions > 0 ? cfg.batched_sessions : 1;
     cfg.engine.share_session_prefill_workspace = cfg.batched_sessions > 0;
     ds4_engine *engine = NULL;
-    if (cfg.gpu_vram_arg || cfg.gpu_devices_arg) {
-        ds4_gpu_config gpu_cfg = {0};
-        bool skip_cuda = false;
-        char gpu_err[256];
-        if (parse_gpu_vram_arg(cfg.gpu_vram_arg, cfg.gpu_devices_arg,
-                               &gpu_cfg, &skip_cuda,
-                               gpu_err, sizeof(gpu_err)) != 0) {
-            fprintf(stderr, "ds4-server: %s\n", gpu_err);
-            return 2;
-        }
-        cfg.engine.backend = skip_cuda ? DS4_BACKEND_CPU : DS4_BACKEND_CUDA;
-        if (skip_cuda) {
-            if (ds4_engine_open(&engine, &cfg.engine) != 0) return 1;
-        } else {
-            const bool was_auto =
-                (cfg.gpu_vram_arg && !strcmp(cfg.gpu_vram_arg, "auto")) ||
-                (!cfg.gpu_vram_arg && cfg.gpu_devices_arg);
-            char layout[256];
-            if (format_gpu_layout_line(&gpu_cfg, was_auto,
-                                       layout, sizeof(layout)) > 0) {
-                fprintf(stdout, "%s\n", layout);
-                fflush(stdout);
-            }
-            if (ds4_engine_create_with_gpu_config(
-                    &engine, &cfg.engine, &gpu_cfg) != 0) return 1;
-        }
-    } else if (ds4_engine_open(&engine, &cfg.engine) != 0) {
-        return 1;
-    }
+/* sf-ablate(cuda): --gpu-vram/--gpu-devices selected CUDA devices for
+ * multi-GPU placement, and ds4_gpu_args.c parsed them.  This child has one
+ * backend and one GPU, so the engine always opens through ds4_engine_open. */
+    if (ds4_engine_open(&engine, &cfg.engine) != 0) return 1;
 
     if (cfg.engine.distributed.role == DS4_DISTRIBUTED_WORKER) {
         ds4_dist_generation_options gen = {

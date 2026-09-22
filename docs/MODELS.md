@@ -45,8 +45,7 @@ To build weights rather than download them, see [GGUF tools](../gguf-tools/READM
 
 ## DeepSeek V4.1 Flash
 
-V4.1 Flash text and vision inference work on Metal. CUDA supports text with
-Q2 SSD streaming on one Spark or resident shards across two Sparks. It needs its own
+V4.1 Flash text and vision inference work on Metal. It needs its own
 GGUF, tokenizer and inference graph; V4 Flash weights and DSpark support files
 are not interchangeable with it.
 
@@ -67,13 +66,12 @@ On one 128 GB Mac, use SSD streaming. Leave the expert cache budget automatic:
   --ssd-streaming --ctx 32768
 ```
 
-Use `ds4-agent` or `ds4-server` with the same model and memory options.
-On a DGX Spark, add `--cuda`; see the [Spark guide](DGX_SPARK.md#deepseek-v41-flash).
+Use `sf-ds4-1flash-server` with the same model and memory options.
 `--think-level 25` sets reasoning effort explicitly; the range is 1 to 100,
-with 0 disabling thinking. `/think 25` changes it in the CLI or native agent.
+with 0 disabling thinking. `/think 25` changes it in the CLI.
 `--think` selects 75 and `--think-max` selects 100.
 
-For two 128 GB Macs or Sparks, follow the [TP/RDMA setup](DISTRIBUTED.md), passing this
+For two 128 GB Macs, follow the [TP/RDMA setup](DISTRIBUTED.md), passing this
 GGUF with `-m` on both ranks and omitting `--ssd-streaming`. Each rank holds
 about 81 GiB of main weights, plus context and runtime buffers. Both machines
 need the complete GGUF on disk. A 256 GB or larger Mac can instead hold all
@@ -87,14 +85,12 @@ Allow another 37 GiB of free disk space while joining. Rerun the command to resu
 interrupted download or join.
 
 Large SSD prefills process layers in wide batches. Metal overlaps computation
-with the next layer's reads; CUDA stages experts into its bounded device cache.
-Short appends keep using the expert cache.
+with the next layer's reads. Short appends keep using the expert cache.
 Resident and TP inference also batch continued prefills automatically.
 
 For concurrent serving, see [session batching](SERVER.md#multiple-sessions).
 Each slot needs its own context memory; start with `--ctx 4096` before
-increasing both context and slot count. CUDA Q2 SSD mode batches up to eight
-decode rows; CUDA network TP currently serves sessions in order. DSpark,
+increasing both context and slot count. DSpark,
 pipeline execution and ROCm are not implemented for V4.1; vision requires Metal.
 
 Scalar, batched and tensor-parallel execution are not numerically identical.
@@ -107,13 +103,13 @@ For images, download the matching encoder and add it to the same command:
 
 ```sh
 ./download_model.sh ds41f-vision
-./ds4-agent -m gguf/DeepSeek-V4.1-Flash-Q2.gguf \
+./sf-ds4-1flash -m gguf/DeepSeek-V4.1-Flash-Q2.gguf \
   --ssd-streaming --vision gguf/DeepSeek-V4.1-Flash-Vision.gguf
 ```
 
 Vision works with SSD streaming, full residency and two-Mac TP. Pass the encoder
-on both TP ranks. Use `/read image.png` in `ds4`, `view_image` in `ds4-agent`,
-or the [server image API](SERVER.md#images). V4 Flash vision encoders do not
+on both TP ranks. Use `/read image.png` in `sf-ds4-1flash` or the
+[server image API](SERVER.md#images). V4 Flash vision encoders do not
 work with V4.1. See [conversion](../gguf-tools/README.md#convert-deepseek-v41-flash)
 to build the GGUFs from safetensors.
 
@@ -199,8 +195,8 @@ Directional steering is supported for GLM 5.3, not GLM 5.2.
 
 ## Vision
 
-PNG and JPEG input works in the CLI, native agent, and HTTP server on Metal,
-single-GPU CUDA, and ROCm. The encoder must match the model.
+PNG and JPEG input works in the CLI and HTTP server on Metal.
+The encoder must match the model.
 V4.1 Flash vision is currently Metal-only; its setup is [above](#deepseek-v41-flash).
 
 ### DeepSeek Flash Vision Experimental
@@ -227,9 +223,7 @@ The text GGUF stays the same. Download and add the encoder explicitly:
   --vision gguf/GLM-5.3-Flash-Vision-Encoder.gguf
 ```
 
-Use `/read image.png` in `ds4`, or start `ds4-agent` with the same `--vision`
-argument to enable `view_image`. Agent sessions containing images cannot yet
-be saved with `/save`.
+Use `/read image.png` in `ds4`.
 
 For two-Mac TP, pass the same encoder on both ranks. The coordinator encodes
 the image and sends the projected visual tokens to the worker.

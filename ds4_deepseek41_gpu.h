@@ -23,19 +23,6 @@ typedef enum {
 } ds4_v41_activation_format;
 int ds4_gpu_dsv41_quantize(ds4_gpu_tensor *x, uint32_t width, uint32_t rows,
                           ds4_v41_activation_format format);
-#if !defined(__APPLE__) && !defined(DS4_ROCM_BUILD) && !defined(DS4_NO_GPU)
-/* CUDA scalar Q8 shared expert. 1: queued; 0: unsupported, no work queued;
- * -1: failure. After 1, keep the input/output tensors alive and unchanged
- * until join, which orders the result before subsequent main-stream work.
- * Other work may run between start and join using separate tensors. */
-int ds4_gpu_dsv41_shared_start(
-        ds4_gpu_tensor *out, ds4_gpu_tensor *gate, ds4_gpu_tensor *up,
-        ds4_gpu_tensor *mid, const ds4_gpu_tensor *x,
-        const void *model_map, uint64_t model_size,
-        uint64_t gate_offset, uint64_t up_offset, uint64_t down_offset,
-        uint32_t width, uint32_t hidden, float clamp);
-int ds4_gpu_dsv41_shared_join(void);
-#endif
 /* Full-head prefill, with BF16 rounding between the two Q8 projections. */
 int ds4_gpu_dsv41_attention_output_batch(
         ds4_gpu_tensor *out, ds4_gpu_tensor *low,

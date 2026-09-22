@@ -7,7 +7,7 @@ Objective-C only where Metal requires it and Metal kernels under `metal/`.
 ## Goals
 
 - Keep the production path as whole-model Metal graph inference.
-- Always make sure that the SSD streaming, CUDA, distributed inference, Metal default inference are not affected by fixes to other parts of the code.
+- Always make sure that the SSD streaming, distributed inference, Metal default inference are not affected by fixes to other parts of the code.
 - Keep model loading mmap-backed for the Metal default case; do not eagerly copy the full GGUF. Keep the model loading for SSD streaming of routed experts explicit: allocated buffers, fast reads from disk, always try to hide loading of missing routed experts by loading them while performing the inference of the shared expert and routed experts already in RAM. Always try to hide loading of layers for prefill in SSD streaming mode using the inference time of the current layer as the next one is loaded.
 - Keep the CPU backend CPU-only and use it only as reference/debug code.
 - Preserve correctness before speed. Do not keep a faster path with unexplained attention, KV cache, or logits drift.
@@ -53,4 +53,3 @@ At every major change where one of the following could be affected, make sure to
 1. Test the normal Metal path and that speed is still at the level it was.
 2. Test the SSD streaming path.
 3. Test the distributed inference if it could be affected, but ask the user before doing so.
-4. Check if CUDA could be broken after the change, and ask the user to give you access to the CUDA machine to actually test if everything is still fine.

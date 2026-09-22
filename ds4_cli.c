@@ -1,6 +1,5 @@
 #include "ds4.h"
 #include "ds4_distributed.h"
-#include "ds4_gpu_args.h"
 #include "ds4_tp.h"
 #include "ds4_help.h"
 #include "ds4_prompt_prefix.h"
@@ -27,6 +26,14 @@
 #include <stdarg.h>
 #include <time.h>
 #include <unistd.h>
+#include <sys/stat.h>
+
+/* sf: the child identity comes from the Makefile's SF_DEFS block.  Guard it
+ * before the first use below, so a stray `cc ds4_cli.c` reports this instead
+ * of a syntax error on the first macro that stayed unexpanded. */
+#if !defined(SF_DEFAULT_MODEL) || !defined(SF_HOME)
+#error "build through the Makefile"
+#endif
 
 static bool cli_env_flag_enabled(const char *name, bool defval) {
     const char *v = getenv(name);
@@ -98,10 +105,6 @@ typedef struct {
     cli_generation_options gen;
     char *prompt_owned;
     bool inspect;
-    /* CLI flag wiring: raw argv values for --gpu-vram and --gpu-devices.
-     * Resolved post-parse via parse_gpu_vram_arg(). */
-    const char *gpu_vram_arg;
-    const char *gpu_devices_arg;
 } cli_config;
 
 static volatile sig_atomic_t cli_interrupted;
@@ -219,28 +222,17 @@ static float parse_float_range(const char *s, const char *opt, float min, float 
 
 static ds4_backend parse_backend(const char *s) {
     if (!strcmp(s, "metal")) return DS4_BACKEND_METAL;
-#ifdef DS4_ROCM_BUILD
-    if (!strcmp(s, "rocm")) return DS4_BACKEND_CUDA;
-#else
-    if (!strcmp(s, "cuda")) return DS4_BACKEND_CUDA;
-#endif
     if (!strcmp(s, "cpu")) return DS4_BACKEND_CPU;
     fprintf(stderr, "ds4: invalid backend: %s\n", s);
-#ifdef DS4_ROCM_BUILD
-    fprintf(stderr, "ds4: valid backends are: metal, rocm, cpu\n");
-#else
-    fprintf(stderr, "ds4: valid backends are: metal, cuda, cpu\n");
-#endif
+    fprintf(stderr, "ds4: valid backends are: metal, cpu\n");
     exit(2);
 }
 
 static ds4_backend default_backend(void) {
 #ifdef DS4_NO_GPU
     return DS4_BACKEND_CPU;
-#elif defined(__APPLE__)
-    return DS4_BACKEND_METAL;
 #else
-    return DS4_BACKEND_CUDA;
+    return DS4_BACKEND_METAL;
 #endif
 }
 
@@ -1318,9 +1310,19 @@ static bool parse_steering_level(const char *arg, float *out) {
 }
 
 static void history_file_path(char *buf, size_t len) {
+    /* sf: history lives under SF_HOME so children and upstream ds4 do not
+     * share one file.  Upstream wrote straight into $HOME, which always
+     * exists; two nested directories have to be created here, and both
+     * linenoise calls discard their result, so a missing directory would
+     * lose history silently. */
     const char *home = getenv("HOME");
     if (!home || !home[0]) home = ".";
-    snprintf(buf, len, "%s/.ds4_history", home);
+    char sf_root[PATH_MAX];
+    snprintf(sf_root, sizeof(sf_root), "%s/.sf", home);
+    (void)mkdir(sf_root, 0700);
+    snprintf(sf_root, sizeof(sf_root), "%s/" SF_HOME, home);
+    (void)mkdir(sf_root, 0700);
+    snprintf(buf, len, "%s/history", sf_root);
 }
 
 typedef struct {
@@ -1921,7 +1923,7 @@ static char *read_prompt_file(const char *path, bool fatal) {
 static cli_config parse_options(int argc, char **argv) {
     cli_config c = {
         .engine = {
-            .model_path = "ds4flash.gguf",
+            .model_path = SF_DEFAULT_MODEL, /* sf: child-specific default model. */
             .backend = default_backend(),
             .mtp_draft_tokens = 1,
             .mtp_margin = 3.0f,
@@ -2120,19 +2122,6 @@ static cli_config parse_options(int argc, char **argv) {
             c.engine.backend = DS4_BACKEND_CPU;
         } else if (!strcmp(arg, "--metal")) {
             c.engine.backend = DS4_BACKEND_METAL;
-#ifdef DS4_ROCM_BUILD
-        } else if (!strcmp(arg, "--rocm")) {
-            c.engine.backend = DS4_BACKEND_CUDA;
-#else
-        } else if (!strcmp(arg, "--cuda")) {
-            c.engine.backend = DS4_BACKEND_CUDA;
-#endif
-        } else if (!strcmp(arg, "--gpu-vram")) {
-            c.gpu_vram_arg = need_arg(&i, argc, argv, arg);
-        } else if (!strcmp(arg, "--gpu-devices")) {
-            c.gpu_devices_arg = need_arg(&i, argc, argv, arg);
-        } else if (!strcmp(arg, "--cuda-tensor-parallel")) {
-            c.engine.cuda_tensor_parallel = true;
         } else if (!strcmp(arg, "--dump-tokens")) {
             c.gen.dump_tokens = true;
         } else if (!strcmp(arg, "--dump-logits")) {
@@ -2174,25 +2163,13 @@ static cli_config parse_options(int argc, char **argv) {
             c.gen.first_token_test = true;
         } else if (!strcmp(arg, "--metal-graph-test")) {
             c.gen.metal_graph_test = true;
-#ifdef DS4_ROCM_BUILD
-            c.engine.backend = DS4_BACKEND_CUDA;
-#else
             c.engine.backend = DS4_BACKEND_METAL;
-#endif
         } else if (!strcmp(arg, "--metal-graph-full-test")) {
             c.gen.metal_graph_full_test = true;
-#ifdef DS4_ROCM_BUILD
-            c.engine.backend = DS4_BACKEND_CUDA;
-#else
             c.engine.backend = DS4_BACKEND_METAL;
-#endif
         } else if (!strcmp(arg, "--metal-graph-prompt-test")) {
             c.gen.metal_graph_prompt_test = true;
-#ifdef DS4_ROCM_BUILD
-            c.engine.backend = DS4_BACKEND_CUDA;
-#else
             c.engine.backend = DS4_BACKEND_METAL;
-#endif
         } else if (!strcmp(arg, "--metal-graph-generate")) {
             fprintf(stderr, "ds4: --metal-graph-generate was removed; --metal is the graph path\n");
             exit(2);
@@ -2298,43 +2275,10 @@ int main(int argc, char **argv) {
     cfg.engine.context_size = cfg.gen.ctx_size;
     cfg.engine.placement_ctx_hint = cfg.gen.ctx_size;
     ds4_engine *engine = NULL;
-    if (cfg.gpu_vram_arg || cfg.gpu_devices_arg) {
-        ds4_gpu_config gpu_cfg = {0};
-        bool skip_cuda = false;
-        char errbuf[256];
-        if (parse_gpu_vram_arg(cfg.gpu_vram_arg, cfg.gpu_devices_arg,
-                               &gpu_cfg, &skip_cuda,
-                               errbuf, sizeof(errbuf)) != 0) {
-            fprintf(stderr, "ds4: %s\n", errbuf);
-            ds4_dist_options_free(cfg.dist);
-            free(cfg.prompt_owned);
-            return 2;
-        }
-        cfg.engine.backend = skip_cuda ? DS4_BACKEND_CPU : DS4_BACKEND_CUDA;
-        if (skip_cuda) {
-            if (ds4_engine_open(&engine, &cfg.engine) != 0) {
-                ds4_dist_options_free(cfg.dist);
-                free(cfg.prompt_owned);
-                return 1;
-            }
-        } else {
-            const bool was_auto =
-                (cfg.gpu_vram_arg && !strcmp(cfg.gpu_vram_arg, "auto")) ||
-                (!cfg.gpu_vram_arg && cfg.gpu_devices_arg);
-            char layout[256];
-            if (format_gpu_layout_line(&gpu_cfg, was_auto,
-                                       layout, sizeof(layout)) > 0) {
-                fprintf(stdout, "%s\n", layout);
-                fflush(stdout);
-            }
-            if (ds4_engine_create_with_gpu_config(&engine, &cfg.engine,
-                                                   &gpu_cfg) != 0) {
-                ds4_dist_options_free(cfg.dist);
-                free(cfg.prompt_owned);
-                return 1;
-            }
-        }
-    } else if (ds4_engine_open(&engine, &cfg.engine) != 0) {
+/* sf-ablate(cuda): --gpu-vram/--gpu-devices selected CUDA devices for
+ * multi-GPU placement, and ds4_gpu_args.c parsed them.  This child has one
+ * backend and one GPU, so the engine always opens through ds4_engine_open. */
+    if (ds4_engine_open(&engine, &cfg.engine) != 0) {
         ds4_dist_options_free(cfg.dist);
         free(cfg.prompt_owned);
         return 1;

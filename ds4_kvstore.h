@@ -15,6 +15,8 @@
 #define DS4_KVSTORE_EXT_TOOL_MAP          (1u << 0)
 #define DS4_KVSTORE_EXT_RESPONSES_VISIBLE (1u << 1)
 #define DS4_KVSTORE_EXT_THINKING_VISIBLE  (1u << 2)
+/* sf-keep: written only by the removed agent, but this is a durable on-disk
+ * format bit.  Reusing the value would misread an existing checkpoint. */
 #define DS4_KVSTORE_EXT_SESSION_TITLE     (1u << 3)
 
 typedef enum {
@@ -23,6 +25,9 @@ typedef enum {
     DS4_KVSTORE_REASON_CONTINUED = 2,
     DS4_KVSTORE_REASON_EVICT     = 3,
     DS4_KVSTORE_REASON_SHUTDOWN  = 4,
+    /* sf-keep: no writer left in this child, but ds4_kvstore.c compares the
+     * on-disk reason byte against AGENT_SESSION as its upper bound, and both
+     * values appear in checkpoints written by upstream ds4. */
     DS4_KVSTORE_REASON_AGENT_SYSTEM  = 5,
     DS4_KVSTORE_REASON_AGENT_SESSION = 6,
 } ds4_kvstore_reason;
