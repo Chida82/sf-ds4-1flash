@@ -11,15 +11,16 @@ what this repo is and how to work in it. For code-quality rules read
 | | |
 |---|---|
 | Model | see `README.md` first line |
-| Shape (`ds4.c`) | `DS4_SHAPE_FLASH41` — `g_ds4_shape` is `static const`; a GGUF with another shape is refused |
+| Shape (`ds4.c`) | `DS4_SHAPE_FLASH41`, the only profile in the binary. `g_ds4_shape` stays **writable** (see below); `config_validate_model` refuses any GGUF whose `general.architecture` is not `deepseek41` |
 | Backend | Metal only. No CUDA, no ROCm. CPU path kept as reference/debug and for model-less tests |
 | Binaries | `sf-ds4-1flash`, `sf-ds4-1flash-server`, `sf-ds4-1flash-bench`, `sf-ds4-1flash-eval`. No agent binary |
 | Server default port | `8002` |
 | Home dir | `~/.sf/ds4-1flash` (CLI history; suggested `--kv-disk-dir ~/.sf/ds4-1flash/kv`) |
 | Instance lock | `/tmp/sf-ds4-1flash.lock` (override: `DS4_LOCK_FILE`) |
-| Vision | yes |
+| Vision | yes, `--vision gguf/DeepSeek-V4.1-Flash-Vision.gguf` |
+| Memory | **SSD streaming is the normal mode**: Q2 is 341 GiB against a 128 GB machine. See "SSD streaming is not optional" below |
 | Speculative decoding | none |
-| Steering | yes (`--dir-steering-file`, `/steer`, `dir-steering/`) |
+| Steering | tooling kept (SPEC.md §B), but the model **refuses to start** with `--dir-steering-file`, exactly as upstream |
 | TP / RDMA / pipeline | yes |
 | Upstream base | never written down: `git describe --tags --match 'sync-*' --abbrev=0` names the last sync, `git merge-base HEAD upstream/main` the base. A SHA typed into a file is a second source of truth that goes stale (SPEC.md §A) |
 
@@ -32,6 +33,61 @@ default names; make cannot distinguish the flavours, so a later `make` relinks
 nothing and the next model-backed run fails with "requires Metal". Fix the
 Makefile at bootstrap rather than warning about it — the warning has already
 failed twice.
+
+## SSD streaming is not optional
+
+This is the operational fact that shapes every model-backed command here, and
+the one most likely to waste a day if it is missed.
+
+The Q2 release is **340.6 GiB on disk**: about 152 GiB of main weights plus
+**189 GiB of Engram tables**. Engram rows are read straight from the file in
+*every* mode, resident included — the loader prints `Engram disk-only` — so the
+GGUF must sit on a fast local SSD whatever else you do.
+
+On a 128 GB Mac nothing loads without `--ssd-streaming`. With it, a run looks
+like this (measured on this tree):
+
+```text
+Metal SSD streaming mode enabled; full model residency and warmup are skipped
+expert budget before prefill reserve: 8913 (82.62 GiB)
+cache target 82.62 GiB = 7.12 GiB prefill headroom + 75.50 GiB dynamic cache
+Metal SSD static weights locked 9.37 GiB; pageable 0.00 GiB
+V4.1 static context buffers 8073.52 MiB (ctx=32768), Engram disk-only
+```
+
+and generation lands around 6 t/s. That is the expected shape, not a
+regression: the throughput is bounded by SSD reads, so compare a change against
+a run in the *same* mode, never a resident number against a streaming one.
+
+Pass it everywhere:
+
+```sh
+./sf-ds4-1flash --ssd-streaming --ctx 32768 -p "..."
+./sf-ds4-1flash-server --ssd-streaming --ctx 32768
+./sf-ds4-1flash-eval --ssd-streaming -m deepseek-v4.1-flash.gguf --suite core
+./sf-ds4-1flash-bench --ssd-streaming --prompt-file speed-bench/promessi_sposi.txt
+
+DS4_TEST_MODEL=deepseek-v4.1-flash.gguf DS4_TEST_SSD_STREAMING=1 ./ds4_test
+```
+
+and for the StarForge parity oracle, which runs upstream and this fork with the
+same GGUF, through the machine-level hook rather than per prompt:
+
+```sh
+SF_PARITY_FLAGS=--ssd-streaming tools/parity-check.sh sf-ds4-1flash
+```
+
+Without it both binaries fail to load and every prompt is reported as "a binary
+produced no output", which reads like an ablation bug rather than a missing
+flag. The knobs worth knowing: `--ssd-streaming-cache-experts N|NGB` sets the
+expert cache target (auto by default), `--ssd-streaming-cold` skips the
+popularity preload, and `--ssd-streaming-full-layers N` keeps the first N routed
+layers fully resident.
+
+The alternative to streaming is not more RAM in one box but **two 128 GB Macs
+with TP/RDMA** (`docs/DISTRIBUTED.md`), which holds about 81 GiB of main weights
+per rank and drops `--ssd-streaming`. A 256 GB or larger machine can hold the
+main weights resident; the Engram tables still stay on disk.
 
 ## What is NOT here (do not re-add)
 

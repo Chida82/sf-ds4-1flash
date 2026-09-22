@@ -101,9 +101,8 @@ static ds4_backend test_model_backend(void) {
 
 static ds4_engine *test_open_engine(bool quality) {
     ds4_engine *engine = NULL;
-    /* DS4_TEST_MTP loads the MTP head on the fast engine so the speculative
-     * verify regression can reuse it; draft=4 hits the multi-row verify path. */
-    const char *mtp = getenv("DS4_TEST_MTP");
+    /* sf-ablate(specdec): DS4_TEST_MTP loaded an external support head for the
+     * speculative verify regression.  This child has no speculative decoding. */
     ds4_engine_options opt = {
         .model_path = test_model_path(),
         .backend = test_model_backend(),
@@ -116,10 +115,6 @@ static ds4_engine *test_open_engine(bool quality) {
             test_env_gib("DS4_TEST_SSD_STREAMING_CACHE_GB"),
         .ssd_streaming_preload_experts =
             test_env_u32("DS4_TEST_SSD_STREAMING_PRELOAD_EXPERTS"),
-        .mtp_path = (mtp && mtp[0] && !quality) ? mtp : NULL,
-        .mtp_draft_tokens = (mtp && mtp[0] && !quality) ? 4 : 0,
-        .glm_mtp = test_env_bool("DS4_TEST_GLM_MTP"),
-        .dspark_exact_sampling = test_env_bool("DS4_TEST_MTP_EXACT"),
     };
     TEST_ASSERT(ds4_engine_open(&engine, &opt) == 0);
     return engine;

@@ -19939,6 +19939,25 @@ int ds4_gpu_matmul_quant_tensor(
                                             false);
 }
 
+/* sf-keep: no caller in this child -- the live MPP decode path goes through
+ * ds4_gpu_matmul_quant_decode_mpp_model_view_tensor below.  This q8_0 entry
+ * point is what tests/test_metal_dense_mpp.c drives, and it dispatches the
+ * same Metal kernel, so keeping it keeps real coverage of a kernel this
+ * child does use. */
+int ds4_gpu_matmul_q8_0_decode_mpp_tensor(
+        ds4_gpu_tensor       *out,
+        const void             *model_map,
+        uint64_t                model_size,
+        uint64_t                weight_offset,
+        uint64_t                in_dim,
+        uint64_t                out_dim,
+        const ds4_gpu_tensor *x,
+        uint64_t                n_tok) {
+    return ds4_gpu_matmul_q8_0_legacy_tensor(out, model_map, model_size,
+                                             weight_offset, in_dim, out_dim,
+                                             x, n_tok, true, false);
+}
+
 int ds4_gpu_matmul_quant_decode_mpp_model_view_tensor(
         ds4_gpu_tensor       *out,
         const void             *model_map,
