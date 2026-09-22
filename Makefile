@@ -10,8 +10,6 @@ SF_DEFS := -DSF_DEFAULT_MODEL='"deepseek-v4.1-flash.gguf"' -DSF_DEFAULT_PORT=800
 CC ?= cc
 NATIVE_CPU_FLAG ?= -mcpu=native
 SAMPLING_TEST := tests/test_sampling
-GLM53_KDA_TEST := tests/test_glm53_kda
-QWEN4_KERNEL_TEST := tests/test_qwen4_kernels
 
 DEBUG_FLAGS ?= -g
 CFLAGS ?= -O3 -ffast-math $(DEBUG_FLAGS) $(NATIVE_CPU_FLAG) -Wall -Wextra -std=c99
@@ -126,37 +124,6 @@ tests/test_metal_moe_prefill: tests/test_metal_moe_prefill.o $(CORE_OBJS)
 
 test-metal-moe-prefill: tests/test_metal_moe_prefill
 	./tests/test_metal_moe_prefill
-
-tests/test_qwen4_moe_mm_specialize.o: tests/test_qwen4_moe_mm_specialize.c ds4_gpu.h
-	$(CC) $(CFLAGS) -fno-fast-math -I. -c -o $@ $<
-
-tests/test_qwen4_moe_mm_specialize: tests/test_qwen4_moe_mm_specialize.o $(CORE_OBJS)
-	$(CC) $(CFLAGS) -o $@ $^ $(METAL_LDLIBS)
-
-.PHONY: test-qwen4-moe-mm-specialize
-test-qwen4-moe-mm-specialize: tests/test_qwen4_moe_mm_specialize
-	./tests/test_qwen4_moe_mm_specialize
-
-tests/test_qwen4_conv_parallel.o: tests/test_qwen4_conv_parallel.c ds4_gpu.h
-	$(CC) $(CFLAGS) -fno-fast-math -I. -c -o $@ $<
-
-tests/test_qwen4_conv_parallel: tests/test_qwen4_conv_parallel.o $(CORE_OBJS)
-	$(CC) $(CFLAGS) -o $@ $^ $(METAL_LDLIBS)
-
-.PHONY: test-qwen4-prefill-reuse
-test-qwen4-prefill-reuse: tests/test_qwen4_conv_parallel tests/test_qwen4_moe_mm_specialize
-	./tests/test_qwen4_conv_parallel
-	./tests/test_qwen4_moe_mm_specialize
-
-tests/test_q8_prefill_variants.o: tests/test_q8_prefill_variants.c ds4_gpu.h
-	$(CC) $(CFLAGS) -fno-fast-math -I. -c -o $@ $<
-
-tests/test_q8_prefill_variants: tests/test_q8_prefill_variants.o $(CORE_OBJS)
-	$(CC) $(CFLAGS) -o $@ $^ $(METAL_LDLIBS)
-
-.PHONY: test-q8-prefill-variants
-test-q8-prefill-variants: tests/test_q8_prefill_variants
-	./tests/test_q8_prefill_variants
 
 tests/test_metal_ssd_experts.o: tests/test_metal_ssd_experts.c ds4_gpu.h
 	$(CC) $(CFLAGS) -fno-fast-math -I. -c -o $@ $<
@@ -300,21 +267,6 @@ ds4_eval_cpu.o: ds4_eval.c ds4_eval_cases.h ds4.h ds4_ssd.h ds4_distributed.h ds
 ds4_metal.o: ds4_metal.m ds4.h ds4_gpu.h ds4_gpu_tp.h ds4_deepseek41_gpu.h ds4_image.h $(METAL_SRCS)
 	$(CC) $(OBJCFLAGS) -c -o $@ ds4_metal.m
 
-tests/test_glm53_kda.o: tests/test_glm53_kda.c ds4_gpu.h
-	$(CC) $(CFLAGS) -I. -c -o $@ tests/test_glm53_kda.c
-
-tests/test_glm53_vision_engine.o: tests/test_glm53_vision_engine.c ds4.h ds4_image.h
-	$(CC) $(filter-out -ffast-math,$(CFLAGS)) -I. -c -o $@ tests/test_glm53_vision_engine.c
-
-tests/test_glm53_vision_engine: tests/test_glm53_vision_engine.o $(CORE_OBJS)
-	$(CC) $(CFLAGS) -o $@ $^ $(METAL_LDLIBS)
-
-tests/test_glm53_vision_prompt.o: tests/test_glm53_vision_prompt.c ds4.h
-	$(CC) $(CFLAGS) -fno-fast-math -I. -c -o $@ tests/test_glm53_vision_prompt.c
-
-tests/test_glm53_vision_prompt: tests/test_glm53_vision_prompt.o $(CORE_OBJS)
-	$(CC) $(CFLAGS) -o $@ $^ $(METAL_LDLIBS)
-
 tests/test_deepseek4_vision_image.o: tests/test_deepseek4_vision_image.c ds4_image.h
 	$(CC) $(CFLAGS) -I. -c -o $@ $<
 
@@ -326,39 +278,6 @@ tests/test_image_decode.o: tests/test_image_decode.c ds4_image.h
 
 tests/test_image_decode: tests/test_image_decode.o ds4_image.o
 	$(CC) $(CFLAGS) -o $@ $^ -lm
-
-$(GLM53_KDA_TEST): tests/test_glm53_kda.o ds4_metal.o ds4_image.o
-	$(CC) $(CFLAGS) -o $@ $^ $(METAL_LDLIBS)
-
-.PHONY: test-glm53-kda
-test-glm53-kda: $(GLM53_KDA_TEST)
-	./$(GLM53_KDA_TEST)
-
-tests/test_qwen4_kernels.o: tests/test_qwen4_kernels.c ds4_gpu.h ds4.h
-	$(CC) $(CFLAGS) -I. -c -o $@ tests/test_qwen4_kernels.c
-
-$(QWEN4_KERNEL_TEST): tests/test_qwen4_kernels.o ds4_metal.o ds4_image.o
-	$(CC) $(CFLAGS) -o $@ $^ $(METAL_LDLIBS)
-
-tests/test_qwen4_vision.o: tests/test_qwen4_vision.c ds4.h
-	$(CC) $(CFLAGS) -I. -c -o $@ tests/test_qwen4_vision.c
-
-tests/test_qwen4_vision: tests/test_qwen4_vision.o $(CORE_OBJS)
-	$(CC) $(CFLAGS) -o $@ $^ $(METAL_LDLIBS)
-
-.PHONY: test-qwen4-kernels test-qwen4-q2 test-qwen4-vision
-test-qwen4-kernels: $(QWEN4_KERNEL_TEST)
-	./$(QWEN4_KERNEL_TEST)
-
-test-qwen4-q2: $(QWEN4_KERNEL_TEST) tests/test_qwen4_moe_mm_specialize
-	DS4_TEST_QWEN4_MV_EXACT=1 ./$(QWEN4_KERNEL_TEST)
-	./tests/test_qwen4_moe_mm_specialize
-
-# DS4_QWEN4_SNAPSHOT=<HF checkpoint dir> DS4_QWEN4_MMPROJ=<mmproj.gguf> DS4_QWEN4_IMAGE=<image>
-test-qwen4-vision: tests/test_qwen4_vision
-	@test -n "$(DS4_QWEN4_SNAPSHOT)" -a -n "$(DS4_QWEN4_MMPROJ)" -a -n "$(DS4_QWEN4_IMAGE)" || \
-	  { echo "set DS4_QWEN4_SNAPSHOT, DS4_QWEN4_MMPROJ and DS4_QWEN4_IMAGE"; exit 1; }
-	python3 tests/qwen4_vision_ref.py --snapshot "$(DS4_QWEN4_SNAPSHOT)" --mmproj "$(DS4_QWEN4_MMPROJ)" --image "$(DS4_QWEN4_IMAGE)"
 
 tests/test_ssd_cache: tests/test_ssd_cache.c ds4_ssd.c ds4_ssd.h
 	$(CC) $(CFLAGS) -I. -o $@ tests/test_ssd_cache.c ds4_ssd.c
@@ -384,29 +303,7 @@ tests/test_deepseek41_gguf: tests/test_deepseek41_gguf.o ds4_engram.c $(filter-o
 test-deepseek41-gguf: tests/test_deepseek41_gguf
 	./tests/test_deepseek41_gguf
 
-tests/test_qwen4_ngrams.o: tests/test_qwen4_ngrams.c ds4.c ds4.h
-	$(CC) $(filter-out -ffast-math,$(CFLAGS)) -Wno-unused-function -I. -c -o $@ $<
-
-tests/test_qwen4_ngrams: tests/test_qwen4_ngrams.o $(filter-out ds4_cpu.o,$(CPU_CORE_OBJS))
-	$(CC) $(filter-out -ffast-math,$(CFLAGS)) -o $@ $^ $(LDLIBS)
-
-.PHONY: test-qwen4-ngrams
-test-qwen4-ngrams: tests/test_qwen4_ngrams
-	./tests/test_qwen4_ngrams
-
-tests/test_qwen4_ngram_state.o: tests/test_qwen4_ngram_state.c ds4.c ds4.h
-	$(CC) $(filter-out -ffast-math,$(CFLAGS)) -Wno-unused-function -I. -c -o $@ $<
-
-tests/test_qwen4_ngram_state: tests/test_qwen4_ngram_state.o $(filter-out ds4.o,$(CORE_OBJS))
-	$(CC) $(filter-out -ffast-math,$(CFLAGS)) -o $@ $^ $(METAL_LDLIBS)
-
-tests/test_qwen4_prefill.o: tests/test_qwen4_prefill.c ds4.h
-	$(CC) $(QUALITY_CFLAGS) -I. -c -o $@ $<
-
-tests/test_qwen4_prefill: tests/test_qwen4_prefill.o $(CORE_OBJS)
-	$(CC) $(CFLAGS) -o $@ $^ $(METAL_LDLIBS)
-
-ds4.o ds4_cpu.o ds4_cpu_test_hooks.o ds4_metal.o tests/test_qwen4_kernels.o tests/test_qwen4_ngram_state.o: ds4_qwen4_vision.h
+ds4.o ds4_cpu.o ds4_cpu_test_hooks.o ds4_metal.o: ds4_qwen4_vision.h
 
 tests/test_layer_pack.o: tests/test_layer_pack.c ds4_layer_pack.h
 	$(CC) $(CFLAGS) -I. -c -o $@ $<
@@ -417,5 +314,120 @@ tests/test_layer_pack: tests/test_layer_pack.o ds4_layer_pack.o
 ds4_cpu_test_hooks.o: ds4.c ds4.h ds4_image.h ds4_gpu.h ds4_gpu_mgpu.h ds4_layer_pack.h
 	$(CC) $(CFLAGS) -Wno-unused-function -DDS4_NO_GPU -DDS4_TEST_HOOKS -c -o $@ ds4.c
 
-# The active tokenizer includes generated Unicode classes.
-ds4.o ds4_cpu.o ds4_cpu_test_hooks.o: ds4_qwen4_unicode.inc
+tests/test_sampling.o: tests/test_sampling.c ds4.h
+	$(CC) $(CFLAGS) -fno-finite-math-only -DDS4_TEST_HOOKS -I. -c -o $@ $<
+
+tests/test_sampling: tests/test_sampling.o ds4_cpu_test_hooks.o ds4_image.o ds4_distributed.o ds4_tp.o ds4_ssd.o ds4_layer_pack.o
+	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
+
+tests/test_session_state.o: tests/test_session_state.c ds4.c ds4.h ds4_gpu.h ds4_image.h ds4_tp.h
+	$(CC) $(CFLAGS) -Wno-unused-function -DDS4_NO_GPU -I. -c -o $@ $<
+
+tests/test_session_state: tests/test_session_state.o $(filter-out ds4_cpu.o,$(CPU_CORE_OBJS))
+	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
+
+tests/test_session_state_gpu.o: tests/test_session_state.c ds4.c ds4.h ds4_gpu.h ds4_image.h ds4_tp.h
+	$(CC) $(CFLAGS) -Wno-unused-function -I. -c -o $@ $<
+
+tests/test_session_state_gpu: tests/test_session_state_gpu.o $(filter-out ds4.o,$(CORE_OBJS))
+	$(CC) $(CFLAGS) -o $@ $^ $(METAL_LDLIBS)
+
+tests/test_tp_commands.o: tests/test_tp_commands.c ds4_tp.c ds4_tp.h ds4.h ds4_gpu_tp.h
+	$(CC) $(CFLAGS) -I. -c -o $@ $<
+
+tests/test_tp_commands: tests/test_tp_commands.o $(filter-out ds4_tp.o,$(CPU_CORE_OBJS))
+	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
+
+tests/test_tp_rdma.o: tests/test_tp_rdma.c ds4_tp.c ds4_tp.h ds4.h ds4_gpu_tp.h
+	$(CC) $(CFLAGS) -I. -c -o $@ $<
+
+tests/test_tp_rdma: tests/test_tp_rdma.o $(filter-out ds4_tp.o,$(CPU_CORE_OBJS))
+	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
+
+tests/test_tp_link.o: tests/test_tp_link.c ds4_tp.h ds4.h
+	$(CC) $(CFLAGS) -I. -c -o $@ $<
+
+tests/test_tp_link: tests/test_tp_link.o $(CPU_CORE_OBJS)
+	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
+
+tests/test_tp_tcp.o: tests/test_tp_tcp.c ds4_tp.c ds4_tp.h ds4.h ds4_gpu_tp.h
+	$(CC) $(CFLAGS) -I. -c -o $@ $<
+
+tests/test_tp_tcp: tests/test_tp_tcp.o $(filter-out ds4_tp.o,$(CPU_CORE_OBJS))
+	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
+
+.PHONY: test-session-state
+test-session-state: tests/test_session_state tests/test_tp_commands tests/test_tp_rdma tests/test_tp_tcp
+	./tests/test_session_state
+	./tests/test_tp_commands
+	./tests/test_tp_rdma
+	./tests/test_tp_tcp
+
+ds4_test: ds4_test.o ds4_help.o ds4_kvstore.o rax.o $(CORE_OBJS)
+	$(CC) $(CFLAGS) -o $@ ds4_test.o ds4_help.o ds4_kvstore.o rax.o $(CORE_OBJS) $(METAL_LDLIBS)
+
+tests/test_prompt_prefix.o: tests/test_prompt_prefix.c ds4_prompt_prefix.h
+	$(CC) $(CFLAGS) -I. -c -o $@ $<
+
+tests/test_prompt_prefix: tests/test_prompt_prefix.o ds4_prompt_prefix.o
+	$(CC) $(CFLAGS) -o $@ $^
+
+q4k-dot-test: tests/test_q4k_dot.c
+	$(CC) -O2 -Wall -Wextra -std=c99 -o tests/test_q4k_dot tests/test_q4k_dot.c -lm -pthread
+	./tests/test_q4k_dot
+
+mxfp4-dot-test: tests/test_mxfp4_dot.c
+	$(CC) -O2 -Wall -Wextra -std=c99 -o tests/test_mxfp4_dot tests/test_mxfp4_dot.c -lm
+	./tests/test_mxfp4_dot
+
+# `make test` is the seconds-long, model-less check that runs after every
+# ablation batch (SPEC.md §F.2).  Only the --server subset of ds4_test is
+# model-less: the full run opens a GGUF and belongs to the model-backed phase,
+# with DS4_TEST_MODEL set.
+test: ds4_test $(BIN)-eval q4k-dot-test mxfp4-dot-test test-session-state test-engram \
+	tests/test_layer_pack tests/test_deepseek4_vision_image tests/test_image_decode \
+	tests/test_prompt_prefix $(SAMPLING_TEST) $(BIN) $(BIN)-server $(BIN)-bench
+	./$(BIN)-eval --validate-cases
+	./$(BIN)-eval --self-test-extractors
+	./ds4_test --server
+	./tests/test_layer_pack
+	./tests/test_prompt_prefix
+	./tests/test_sampling
+	./tests/test_deepseek4_vision_image
+	./tests/test_image_decode
+
+.PHONY: test-download-model
+test-download-model:
+	python3 tests/test_model_download.py
+
+.PHONY: test-quality-api
+# Only the scorer's JSON parser is needed; discard the unused engine entry point.
+test-quality-api: tests/test_quality_api.c gguf-tools/quality-testing/score_official.c
+	$(CC) $(QUALITY_CFLAGS) -I. -ffunction-sections -fdata-sections -o tests/test_quality_api tests/test_quality_api.c -Wl,-dead_strip -lm
+	./tests/test_quality_api
+	python3 tests/test_collect_official.py
+
+ds4.o ds4_cpu.o ds4_server.o ds4_server_cpu.o ds4_test.o \
+ds4_cpu_test_hooks.o tests/test_session_state.o \
+tests/test_session_state_gpu.o: ds4_tool_text.h
+
+clean:
+	rm -f $(BIN) $(BIN)-server $(BIN)-bench $(BIN)-eval \
+	      $(BIN)-cpu $(BIN)-cpu-server $(BIN)-cpu-bench $(BIN)-cpu-eval \
+	      ds4_cpu ds4_native ds4_server_test ds4_test \
+	      gguf-tools/quality-testing/score_official gguf-tools/quality-testing/score_official.o \
+	      speed-bench/metal_decode_schedule_bench speed-bench/metal_prefill_variant_bench \
+	      speed-bench/session_concurrency_bench speed-bench/*.o \
+	      tests/test_q4k_dot tests/test_mxfp4_dot tests/test_mxfp4_metal \
+	      tests/test_metal_session_batch tests/test_metal_moe_prefill tests/test_metal_dense_mpp \
+	      tests/test_metal_ssd_experts tests/test_metal_command_memory \
+	      tests/test_metal_tp_spec tests/test_metal_tp_cancel tests/test_metal_tp_bulk \
+	      tests/test_deepseek41_metal tests/test_deepseek41_gguf tests/test_deepseek41_graph \
+	      tests/test_deepseek41_cli tests/test_deepseek41_prefill \
+	      tests/test_deepseek4_vision_image tests/test_image_decode tests/test_prompt_prefix \
+	      tests/test_layer_pack tests/test_sampling tests/test_quality_api \
+	      tests/test_ssd_cache tests/test_engram \
+	      tests/test_session_state tests/test_session_state_gpu \
+	      tests/test_tp_commands tests/test_tp_rdma tests/test_tp_link tests/test_tp_tcp \
+	      tests/*.o *.o
+	rm -rf *.dSYM tests/*.dSYM
