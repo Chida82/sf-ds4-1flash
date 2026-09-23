@@ -23,8 +23,8 @@ METAL_SRCS := $(wildcard metal/*.metal)
 DS4_TEST_MODEL ?= deepseek-v4.1-flash.gguf
 
 METAL_LDLIBS := $(LDLIBS) -framework Foundation -framework Metal
-CORE_OBJS = ds4.o ds4_image.o ds4_distributed.o ds4_tp.o ds4_ssd.o ds4_metal.o ds4_layer_pack.o ds4_engram.o
-CPU_CORE_OBJS = ds4_cpu.o ds4_image.o ds4_distributed.o ds4_tp.o ds4_ssd.o ds4_layer_pack.o
+CORE_OBJS = ds4.o ds4_image.o ds4_distributed.o ds4_tp.o ds4_ssd.o ds4_metal.o ds4_engram.o
+CPU_CORE_OBJS = ds4_cpu.o ds4_image.o ds4_distributed.o ds4_tp.o ds4_ssd.o
 
 .PHONY: all help clean cpu test test-metal-session-batch
 
@@ -297,19 +297,13 @@ tests/test_deepseek41_gguf: tests/test_deepseek41_gguf.o ds4_engram.c $(filter-o
 test-deepseek41-gguf: tests/test_deepseek41_gguf
 	./tests/test_deepseek41_gguf
 
-tests/test_layer_pack.o: tests/test_layer_pack.c ds4_layer_pack.h
-	$(CC) $(CFLAGS) -I. -c -o $@ $<
-
-tests/test_layer_pack: tests/test_layer_pack.o ds4_layer_pack.o
-	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
-
-ds4_cpu_test_hooks.o: ds4.c ds4.h ds4_image.h ds4_gpu.h ds4_gpu_mgpu.h ds4_layer_pack.h
+ds4_cpu_test_hooks.o: ds4.c ds4.h ds4_image.h ds4_gpu.h
 	$(CC) $(CFLAGS) -Wno-unused-function -DDS4_NO_GPU -DDS4_TEST_HOOKS -c -o $@ ds4.c
 
 tests/test_sampling.o: tests/test_sampling.c ds4.h
 	$(CC) $(CFLAGS) -fno-finite-math-only -DDS4_TEST_HOOKS -I. -c -o $@ $<
 
-tests/test_sampling: tests/test_sampling.o ds4_cpu_test_hooks.o ds4_image.o ds4_distributed.o ds4_tp.o ds4_ssd.o ds4_layer_pack.o
+tests/test_sampling: tests/test_sampling.o ds4_cpu_test_hooks.o ds4_image.o ds4_distributed.o ds4_tp.o ds4_ssd.o
 	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
 
 tests/test_session_state.o: tests/test_session_state.c ds4.c ds4.h ds4_gpu.h ds4_image.h ds4_tp.h
@@ -377,12 +371,11 @@ mxfp4-dot-test: tests/test_mxfp4_dot.c
 # model-less: the full run opens a GGUF and belongs to the model-backed phase,
 # with DS4_TEST_MODEL set.
 test: ds4_test $(BIN)-eval q4k-dot-test mxfp4-dot-test test-session-state test-engram \
-	tests/test_layer_pack tests/test_deepseek4_vision_image tests/test_image_decode \
+	tests/test_deepseek4_vision_image tests/test_image_decode \
 	tests/test_prompt_prefix $(SAMPLING_TEST) $(BIN) $(BIN)-server $(BIN)-bench
 	./$(BIN)-eval --validate-cases
 	./$(BIN)-eval --self-test-extractors
 	./ds4_test --server
-	./tests/test_layer_pack
 	./tests/test_prompt_prefix
 	./tests/test_sampling
 	./tests/test_deepseek4_vision_image
@@ -417,7 +410,7 @@ clean:
 	      tests/test_deepseek41_metal tests/test_deepseek41_gguf tests/test_deepseek41_graph \
 	      tests/test_deepseek41_cli tests/test_deepseek41_prefill \
 	      tests/test_deepseek4_vision_image tests/test_image_decode tests/test_prompt_prefix \
-	      tests/test_layer_pack tests/test_sampling tests/test_quality_api \
+	      tests/test_sampling tests/test_quality_api \
 	      tests/test_ssd_cache tests/test_engram \
 	      tests/test_session_state tests/test_session_state_gpu \
 	      tests/test_tp_commands tests/test_tp_rdma tests/test_tp_link tests/test_tp_tcp \

@@ -167,8 +167,6 @@ int ds4_tp_send_sync_multimodal(ds4_tp *tp, uint64_t session_id,
                                 uint32_t image_count);
 int ds4_tp_send_eval(ds4_tp *tp, uint64_t session_id,
                      uint64_t seq, int token);
-int ds4_tp_send_glm_mtp(ds4_tp *tp, uint64_t session_id,
-                       uint64_t seq, int token, int limit);
 int ds4_tp_send_rewind(ds4_tp *tp, uint64_t session_id, int pos);
 int ds4_tp_send_invalidate(ds4_tp *tp, uint64_t session_id);
 int ds4_tp_send_eval_batch(ds4_tp *tp, const ds4_tp_batch_item *items,
@@ -246,22 +244,6 @@ int ds4_tp_hash_check(ds4_tp *tp, uint64_t seq, uint64_t hash, char *err, size_t
  * after every eval (and after a sync) on the control socket. */
 int ds4_tp_send_logits_half(ds4_tp *tp, const float *half, uint32_t count);
 int ds4_tp_recv_logits_half(ds4_tp *tp, float *half, uint32_t count);
-
-/* Speculative verify mirroring.  The leader announces a draft block right
- * before both ranks run the expert-split batch verify; the worker then blocks
- * on the commit frame. A full commit keeps the entire verified block, a prefix
- * commit restores the matching verifier prefix on both ranks, and rollback
- * restores the original frontier before replaying token_count tokens. */
-typedef enum {
-    DS4_TP_VERIFY_ROLLBACK_REPLAY = 0,
-    DS4_TP_VERIFY_COMMIT_FULL = 1,
-    DS4_TP_VERIFY_COMMIT_PREFIX = 2,
-} ds4_tp_verify_commit_mode;
-
-int ds4_tp_send_verify(ds4_tp *tp, uint64_t session_id,
-                       const int *drafts, uint32_t n);
-int ds4_tp_send_verify_commit(ds4_tp *tp, int32_t mode, int32_t token_count);
-int ds4_tp_recv_verify_commit(ds4_tp *tp, int32_t *mode, int32_t *token_count);
 
 /* Standalone worker mode entry. Loads nothing itself: the engine is already
  * open. */

@@ -271,10 +271,6 @@ tests, record aggregate and per-session decode speed.
   decode is a release blocker unless the change and tradeoff are documented.
 - Keep the complete `sf-ds4-1flash-bench` CSV. A single short-prompt average is not enough
   to detect a context-dependent regression.
-- For speculative decoding, retain the generated text and draft-acceptance
-  statistics. Repetition loops can inflate throughput; a faster bad answer is
-  not a win. Separate changed continuation/acceptance from kernel cost using
-  matched teacher-forced ordinary-decode measurements. Test code and prose.
 - Compare startup time and peak memory as well as tokens per second when model
   loading, caches, streaming, or temporary arenas changed.
 - Run the backend-specific batch tests in section 4. Fast single-session

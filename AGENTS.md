@@ -80,9 +80,9 @@ SF_PARITY_FLAGS=--ssd-streaming tools/parity-check.sh sf-ds4-1flash
 Without it both binaries fail to load and every prompt is reported as "a binary
 produced no output", which reads like an ablation bug rather than a missing
 flag. The knobs worth knowing: `--ssd-streaming-cache-experts N|NGB` sets the
-expert cache target (auto by default), `--ssd-streaming-cold` skips the
-popularity preload, and `--ssd-streaming-full-layers N` keeps the first N routed
-layers fully resident.
+expert cache target (auto by default) and `--ssd-streaming-cold` skips the
+popularity preload. `--ssd-streaming-full-layers` is gone: it only ever applied
+to GLM graph streaming, and V4.1 warned and ignored it.
 
 The alternative to streaming is not more RAM in one box but **two 128 GB Macs
 with TP/RDMA** (`docs/DISTRIBUTED.md`), which holds about 81 GiB of main weights
@@ -93,7 +93,13 @@ main weights resident; the Engram tables still stay on disk.
 
 - `ds4-agent` and agent-only code (`ds4_agent.c`, `ds4_web.c`, its tests/docs).
   Use `sf-ds4-1flash-server` with an external agent (see `docs/CLIENTS.md`).
-- CUDA / ROCm / multi-GPU placement, Linux memory helpers, DGX/Strix docs.
+- CUDA / ROCm / multi-GPU placement, Linux memory helpers, DGX/Strix docs. That
+  includes CUDA tensor parallelism inside the Metal graph (`cuda_tp_*`), the
+  layer packer (`ds4_layer_pack.*`, `tests/test_layer_pack.c`), `ds4_gpu_mgpu.h`,
+  decode-island graph capture and the CUDA profiler hooks in the bench.
+- GLM and Qwen code that V4.1 never reaches: the GLM-DSA session graph and its
+  streaming budget, the GLM/Qwen image preprocessors, and the Metal kernels and
+  pipelines only a GLM or Qwen graph dispatched.
 - Every other model: shapes, kernels, tokenizer tables, tests, docs, download
   targets. In files that remain, every non-obvious cut or conflict resolution
   that discards upstream code has a marker at the exact site:
@@ -139,16 +145,19 @@ inline (`DS4_METAL_CB_TIMES=1 ./sf-ds4-1flash ...`), never `export`.
 This child has no speculative decoding at all, and it is the only one of the
 four where that is true. `--mtp`, `--mtp-model`, `--mtp-draft`, `--mtp-margin`,
 `--mtp-timing`, `--mtp-exact-sampling`, `--dspark`, `--dspark-confidence` and
-`--dspark-strict` do not exist in any frontend; `ds4_engine_has_mtp()` returns
-false and `ds4_engine_mtp_draft_tokens()` returns 0.
+`--dspark-strict` do not exist in any frontend, and neither do the matching
+`ds4_engine_options` fields.
 
 Do not reintroduce them, and do not infer a mechanism from an identifier's
 name: `glm_mtp` was the built-in-MTP switch every MTP model shared, not a GLM
 thing, and it is pinned false here.
 
-The DSpark draft/verify engine and the legacy speculative paths are gone: the
-public `ds4_session_eval_speculative*` entry points are one ordinary decode, and
-`ds4_session_tp_spec_cycle` refuses VERIFY frames. What remains of the generic
+The DSpark draft/verify engine, the support-GGUF loader, the DSpark hidden-state
+capture in the Metal graph and the speculative API
+(`ds4_session_eval_speculative*`, `ds4_sessions_eval_batch_speculative_argmax`,
+the TP spec cycles) are gone. The server batches every pending decode as one
+plain batch, `session_concurrency_bench` has no `--spec` mode, and a TP worker
+refuses VERIFY and GLM_MTP frames, which only a drafting leader sends. What remains of the generic
 `ds4_gpu_graph` (`s->graph`, `metal_graph_*`) is either shared with the V4.1
 graph (stream/page-in helpers, `metal_graph_matmul_dense_quant_kslice`,
 `metal_graph_tp_env_flag`) or reached only by the pipeline layer-slice entry
@@ -162,12 +171,15 @@ child has established:
 
 | Name family | What it really is here | Evidence |
 |---|---|---|
-| `glm_graph_*` | **dead in this tree**, unlike in `sf-q3-8flash` where it is the shared Metal graph host. The GLM-DSA session opens only under `DS4_MODEL_FAMILY_GLM_DSA`; V4.1 uses `ds41_graph_alloc` | `ds4.c` `ds4_session_create`: the DEEPSEEK41 early-return precedes any glm_graph code |
+| `glm_graph_*` | **dead in this tree and removed** (the `ds4_glm_gpu_graph` session struct, its dense cache and its streaming budget), unlike in `sf-q3-8flash` where it is the shared Metal graph host. V4.1 uses `ds41_graph_alloc` | `ds4.c` `ds4_session_create`: the DEEPSEEK41 early-return precedes any glm_graph code |
 | `glm_graph_env_value`, `glm_graph_host_memory_bytes`, `qwen4_prefill_chunk_tokens` | shared helpers wearing a foreign name, called from live V4.1 paths | a prefix sweep over `glm_graph_*`/`qwen4_*` breaks memory admission |
-| `ds4_gpu_mgpu.h` | not a CUDA header: the only reachable definer of `DS4_MAX_GPUS`, `struct ds4_gpu_tensor` and `ds4_gpu_config` for **both** the Metal and the CPU build | `ds4.c` includes it unconditionally; it sizes ~190 live graph arrays |
+| `ds4_gpu_mgpu.h` | removed once the multi-GPU placement it served was gone. It used to be the only definer of `DS4_MAX_GPUS` and `struct ds4_gpu_tensor` for both builds: the Metal build now takes `DS4_MAX_GPUS` from `ds4_gpu.h`, and the CPU build forward-declares the opaque tensor type | deleting it first broke the CPU build on `ds4_gpu_tensor` |
 | `ds4_gpu_args.c/.h` | the opposite trap: the name says CUDA, `nm` says two pure-C string functions. Removed because the `--gpu*` flags went, not because it was CUDA code | `nm -u` resolved no CUDA symbol |
-| `metal_graph_cuda_*`, `engine_cuda_tp_*` | the Metal graph host, named after the feature CUDA had first. Live, and not guarded by any CUDA macro | ~40 functions with live call sites |
-| `metal/deepseek4_vision.metal`, `metal/glm53_bf16.metal`, `metal/glm53_vision.metal` | required by the V4.1 vision encoder | deleting them breaks vision, not GLM |
+| `metal_graph_cuda_*`, `engine_cuda_tp_*` | **dead, and removed.** Earlier notes called them live because they had live call sites, which was the wrong test: on Apple each returned a constant (`#if defined(__APPLE__) return false`) or read a `cuda_tp_*` field that nothing assigns. The branches they guarded never ran. A call site is not proof of liveness; read what the callee returns | the fold removed ~3k lines and parity stayed token-identical |
+| `*_by_tier[]` graph arrays | the per-device slot of every graph tensor. With one Metal device only slot 0 is used, but they are reached through `name##_by_tier` accessor macros and are kept: collapsing them would touch hundreds of upstream lines | a field-name search does not see macro-pasted names |
+| `pro_q4_*` (`ds4.c`, `ds4_metal.m`) | named after V4 PRO, but the shape gate `n_total_expert == 384 && n_expert == 6` is exactly V4.1's: env-gated Q4 expert-table paths for a V4.1 Q4 GGUF | `DS4_SHAPE_FLASH41` has `.n_expert = 384`, `.n_expert_used = 6` |
+| `DS4_GLM_LOGIT_DUMP`, `glm_debug_dump_prefill_logits` | a model-agnostic dump of the post-prefill logits | it writes `s->logits`, which every model fills |
+| `metal/deepseek4_vision.metal`, `metal/glm53_bf16.metal`, `metal/glm53_vision.metal` | required by the V4.1 vision encoder; only the kernels it dispatches remain (`glm53_mul_mv/mm_bf16_f32`, `glm53_vision_attention`, `_add_bias`, `_rms_bf16`, `_bias_residual`) | deleting them breaks vision, not GLM |
 | `glm53_vision_dispatch_*`, `ds4_gpu_glm53_matmul_bf16` (in `ds4_metal.m`) | helpers of `ds4_gpu_deepseek4_vision_encode` | its only callers; `nm` keeps them |
 | `ds4_gpu_glm_indexer_score_one_tensor` | the V4.1 indexer scorer | called from the `ds41_*` graph and `tests/test_deepseek41_metal.c` |
 | `append_glm_tag_body_text` (`ds4_server.c`, under `DS4_SERVER_TEST`) | test fixture that exercises the live `ds4_tool_text_unescape` and stream-safe length helpers | only the server unit tests call it |
@@ -186,6 +198,13 @@ Two oracles that the compiler cannot give you:
   and its functions are exported. There the linker is the oracle: `nm -g` on
   `ds4_metal.o` against `nm -u` on every other object, with references internal
   to the same object closed over first.
+- Three kinds of dead code no diagnostic reports. A static function marked
+  `DS4_MAYBE_UNUSED` (strip the attribute in a scratch copy and let the loop
+  run). A struct field or a type nothing reads, since assignments and
+  declarations still count as uses. A stub that only `(void)`s its arguments and
+  returns a constant, which keeps every caller "live". Shaders have the same
+  problem one level down: a pipeline that is created at init and freed at
+  cleanup but never dispatched keeps its kernel alive.
 
 The Metal library is assembled at **runtime** by concatenating `metal/*.metal`
 from a hard-coded table in `ds4_metal.m`. A deleted kernel file must lose its

@@ -76,7 +76,7 @@ because a retry works.
 
 TP disk-cache restore currently rebuilds the exact saved token prefix on both
 ranks rather than restoring the coordinator alone. Expect prefill on restore.
-See [speculation](SPECULATIVE_DECODING.md) and [serving](SERVER.md).
+See [serving](SERVER.md).
 
 ## Pipeline parallelism
 

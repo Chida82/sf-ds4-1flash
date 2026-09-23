@@ -1650,9 +1650,6 @@ static int check_memory_plan(const char *path) {
     opt.ssd_streaming = true;
     REQUIRE(!engine_warm_full_model(&opt));
     opt.ssd_streaming = false;
-    opt.cuda_tensor_parallel = true;
-    REQUIRE(!engine_warm_full_model(&opt));
-    opt.cuda_tensor_parallel = false;
     opt.tp.role = DS4_TP_LEADER;
     REQUIRE(!engine_warm_full_model(&opt));
     opt.tp.role = DS4_TP_WORKER;

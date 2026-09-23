@@ -14,7 +14,6 @@
 /gguf
 /core
 /core.*
-/tests/test_layer_pack
 /tests/test_metal_session_batch
 /tests/test_metal_tp_cancel
 /tests/test_metal_moe_prefill

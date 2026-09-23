@@ -240,7 +240,6 @@ kernel void kernel_dsv4_flash_kv_stage_f16(
     }
 }
 
-
 // Tiled-row expansion of a small table: dst row t = src row (pos0 + t) % ratio.
 // Replaces the per-segment copies the compressor store used to encode (one
 // dispatch per prefill layer instead of n_tokens/ratio single-threadgroup

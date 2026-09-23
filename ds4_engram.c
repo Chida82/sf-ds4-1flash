@@ -11,11 +11,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
-#ifdef __APPLE__
 #include <dispatch/dispatch.h>
-#else
-#include <pthread.h>
-#endif
 
 bool ds4_engram_layout_valid(const ds4_engram_layout *l) {
     if (!l || !l->token_map || !l->vocab_size ||
@@ -103,9 +99,7 @@ bool ds4_engram_table_open(ds4_engram_table *t, const char *path,
         errno = EINVAL;
         goto fail;
     }
-#ifdef __APPLE__
     if (fcntl(fd, F_NOCACHE, 1) != 0 || fcntl(fd, F_RDAHEAD, 0) != 0) goto fail;
-#endif
     *t = (ds4_engram_table){.fd = fd, .offset = offset, .rows = rows};
     return true;
 fail: {
@@ -191,12 +185,7 @@ static int request_order(const void *a, const void *b) {
 }
 
 enum { ENGRAM_READERS = 16 };
-#ifdef __APPLE__
 enum { ENGRAM_PARALLEL_MIN_ROWS = 8 };
-#else
-/* Unlike dispatch's shared pool, this path creates threads for each batch. */
-enum { ENGRAM_PARALLEL_MIN_ROWS = 256 };
-#endif
 
 typedef struct {
     const ds4_engram_table *table;
@@ -226,18 +215,6 @@ static void read_batch_part(void *context, size_t part) {
     }
 }
 
-#ifndef __APPLE__
-typedef struct {
-    engram_batch *batch;
-    size_t part;
-} engram_reader;
-
-static void *read_batch_thread(void *context) {
-    engram_reader *reader = context;
-    read_batch_part(reader->batch, reader->part);
-    return NULL;
-}
-#endif
 
 bool ds4_engram_read_batch(const ds4_engram_table *t, const uint32_t *rows,
                            size_t tokens, size_t stride, float *out) {
@@ -277,26 +254,8 @@ bool ds4_engram_read_batch(const ds4_engram_table *t, const uint32_t *rows,
          * Each worker owns disjoint output rows; all finish before GPU use. */
         if (count >= ENGRAM_PARALLEL_MIN_ROWS) {
             batch.readers = ENGRAM_READERS;
-#ifdef __APPLE__
             dispatch_apply_f(batch.readers,
                 dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), &batch, read_batch_part);
-#else
-            pthread_t threads[ENGRAM_READERS - 1];
-            engram_reader readers[ENGRAM_READERS - 1];
-            size_t started = 0;
-            for (size_t part = 1; part < batch.readers; part++) {
-                readers[started] = (engram_reader){&batch, part};
-                if (pthread_create(&threads[started], NULL, read_batch_thread,
-                                   &readers[started])) break;
-                started++;
-            }
-            read_batch_part(&batch, 0);
-            /* Thread exhaustion only reduces concurrency, not correctness. */
-            for (size_t part = started + 1; part < batch.readers; part++)
-                read_batch_part(&batch, part);
-            for (size_t part = 0; part < started; part++)
-                if (pthread_join(threads[part], NULL)) abort();
-#endif
         } else
         read_batch_part(&batch, 0);
         for (size_t i = 0; i < batch.readers; i++) {

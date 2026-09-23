@@ -21,7 +21,6 @@ struct ds4_metal_args_dsv4_hc_weighted_sum {
     uint64_t nb1;
 };
 
-
 struct ds4_metal_args_dsv4_output_hc_weights4 {
     float post_scale;
     float eps;
@@ -1105,7 +1104,6 @@ kernel void kernel_dsv4_output_hc_weights4(
             args.post_scale * x + args.eps;
     }
 }
-
 
 struct ds4_metal_args_hc_norm_mix {
     int32_t n;

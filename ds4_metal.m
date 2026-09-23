@@ -526,67 +526,11 @@ static __weak id<MTLBuffer> g_dsv4_hc_producer_last_mix_buffer;
 static NSUInteger g_dsv4_hc_producer_last_mix_offset;
 static id<MTLBuffer> g_dsv4_hc_producer_last_completion;
 static id<MTLComputePipelineState> g_dsv4_router_weights_one_pipeline;
-static id<MTLComputePipelineState> g_glm_router_select_one_pipeline;
-static id<MTLComputePipelineState> g_glm_kv_lora_rms_norm_pipeline;
-static id<MTLComputePipelineState> g_glm_k_b_project_pipeline;
-static id<MTLComputePipelineState> g_glm_store_compact_kv_pipeline;
-static id<MTLComputePipelineState> g_glm_qkv_norm_store_compact_kv_pipeline;
-static id<MTLComputePipelineState> g_glm_store_indexer_k_pipeline;
-static id<MTLComputePipelineState> g_glm53_indexer_pool_update_pipeline;
-static id<MTLComputePipelineState> g_glm_build_kv_cache_pipeline;
-static id<MTLComputePipelineState> g_glm_build_kv_cache_decode_group4_pipeline;
-static id<MTLComputePipelineState> g_glm_build_kv_cache_flash_pipeline;
-static id<MTLComputePipelineState> g_glm_attention_full_pipeline;
-static id<MTLComputePipelineState> g_glm_fill_selected_range_pipeline;
-static id<MTLComputePipelineState> g_glm_fill_selected_range_batch_pipeline;
-static id<MTLComputePipelineState> g_glm53_expand_pool_selection_pipeline;
-static id<MTLComputePipelineState> g_glm_indexer_rope_tail_pipeline;
 static id<MTLComputePipelineState> g_glm_indexer_score_one_pipeline;
 static id<MTLComputePipelineState> g_glm_indexer_score_one_direct_pipeline;
 static id<MTLComputePipelineState> g_glm_indexer_scores_batch_pipeline;
 static id<MTLComputePipelineState> g_glm_indexer_scores_tiled_pipeline;
 static id<MTLComputePipelineState> g_glm_indexer_scores_tiled_f32_pipeline;
-static id<MTLComputePipelineState> g_glm_qk_lowrank_pipeline;
-static id<MTLComputePipelineState> g_glm_qk_lowrank_glm52_pipeline;
-static id<MTLComputePipelineState> g_glm_qk_lowrank_glm52_sg_pipeline;
-static id<MTLComputePipelineState> g_glm_qk_lowrank_batch_pipeline;
-static id<MTLComputePipelineState> g_glm_qk_lowrank_batch_glm52_t4_pipeline;
-static id<MTLComputePipelineState> g_glm_value_project_q8_0_pipeline;
-static id<MTLComputePipelineState> g_glm_value_project_q8_0_batch_heads_pipeline;
-static id<MTLComputePipelineState> g_glm_value_project_q8_0_batch_heads_mma_pipeline;
-static id<MTLComputePipelineState> g_glm_attention_indexed_decode_pipeline;
-static id<MTLComputePipelineState> g_glm_attention_indexed_decode_split_group8_partial_pipeline;
-static id<MTLComputePipelineState> g_glm_attention_indexed_decode_split_group8_partial_valid_fullheads_pipeline;
-static id<MTLComputePipelineState> g_glm_attention_indexed_decode_split_group8_reduce_pipeline;
-static id<MTLComputePipelineState> g_glm_attention_indexed_decode_split_group8_reduce16_pipeline;
-static id<MTLComputePipelineState> g_glm_attention_indexed_batch_pipeline;
-static id<MTLComputePipelineState> g_glm_attention_indexed_batch_group2_pipeline;
-static id<MTLComputePipelineState> g_glm_attention_indexed_batch_q2_group4_pipeline;
-static id<MTLComputePipelineState> g_glm_attention_indexed_batch_group8_pipeline;
-static id<MTLComputePipelineState> g_glm_attention_indexed_batch_lora_group8_vec_pipeline;
-static id<MTLComputePipelineState> g_glm_attention_indexed_batch_lora_group8_vec_valid_pipeline;
-static id<MTLComputePipelineState> g_glm_attention_indexed_batch_lora_group8_vec_valid_fullheads_pipeline;
-static id<MTLComputePipelineState> g_glm_attention_indexed_batch_lora_group8_vec_causal_pipeline;
-static id<MTLComputePipelineState> g_glm_attention_indexed_batch_lora_group8_vec_causal_fullheads_pipeline;
-static id<MTLComputePipelineState> g_glm_q4_k_pair_swiglu_f32_pipeline;
-static id<MTLComputePipelineState> g_glm_q4_k_pair_swiglu2_f32_pipeline;
-static id<MTLComputePipelineState> g_glm_q4_k_pair_swiglu4_f32_pipeline;
-static id<MTLComputePipelineState> g_glm_q4_k_pair_swiglu2_mapped_f32_pipeline;
-static id<MTLComputePipelineState> g_glm_q4_k_pair_swiglu2_mapped_row_f32_pipeline;
-static id<MTLComputePipelineState> g_glm_q2_k_pair_swiglu_f32_pipeline;
-static id<MTLComputePipelineState> g_glm_q2_k_addr_pair_swiglu2_f32_pipeline;
-static id<MTLComputePipelineState> g_glm_q2_k_addr_pair_swiglu2_masked_f32_pipeline;
-static id<MTLComputePipelineState> g_glm_q4_k_addr_pair_swiglu_f32_pipeline;
-static id<MTLComputePipelineState> g_glm_q4_k_addr_pair_swiglu_masked_f32_pipeline;
-static id<MTLComputePipelineState> g_glm_q2_k_down_f32_pipeline;
-static id<MTLComputePipelineState> g_glm_q4_k_down_f32_pipeline;
-static id<MTLComputePipelineState> g_glm_q2_k_addr_down_f32_pipeline;
-static id<MTLComputePipelineState> g_glm_q4_k_addr_down_f32_pipeline;
-static id<MTLComputePipelineState> g_glm_q5_k_pair_swiglu_f32_pipeline;
-static id<MTLComputePipelineState> g_glm_q5_k_pair_swiglu_mapped_f32_pipeline;
-static id<MTLComputePipelineState> g_glm_q5_k_pair_swiglu_mapped_row_f32_pipeline;
-static id<MTLComputePipelineState> g_glm_q5_k_down_f32_pipeline;
-static id<MTLComputePipelineState> g_glm_q6_k_down_f32_pipeline;
 static id<MTLComputePipelineState> g_dsv4_router_weights_batch_pipeline;
 static id<MTLComputePipelineState> g_dsv4_hc_expand4_pipeline;
 static NSMutableDictionary<NSString *, id<MTLComputePipelineState>> *g_pipeline_cache;
@@ -681,8 +625,6 @@ static id<MTLBuffer> g_indexer_topk_buffer;
 static id<MTLBuffer> g_indexed_topk_buffer;
 static id<MTLBuffer> g_f16_round_scratch_buffer;
 static id<MTLBuffer> g_q8_prefill_scratch_buffer;
-static id<MTLBuffer> g_qwen4_conv_halo_buffer;
-static NSUInteger g_qwen4_conv_halo_bytes;
 static id<MTLBuffer> g_raw_store_round_buffer;
 static id<MTLBuffer> g_moe_gate_scratch_buffer;
 static id<MTLBuffer> g_moe_down_scratch_buffer;
@@ -811,7 +753,6 @@ static int g_stream_prefill_batch_selected_addr_building;
 static int g_glm_stream_expert_addr_table_building;
 static uint64_t g_model_residency_count;
 static int g_model_residency_added_to_queue;
-static int g_glm_model_mode;
 static int g_ssd_streaming_mode;
 static int g_glm_streaming_prefill_full_layer_runtime;
 static int g_metal4_runtime_available;
@@ -4288,7 +4229,7 @@ void ds4_gpu_print_memory_report(const char *label) {
         (uint64_t)g_indexer_topk_bytes +
         (uint64_t)g_indexed_topk_bytes +
         (uint64_t)g_f16_round_scratch_bytes +
-        (uint64_t)g_q8_prefill_scratch_bytes + (uint64_t)g_qwen4_conv_halo_bytes +
+        (uint64_t)g_q8_prefill_scratch_bytes +
         (uint64_t)g_raw_store_round_bytes +
         (uint64_t)g_moe_gate_scratch_bytes +
         (uint64_t)g_moe_down_scratch_bytes +
@@ -4592,10 +4533,6 @@ void ds4_gpu_set_quality(bool quality) {
     g_quality_mode = quality ? 1 : 0;
 }
 
-void ds4_gpu_set_glm_model(bool enabled) {
-    g_glm_model_mode = enabled ? 1 : 0;
-}
-
 void ds4_gpu_set_ssd_streaming(bool enabled) {
     g_ssd_streaming_mode = enabled ? 1 : 0;
     ds4_gpu_stream_expert_cache_clear_all(1);
@@ -4815,15 +4752,6 @@ typedef struct {
     uint64_t nb2;
     uint64_t nb3;
 } ds4_gpu_get_rows_args;
-
-typedef struct {
-    int32_t  n_embd;
-    int32_t  n_vocab;
-    int32_t  n_tokens;
-    uint64_t src_row_bytes;
-    uint64_t dst_row_bytes;
-    uint64_t token_stride;
-} ds4_gpu_get_rows_q8_0_args;
 
 typedef struct {
     int32_t  ne00;
@@ -5467,16 +5395,12 @@ static ds4_gpu_mul_mv_ext_args ds4_gpu_make_mv_ext_args(
  * that carry the MTP verify rows.  Rows per threadgroup only: each row keeps
  * its lane walk and shuffle tree, so outputs are byte-identical at any
  * value (tests/test_qwen4_kernels.c pins 1/2/4/8). */
-/* Row-exact geometry for the 3-row speculative verify: the few-row matvec
- * and routed-expert dispatches keep the lane maps and kernel choices of the
- * T <= 2 decode paths, so every committed row stays byte-identical. */
-static bool g_qwen4_verify_rows_exact;
 static int16_t ds4_gpu_mv_ext_nsg(void) {
     return (int16_t)ds4_gpu_env_u64("DS4_METAL_MV_EXT_NSG", 2u, 1u, 8u);
 }
 
 static int16_t ds4_gpu_mv_ext_nxpsg(uint64_t in_dim, uint64_t n_tok) {
-    if ((in_dim % 256u) == 0 && (n_tok < 3 || (n_tok == 3 && g_qwen4_verify_rows_exact))) return 16;
+    if ((in_dim % 256u) == 0 && n_tok < 3) return 16;
     if ((in_dim % 128u) == 0) return 8;
     return 4;
 }
@@ -5907,8 +5831,6 @@ typedef struct {
     uint32_t shared_pad;
 } ds4_gpu_flash_kv_stage_f16_args;
 
-
-
 typedef struct {
     int32_t  ne01;
     int32_t  ne30;
@@ -6046,7 +5968,6 @@ void ds4_gpu_set_decode_attn_rope_fuse(
 int ds4_gpu_decode_attn_rope_fuse_used(void) {
     return g_decode_attn_rope_fuse_used;
 }
-
 
 _Static_assert(sizeof(ds4_gpu_rope_affine_pair_args) == 64,
                "Metal affine RoPE argument ABI changed");
@@ -6427,159 +6348,6 @@ typedef struct {
 } ds4_gpu_dsv4_router_select_visual_args;
 
 typedef struct {
-    uint32_t n_expert;
-    uint32_t n_expert_used;
-    float    expert_weight_scale;
-    uint32_t pad0;
-} ds4_gpu_glm_router_select_one_args;
-
-typedef struct {
-    uint32_t n_tokens;
-    uint32_t kv_raw_dim;
-    uint32_t kv_lora_dim;
-    float    eps;
-} ds4_gpu_glm_kv_lora_rms_norm_args;
-
-typedef struct {
-    uint32_t n_tokens;
-    uint32_t kv_lora_dim;
-    uint32_t qk_nope;
-    uint32_t n_head;
-    uint32_t row_bytes;
-    uint32_t weight_type;
-    uint32_t pad1;
-    uint32_t pad2;
-} ds4_gpu_glm_k_b_project_args;
-
-typedef struct {
-    uint32_t pos0;
-    uint32_t n_tokens;
-    uint32_t cache_cap;
-    uint32_t kv_raw_dim;
-    uint32_t kv_lora_dim;
-    uint32_t qk_rope;
-    uint32_t cache_f16;
-    uint32_t pad1;
-} ds4_gpu_glm_store_compact_kv_args;
-
-typedef struct {
-    uint32_t pos0;
-    uint32_t n_tokens;
-    uint32_t cache_cap;
-    uint32_t q_n;
-    uint32_t q_n4;
-    uint32_t kv_raw_dim;
-    uint32_t kv_lora_dim;
-    uint32_t kv_lora_n4;
-    uint32_t qk_rope;
-    uint32_t cache_f16;
-    float    eps;
-    uint32_t pad0;
-} ds4_gpu_glm_qkv_norm_store_compact_kv_args;
-
-typedef struct {
-    uint32_t pos0;
-    uint32_t n_tokens;
-    uint32_t cache_cap;
-    uint32_t head_dim;
-    uint32_t rot_dim;
-    uint32_t n_ctx_orig;
-    uint32_t cache_f16;
-    uint32_t pad0;
-    float    eps;
-    float    freq_base;
-    float    freq_scale;
-    float    ext_factor;
-    float    attn_factor;
-    float    beta_fast;
-    float    beta_slow;
-    float    pad1;
-} ds4_gpu_glm_store_indexer_k_args;
-
-typedef struct {
-    uint32_t pos0;
-    uint32_t n_tokens;
-    uint32_t cache_cap;
-    uint32_t head_dim;
-    uint32_t pool_size;
-    uint32_t cache_f16;
-    float    eps;
-    uint32_t pad0;
-} ds4_gpu_glm53_indexer_pool_update_args;
-
-typedef struct {
-    uint32_t pos0;
-    uint32_t n_tokens;
-    uint32_t cache_cap;
-    uint32_t n_head;
-    uint32_t kv_raw_dim;
-    uint32_t kv_lora_dim;
-    uint32_t qk_nope;
-    uint32_t qk_rope;
-    uint32_t value_dim;
-    uint32_t n_ctx_orig;
-    uint32_t cache_f16;
-    uint32_t pad0;
-    float    freq_base;
-    float    freq_scale;
-    float    ext_factor;
-    float    attn_factor;
-    float    beta_fast;
-    float    beta_slow;
-} ds4_gpu_glm_build_kv_cache_args;
-
-typedef struct {
-    uint32_t pos0;
-    uint32_t n_tokens;
-    uint32_t cache_len;
-    uint32_t cache_cap;
-    uint32_t n_head;
-    uint32_t qk_dim;
-    uint32_t value_dim;
-    uint32_t pad0;
-    uint32_t cache_f16;
-    uint32_t pad1;
-    uint32_t pad2;
-    float    scale;
-} ds4_gpu_glm_attention_full_args;
-
-typedef struct {
-    uint32_t n_selected;
-} ds4_gpu_glm_fill_selected_range_args;
-
-typedef struct {
-    uint32_t n_tokens;
-    uint32_t pos0;
-    uint32_t n_selected;
-    uint32_t pad_row;
-} ds4_gpu_glm_fill_selected_range_batch_args;
-
-typedef struct {
-    uint32_t n_tokens;
-    uint32_t pos0;
-    uint32_t selected_pools;
-    uint32_t index_topk;
-    uint32_t pool_size;
-    uint32_t output_width;
-} ds4_gpu_glm53_expand_pool_selection_args;
-
-typedef struct {
-    uint32_t n_tokens;
-    uint32_t n_head;
-    uint32_t head_dim;
-    uint32_t rot_dim;
-    uint32_t rot_offset;
-    uint32_t pos0;
-    uint32_t n_ctx_orig;
-    float    freq_base;
-    float    freq_scale;
-    float    ext_factor;
-    float    attn_factor;
-    float    beta_fast;
-    float    beta_slow;
-} ds4_gpu_glm_rope_tail_args;
-
-typedef struct {
     uint32_t n_rows;
     uint32_t n_head;
     uint32_t head_dim;
@@ -6602,117 +6370,6 @@ typedef struct {
     uint64_t score_token_stride;
     float    scale;
 } ds4_gpu_glm_indexer_scores_batch_args;
-
-typedef struct {
-    uint32_t n_head;
-    uint32_t kv_lora_dim;
-    uint32_t qk_nope;
-    uint32_t qk_dim;
-    uint32_t row_bytes;
-    uint32_t weight_type;
-    uint32_t pad1;
-    uint32_t pad2;
-} ds4_gpu_glm_qk_lowrank_args;
-
-typedef struct {
-    uint32_t n_tokens;
-    uint32_t n_head;
-    uint32_t kv_lora_dim;
-    uint32_t qk_nope;
-    uint32_t qk_dim;
-    uint32_t row_bytes;
-    uint32_t weight_type;
-    uint32_t head_base;
-} ds4_gpu_glm_qk_lowrank_batch_args;
-
-typedef struct {
-    uint32_t n_selected;
-    uint32_t cache_cap;
-    uint32_t cache_f16;
-    uint32_t n_head;
-    uint32_t kv_lora_dim;
-    uint32_t qk_nope;
-    uint32_t qk_rope;
-    uint32_t value_dim;
-    uint32_t n_ctx_orig;
-    uint32_t value_row_bytes;
-    float    scale;
-    float    freq_base;
-    float    freq_scale;
-    float    ext_factor;
-    float    attn_factor;
-    float    beta_fast;
-    float    beta_slow;
-    uint32_t value_type;
-} ds4_gpu_glm_attention_indexed_decode_args;
-
-typedef struct {
-    uint32_t n_selected;
-    uint32_t cache_cap;
-    uint32_t cache_f16;
-    uint32_t n_head;
-    uint32_t kv_lora_dim;
-    uint32_t qk_nope;
-    uint32_t qk_rope;
-    uint32_t value_dim;
-    uint32_t n_ctx_orig;
-    uint32_t value_row_bytes;
-    uint32_t block_rows;
-    uint32_t n_blocks;
-    float    scale;
-    float    freq_base;
-    float    freq_scale;
-    float    ext_factor;
-    float    attn_factor;
-    float    beta_fast;
-    float    beta_slow;
-    uint32_t value_type;
-} ds4_gpu_glm_attention_indexed_decode_split_args;
-
-typedef struct {
-    uint32_t n_tokens;
-    uint32_t n_selected;
-    uint32_t cache_cap;
-    uint32_t cache_f16;
-    uint32_t n_head;
-    uint32_t kv_lora_dim;
-    uint32_t qk_nope;
-    uint32_t qk_rope;
-    uint32_t value_dim;
-    uint32_t n_ctx_orig;
-    uint32_t value_row_bytes;
-    uint32_t value_type;
-    uint32_t pos0;
-    float    scale;
-    float    freq_base;
-    float    freq_scale;
-    float    ext_factor;
-    float    attn_factor;
-    float    beta_fast;
-    float    beta_slow;
-    uint32_t head_base;
-} ds4_gpu_glm_attention_indexed_batch_args;
-
-typedef struct {
-    uint32_t in_dim;
-    uint32_t mid_dim;
-    uint32_t out_dim;
-    uint32_t n_total_expert;
-    uint32_t n_expert_used;
-    uint32_t n_tokens;
-    uint32_t mid_token_stride;
-    uint32_t down_type;
-    float    swiglu_clamp;
-    int32_t  tp_rank;
-    int32_t  tp_world;
-    int32_t  tp_expert_base;
-    uint64_t gate_expert_bytes;
-    uint64_t gate_row_bytes;
-    uint64_t up_expert_bytes;
-    uint64_t up_row_bytes;
-    uint64_t down_expert_bytes;
-    uint64_t down_row_bytes;
-} ds4_gpu_glm_routed_moe_args;
 
 typedef struct {
     uint32_t n_tokens;
@@ -8894,36 +8551,6 @@ int ds4_gpu_init(void) {
             ds4_gpu_get_pipeline("kernel_dsv4_router_select_visual_batch");
         g_dsv4_router_weights_one_pipeline =
             ds4_gpu_get_pipeline("kernel_dsv4_router_weights_one");
-        g_glm_router_select_one_pipeline =
-            ds4_gpu_get_pipeline("kernel_glm_router_select_one");
-        g_glm_kv_lora_rms_norm_pipeline =
-            ds4_gpu_get_pipeline("kernel_glm_kv_lora_rms_norm");
-        g_glm_k_b_project_pipeline =
-            ds4_gpu_get_pipeline("kernel_glm_k_b_project_q8_0");
-        g_glm_store_compact_kv_pipeline =
-            ds4_gpu_get_pipeline("kernel_glm_store_compact_kv");
-        g_glm_qkv_norm_store_compact_kv_pipeline =
-            ds4_gpu_get_pipeline("kernel_glm_qkv_norm_store_compact_kv");
-        g_glm_store_indexer_k_pipeline =
-            ds4_gpu_get_pipeline("kernel_glm_store_indexer_k");
-        g_glm53_indexer_pool_update_pipeline =
-            ds4_gpu_get_pipeline("kernel_glm53_indexer_pool_update");
-        g_glm_build_kv_cache_pipeline =
-            ds4_gpu_get_pipeline("kernel_glm_build_kv_cache");
-        g_glm_build_kv_cache_decode_group4_pipeline =
-            ds4_gpu_get_pipeline("kernel_glm_build_kv_cache_decode_group4");
-        g_glm_build_kv_cache_flash_pipeline =
-            ds4_gpu_get_pipeline("kernel_glm_build_kv_cache_flash");
-        g_glm_attention_full_pipeline =
-            ds4_gpu_get_pipeline("kernel_glm_attention_full");
-        g_glm_fill_selected_range_pipeline =
-            ds4_gpu_get_pipeline("kernel_glm_fill_selected_range");
-        g_glm_fill_selected_range_batch_pipeline =
-            ds4_gpu_get_pipeline("kernel_glm_fill_selected_range_batch");
-        g_glm53_expand_pool_selection_pipeline =
-            ds4_gpu_get_pipeline("kernel_glm53_expand_pool_selection");
-        g_glm_indexer_rope_tail_pipeline =
-            ds4_gpu_get_pipeline("kernel_glm_indexer_rope_tail_f32");
         g_glm_indexer_score_one_pipeline =
             ds4_gpu_get_pipeline("kernel_glm_indexer_score_one");
         g_glm_indexer_score_one_direct_pipeline =
@@ -8934,88 +8561,6 @@ int ds4_gpu_init(void) {
             ds4_gpu_get_pipeline("kernel_glm_indexer_scores_tiled");
         g_glm_indexer_scores_tiled_f32_pipeline =
             ds4_gpu_get_pipeline("kernel_glm_indexer_scores_tiled_f32");
-        g_glm_qk_lowrank_pipeline =
-            ds4_gpu_get_pipeline("kernel_glm_qk_lowrank_q8_0");
-        g_glm_qk_lowrank_glm52_pipeline =
-            ds4_gpu_get_pipeline("kernel_glm_qk_lowrank_q8_0_glm52");
-        g_glm_qk_lowrank_glm52_sg_pipeline =
-            ds4_gpu_get_pipeline("kernel_glm_qk_lowrank_q8_0_glm52_sg");
-        g_glm_qk_lowrank_batch_pipeline =
-            ds4_gpu_get_pipeline("kernel_glm_qk_lowrank_q8_0_batch");
-        g_glm_qk_lowrank_batch_glm52_t4_pipeline =
-            ds4_gpu_get_pipeline("kernel_glm_qk_lowrank_q8_0_batch_glm52_t4");
-        g_glm_value_project_q8_0_pipeline =
-            ds4_gpu_get_pipeline("kernel_glm_value_project_q8_0");
-        g_glm_value_project_q8_0_batch_heads_pipeline =
-            ds4_gpu_get_pipeline("kernel_glm_value_project_q8_0_batch_heads");
-        g_glm_value_project_q8_0_batch_heads_mma_pipeline =
-            ds4_gpu_get_pipeline("kernel_glm_value_project_q8_0_batch_heads_mma");
-        g_glm_attention_indexed_decode_pipeline =
-            ds4_gpu_get_pipeline("kernel_glm_attention_indexed_decode");
-        g_glm_attention_indexed_decode_split_group8_partial_pipeline =
-            ds4_gpu_get_pipeline("kernel_glm_attention_indexed_decode_split_group8_partial");
-        g_glm_attention_indexed_decode_split_group8_partial_valid_fullheads_pipeline =
-            ds4_gpu_get_pipeline("kernel_glm_attention_indexed_decode_split_group8_partial_valid_fullheads");
-        g_glm_attention_indexed_decode_split_group8_reduce_pipeline =
-            ds4_gpu_get_pipeline("kernel_glm_attention_indexed_decode_split_group8_reduce");
-        g_glm_attention_indexed_decode_split_group8_reduce16_pipeline =
-            ds4_gpu_get_pipeline("kernel_glm_attention_indexed_decode_split_group8_reduce16");
-        g_glm_attention_indexed_batch_pipeline =
-            ds4_gpu_get_pipeline("kernel_glm_attention_indexed_batch");
-        g_glm_attention_indexed_batch_group2_pipeline =
-            ds4_gpu_get_pipeline("kernel_glm_attention_indexed_batch_group2");
-        g_glm_attention_indexed_batch_q2_group4_pipeline =
-            ds4_gpu_get_pipeline("kernel_glm_attention_indexed_batch_q2_group4");
-        g_glm_attention_indexed_batch_group8_pipeline =
-            ds4_gpu_get_pipeline("kernel_glm_attention_indexed_batch_group8");
-        g_glm_attention_indexed_batch_lora_group8_vec_pipeline =
-            ds4_gpu_get_pipeline("kernel_glm_attention_indexed_batch_lora_group8_vec");
-        g_glm_attention_indexed_batch_lora_group8_vec_valid_pipeline =
-            ds4_gpu_get_pipeline("kernel_glm_attention_indexed_batch_lora_group8_vec_valid");
-        g_glm_attention_indexed_batch_lora_group8_vec_valid_fullheads_pipeline =
-            ds4_gpu_get_pipeline("kernel_glm_attention_indexed_batch_lora_group8_vec_valid_fullheads");
-        g_glm_attention_indexed_batch_lora_group8_vec_causal_pipeline =
-            ds4_gpu_get_pipeline("kernel_glm_attention_indexed_batch_lora_group8_vec_causal");
-        g_glm_attention_indexed_batch_lora_group8_vec_causal_fullheads_pipeline =
-            ds4_gpu_get_pipeline("kernel_glm_attention_indexed_batch_lora_group8_vec_causal_fullheads");
-        g_glm_q4_k_pair_swiglu_f32_pipeline =
-            ds4_gpu_get_pipeline("kernel_glm_q4_K_pair_swiglu_f32");
-        g_glm_q4_k_pair_swiglu2_f32_pipeline =
-            ds4_gpu_get_pipeline("kernel_glm_q4_K_pair_swiglu2_f32");
-        g_glm_q4_k_pair_swiglu4_f32_pipeline =
-            ds4_gpu_get_pipeline("kernel_glm_q4_K_pair_swiglu4_f32");
-        g_glm_q4_k_pair_swiglu2_mapped_f32_pipeline =
-            ds4_gpu_get_pipeline("kernel_glm_q4_K_pair_swiglu2_mapped_f32");
-        g_glm_q4_k_pair_swiglu2_mapped_row_f32_pipeline =
-            ds4_gpu_get_pipeline("kernel_glm_q4_K_pair_swiglu2_mapped_row_f32");
-        g_glm_q2_k_pair_swiglu_f32_pipeline =
-            ds4_gpu_get_pipeline("kernel_glm_q2_K_pair_swiglu_f32");
-        g_glm_q2_k_addr_pair_swiglu2_f32_pipeline =
-            ds4_gpu_get_pipeline("kernel_glm_q2_K_addr_pair_swiglu2_f32");
-        g_glm_q2_k_addr_pair_swiglu2_masked_f32_pipeline =
-            ds4_gpu_get_pipeline("kernel_glm_q2_K_addr_pair_swiglu2_f32_masked");
-        g_glm_q4_k_addr_pair_swiglu_f32_pipeline =
-            ds4_gpu_get_pipeline("kernel_glm_q4_K_addr_pair_swiglu_f32");
-        g_glm_q4_k_addr_pair_swiglu_masked_f32_pipeline =
-            ds4_gpu_get_pipeline("kernel_glm_q4_K_addr_pair_swiglu_f32_masked");
-        g_glm_q2_k_down_f32_pipeline =
-            ds4_gpu_get_pipeline("kernel_glm_q2_K_down_f32");
-        g_glm_q4_k_down_f32_pipeline =
-            ds4_gpu_get_pipeline("kernel_glm_q4_K_down_simd_f32");
-        g_glm_q2_k_addr_down_f32_pipeline =
-            ds4_gpu_get_pipeline("kernel_glm_q2_K_addr_down_f32");
-        g_glm_q4_k_addr_down_f32_pipeline =
-            ds4_gpu_get_pipeline("kernel_glm_q4_K_addr_down_simd_f32");
-        g_glm_q5_k_pair_swiglu_f32_pipeline =
-            ds4_gpu_get_pipeline("kernel_glm_q5_K_pair_swiglu_f32");
-        g_glm_q5_k_pair_swiglu_mapped_f32_pipeline =
-            ds4_gpu_get_pipeline("kernel_glm_q5_K_pair_swiglu_mapped_f32");
-        g_glm_q5_k_pair_swiglu_mapped_row_f32_pipeline =
-            ds4_gpu_get_pipeline("kernel_glm_q5_K_pair_swiglu_mapped_row_f32");
-        g_glm_q5_k_down_f32_pipeline =
-            ds4_gpu_get_pipeline("kernel_glm_q5_K_down_f32");
-        g_glm_q6_k_down_f32_pipeline =
-            ds4_gpu_get_pipeline("kernel_glm_q6_K_down_f32");
         g_dsv4_router_weights_batch_pipeline =
             ds4_gpu_get_pipeline("kernel_dsv4_router_weights_batch");
         g_dsv4_hc_expand4_pipeline =
@@ -9032,67 +8577,11 @@ int ds4_gpu_init(void) {
             !g_dsv4_router_finalize_one_pipeline ||
             !g_dsv4_router_select_visual_batch_pipeline ||
             !g_dsv4_router_weights_one_pipeline ||
-            !g_glm_router_select_one_pipeline ||
-            !g_glm_kv_lora_rms_norm_pipeline ||
-            !g_glm_k_b_project_pipeline ||
-            !g_glm_store_compact_kv_pipeline ||
-            !g_glm_qkv_norm_store_compact_kv_pipeline ||
-            !g_glm_store_indexer_k_pipeline ||
-            !g_glm53_indexer_pool_update_pipeline ||
-            !g_glm_build_kv_cache_pipeline ||
-            !g_glm_build_kv_cache_decode_group4_pipeline ||
-            !g_glm_build_kv_cache_flash_pipeline ||
-            !g_glm_attention_full_pipeline ||
-            !g_glm_fill_selected_range_pipeline ||
-            !g_glm_fill_selected_range_batch_pipeline ||
-            !g_glm53_expand_pool_selection_pipeline ||
-            !g_glm_indexer_rope_tail_pipeline ||
             !g_glm_indexer_score_one_pipeline ||
             !g_glm_indexer_score_one_direct_pipeline ||
             !g_glm_indexer_scores_batch_pipeline ||
             !g_glm_indexer_scores_tiled_pipeline ||
             !g_glm_indexer_scores_tiled_f32_pipeline ||
-            !g_glm_qk_lowrank_pipeline ||
-            !g_glm_qk_lowrank_glm52_pipeline ||
-            !g_glm_qk_lowrank_glm52_sg_pipeline ||
-            !g_glm_qk_lowrank_batch_pipeline ||
-            !g_glm_qk_lowrank_batch_glm52_t4_pipeline ||
-            !g_glm_value_project_q8_0_pipeline ||
-            !g_glm_value_project_q8_0_batch_heads_pipeline ||
-            !g_glm_value_project_q8_0_batch_heads_mma_pipeline ||
-            !g_glm_attention_indexed_decode_pipeline ||
-            !g_glm_attention_indexed_decode_split_group8_partial_pipeline ||
-            !g_glm_attention_indexed_decode_split_group8_partial_valid_fullheads_pipeline ||
-            !g_glm_attention_indexed_decode_split_group8_reduce_pipeline ||
-            !g_glm_attention_indexed_decode_split_group8_reduce16_pipeline ||
-            !g_glm_attention_indexed_batch_pipeline ||
-            !g_glm_attention_indexed_batch_group2_pipeline ||
-            !g_glm_attention_indexed_batch_q2_group4_pipeline ||
-            !g_glm_attention_indexed_batch_group8_pipeline ||
-            !g_glm_attention_indexed_batch_lora_group8_vec_pipeline ||
-            !g_glm_attention_indexed_batch_lora_group8_vec_valid_pipeline ||
-            !g_glm_attention_indexed_batch_lora_group8_vec_valid_fullheads_pipeline ||
-            !g_glm_attention_indexed_batch_lora_group8_vec_causal_pipeline ||
-            !g_glm_attention_indexed_batch_lora_group8_vec_causal_fullheads_pipeline ||
-            !g_glm_q4_k_pair_swiglu_f32_pipeline ||
-            !g_glm_q4_k_pair_swiglu2_f32_pipeline ||
-            !g_glm_q4_k_pair_swiglu4_f32_pipeline ||
-            !g_glm_q4_k_pair_swiglu2_mapped_f32_pipeline ||
-            !g_glm_q4_k_pair_swiglu2_mapped_row_f32_pipeline ||
-            !g_glm_q2_k_pair_swiglu_f32_pipeline ||
-            !g_glm_q2_k_addr_pair_swiglu2_f32_pipeline ||
-            !g_glm_q2_k_addr_pair_swiglu2_masked_f32_pipeline ||
-            !g_glm_q4_k_addr_pair_swiglu_f32_pipeline ||
-            !g_glm_q4_k_addr_pair_swiglu_masked_f32_pipeline ||
-            !g_glm_q2_k_down_f32_pipeline ||
-            !g_glm_q4_k_down_f32_pipeline ||
-            !g_glm_q2_k_addr_down_f32_pipeline ||
-            !g_glm_q4_k_addr_down_f32_pipeline ||
-            !g_glm_q5_k_pair_swiglu_f32_pipeline ||
-            !g_glm_q5_k_pair_swiglu_mapped_f32_pipeline ||
-            !g_glm_q5_k_pair_swiglu_mapped_row_f32_pipeline ||
-            !g_glm_q5_k_down_f32_pipeline ||
-            !g_glm_q6_k_down_f32_pipeline ||
             !g_dsv4_hc_expand4_pipeline) {
             g_queue = nil;
             g_device = nil;
@@ -10024,7 +9513,6 @@ int ds4_gpu_parallel_ffn_finish(void) {
     ds4_gpu_parallel_ffn_reset_state(YES);
     return completed;
 }
-
 
 static int ds4_gpu_stream_expert_cache_wait_inflight(const char *label) {
     const char *what = label ? label : "streaming expert cache in-flight";
@@ -11447,9 +10935,6 @@ int ds4_gpu_synchronize(void) {
     return ds4_gpu_finish_command_buffer(cb, 1, "synchronize");
 }
 
-static void qwen4_nax_release_scratch(void);
-static void qwen4_batch_release_scratch(void);
-
 void ds4_gpu_cleanup(void) {
     if (!g_initialized) return;
     ds4_gpu_queue_keepalive_stop_thread();
@@ -11632,67 +11117,11 @@ void ds4_gpu_cleanup(void) {
         [g_dsv4_completion_cache removeAllObjects];
         g_dsv4_completion_cache = nil;
         g_dsv4_router_weights_one_pipeline = nil;
-        g_glm_router_select_one_pipeline = nil;
-        g_glm_kv_lora_rms_norm_pipeline = nil;
-        g_glm_k_b_project_pipeline = nil;
-        g_glm_store_compact_kv_pipeline = nil;
-        g_glm_qkv_norm_store_compact_kv_pipeline = nil;
-        g_glm_store_indexer_k_pipeline = nil;
-        g_glm53_indexer_pool_update_pipeline = nil;
-        g_glm_build_kv_cache_pipeline = nil;
-        g_glm_build_kv_cache_decode_group4_pipeline = nil;
-        g_glm_build_kv_cache_flash_pipeline = nil;
-        g_glm_attention_full_pipeline = nil;
-        g_glm_fill_selected_range_pipeline = nil;
-        g_glm_fill_selected_range_batch_pipeline = nil;
-        g_glm53_expand_pool_selection_pipeline = nil;
-        g_glm_indexer_rope_tail_pipeline = nil;
         g_glm_indexer_score_one_pipeline = nil;
         g_glm_indexer_score_one_direct_pipeline = nil;
         g_glm_indexer_scores_batch_pipeline = nil;
         g_glm_indexer_scores_tiled_pipeline = nil;
         g_glm_indexer_scores_tiled_f32_pipeline = nil;
-        g_glm_qk_lowrank_pipeline = nil;
-        g_glm_qk_lowrank_glm52_pipeline = nil;
-        g_glm_qk_lowrank_glm52_sg_pipeline = nil;
-        g_glm_qk_lowrank_batch_pipeline = nil;
-        g_glm_qk_lowrank_batch_glm52_t4_pipeline = nil;
-        g_glm_value_project_q8_0_pipeline = nil;
-        g_glm_value_project_q8_0_batch_heads_pipeline = nil;
-        g_glm_value_project_q8_0_batch_heads_mma_pipeline = nil;
-        g_glm_attention_indexed_decode_pipeline = nil;
-        g_glm_attention_indexed_decode_split_group8_partial_pipeline = nil;
-        g_glm_attention_indexed_decode_split_group8_partial_valid_fullheads_pipeline = nil;
-        g_glm_attention_indexed_decode_split_group8_reduce_pipeline = nil;
-        g_glm_attention_indexed_decode_split_group8_reduce16_pipeline = nil;
-        g_glm_attention_indexed_batch_pipeline = nil;
-        g_glm_attention_indexed_batch_group2_pipeline = nil;
-        g_glm_attention_indexed_batch_q2_group4_pipeline = nil;
-        g_glm_attention_indexed_batch_group8_pipeline = nil;
-        g_glm_attention_indexed_batch_lora_group8_vec_pipeline = nil;
-        g_glm_attention_indexed_batch_lora_group8_vec_valid_pipeline = nil;
-        g_glm_attention_indexed_batch_lora_group8_vec_valid_fullheads_pipeline = nil;
-        g_glm_attention_indexed_batch_lora_group8_vec_causal_pipeline = nil;
-        g_glm_attention_indexed_batch_lora_group8_vec_causal_fullheads_pipeline = nil;
-        g_glm_q4_k_pair_swiglu_f32_pipeline = nil;
-        g_glm_q4_k_pair_swiglu2_f32_pipeline = nil;
-        g_glm_q4_k_pair_swiglu4_f32_pipeline = nil;
-        g_glm_q4_k_pair_swiglu2_mapped_f32_pipeline = nil;
-        g_glm_q4_k_pair_swiglu2_mapped_row_f32_pipeline = nil;
-        g_glm_q2_k_pair_swiglu_f32_pipeline = nil;
-        g_glm_q2_k_addr_pair_swiglu2_f32_pipeline = nil;
-        g_glm_q2_k_addr_pair_swiglu2_masked_f32_pipeline = nil;
-        g_glm_q4_k_addr_pair_swiglu_f32_pipeline = nil;
-        g_glm_q4_k_addr_pair_swiglu_masked_f32_pipeline = nil;
-        g_glm_q2_k_down_f32_pipeline = nil;
-        g_glm_q4_k_down_f32_pipeline = nil;
-        g_glm_q2_k_addr_down_f32_pipeline = nil;
-        g_glm_q4_k_addr_down_f32_pipeline = nil;
-        g_glm_q5_k_pair_swiglu_f32_pipeline = nil;
-        g_glm_q5_k_pair_swiglu_mapped_f32_pipeline = nil;
-        g_glm_q5_k_pair_swiglu_mapped_row_f32_pipeline = nil;
-        g_glm_q5_k_down_f32_pipeline = nil;
-        g_glm_q6_k_down_f32_pipeline = nil;
         g_dsv4_router_weights_batch_pipeline = nil;
         g_dsv4_hc_expand4_pipeline = nil;
         g_flash_attn_mask_buffer = nil;
@@ -11720,8 +11149,6 @@ void ds4_gpu_cleanup(void) {
         g_stream_expert_validate_status_buffer = nil;
         g_f16_round_scratch_buffer = nil;
         g_q8_prefill_scratch_buffer = nil;
-        g_qwen4_conv_halo_buffer = nil;
-        g_qwen4_conv_halo_bytes = 0;
         g_raw_store_round_buffer = nil;
         g_moe_gate_scratch_buffer = nil;
         g_moe_down_scratch_buffer = nil;
@@ -11738,8 +11165,6 @@ void ds4_gpu_cleanup(void) {
         g_model_mapped_offset = 0;
         g_model_mapped_size = 0;
         g_model_mapped_max_tensor_bytes = 0;
-        qwen4_nax_release_scratch();
-        qwen4_batch_release_scratch();
         ds4_gpu_tensor_tracking_reset();
         g_flash_attn_mask_bytes = 0;
         g_flash_attn_zero_mask_bytes = 0;
@@ -12270,12 +11695,6 @@ static int ds4_gpu_model_views_cover_spans(
             return 0;
         }
     }
-    return 1;
-}
-
-int ds4_gpu_set_model_fd_for_map(int fd, const void *model_map) {
-    (void)fd;
-    (void)model_map;
     return 1;
 }
 
@@ -17462,7 +16881,6 @@ static bool ds4_gpu_q4_non_streaming_opt_in_enabled(void) {
 
 static bool ds4_gpu_q4_selected_paths_allowed(void) {
     if (g_ssd_streaming_mode) return true;
-    if (g_glm_model_mode) return false;
     return ds4_gpu_q4_non_streaming_opt_in_enabled();
 }
 
@@ -19257,8 +18675,7 @@ static int ds4_gpu_matmul_q8_0_pair_impl(
         uint64_t                out0_dim,
         uint64_t                out1_dim,
         const ds4_gpu_tensor *x,
-        uint64_t                n_tok, bool concat) {
-    if (concat && (!in_dim || ((out0_dim | out1_dim) & 1u))) return 0;
+        uint64_t                n_tok) {
     if (!g_initialized && !ds4_gpu_init()) return 0;
     if (!out0 || !out1 || !model_map || !x || n_tok != 1 ||
         out0_dim == 0 || out1_dim == 0 || (in_dim & 31u) != 0 ||
@@ -19313,7 +18730,7 @@ static int ds4_gpu_matmul_q8_0_pair_impl(
         args0.nr0 = dispatch0.nr0;
         args1.nr0 = dispatch1.nr0;
         id<MTLComputePipelineState> pipeline =
-            ds4_gpu_get_mul_mv_pipeline(concat ? "kernel_qwen4_q8_concat" : "kernel_mul_mv_q8_0_f32_pair", dispatch0.nsg);
+            ds4_gpu_get_mul_mv_pipeline("kernel_mul_mv_q8_0_f32_pair", dispatch0.nsg);
         if (!pipeline) return 0;
 
         int owned = 0;
@@ -19330,7 +18747,7 @@ static int ds4_gpu_matmul_q8_0_pair_impl(
         [enc setBuffer:out0buf offset:ds4_gpu_tensor_offset(out0) atIndex:5];
         [enc setBuffer:out1buf offset:ds4_gpu_tensor_offset(out1) atIndex:6];
         [enc setThreadgroupMemoryLength:2u * dispatch0.smem atIndex:0];
-        const uint64_t max_out_dim = concat ? out0_dim + out1_dim : (out0_dim > out1_dim ? out0_dim : out1_dim);
+        const uint64_t max_out_dim = out0_dim > out1_dim ? out0_dim : out1_dim;
         [enc dispatchThreadgroups:MTLSizeMake(((NSUInteger)max_out_dim +
                                                (NSUInteger)dispatch0.nr0 - 1u) /
                                               (NSUInteger)dispatch0.nr0,
@@ -19357,21 +18774,7 @@ int ds4_gpu_matmul_q8_0_pair_tensor(
         uint64_t                out1_dim,
         const ds4_gpu_tensor *x,
         uint64_t                n_tok) {
-    return ds4_gpu_matmul_q8_0_pair_impl(out0, out1, model_map, model_size, weight0_offset, weight1_offset, in_dim, out0_dim, out1_dim, x, n_tok, false);
-}
-
-int ds4_gpu_matmul_q8_0_f16_out_tensor(
-        ds4_gpu_tensor       *out_h,
-        const void             *model_map,
-        uint64_t                model_size,
-        uint64_t                weight_offset,
-        uint64_t                in_dim,
-        uint64_t                out_dim,
-        const ds4_gpu_tensor *x,
-        uint64_t                n_tok) {
-    (void)out_h; (void)model_map; (void)model_size; (void)weight_offset;
-    (void)in_dim; (void)out_dim; (void)x; (void)n_tok;
-    return 0;
+    return ds4_gpu_matmul_q8_0_pair_impl(out0, out1, model_map, model_size, weight0_offset, weight1_offset, in_dim, out0_dim, out1_dim, x, n_tok);
 }
 
 static int ds4_gpu_shared_gate_up_swiglu_q8_0_impl(
@@ -20427,188 +19830,6 @@ int ds4_gpu_dsv4_comp_row_finalize_tensor(
     return 1;
 }
 
-/* Decode-only fusion: q_a/kv Q8 pair projection + F16 quad compressor
- * projection/store in one dispatch (both read the same normalized input).
- * Bit-exact vs the separate dispatches; see the kernel comment.  Returns
- * 1 when the fused dispatch ran, 0 when the caller must use the separate
- * paths, -1 on error. */
-int ds4_gpu_qkv_pair_quad_compressor_store_tensor(
-        ds4_gpu_tensor       *qr,
-        ds4_gpu_tensor       *kv_raw,
-        ds4_gpu_tensor       *out0_kv,
-        ds4_gpu_tensor       *out0_score,
-        ds4_gpu_tensor       *out1_kv,
-        ds4_gpu_tensor       *out1_score,
-        ds4_gpu_tensor       *state0_kv,
-        ds4_gpu_tensor       *state0_score,
-        ds4_gpu_tensor       *state1_kv,
-        ds4_gpu_tensor       *state1_score,
-        const void           *model_map,
-        uint64_t              model_size,
-        uint64_t              q_a_offset,
-        uint64_t              kv_offset,
-        uint64_t              weight0_kv_offset,
-        uint64_t              weight0_score_offset,
-        uint64_t              weight1_kv_offset,
-        uint64_t              weight1_score_offset,
-        uint64_t              ape0_offset,
-        uint32_t              ape0_type,
-        uint64_t              ape1_offset,
-        uint32_t              ape1_type,
-        uint32_t              in_dim,
-        uint32_t              q_rank,
-        uint32_t              kv_dim,
-        uint32_t              width0,
-        uint32_t              width1,
-        const ds4_gpu_tensor *x,
-        uint32_t              ratio,
-        uint32_t              pos) {
-    if (!g_initialized && !ds4_gpu_init()) return 0;
-    if (!qr || !kv_raw || !out0_kv || !out0_score || !out1_kv || !out1_score ||
-        !state0_kv || !state0_score || !state1_kv || !state1_score ||
-        !model_map || !x || ratio == 0u || (in_dim & 31u) != 0 ||
-        (width0 & 1u) != 0 || (width1 & 1u) != 0) {
-        return 0;
-    }
-
-    @autoreleasepool {
-        const uint64_t q8_row_bytes = (in_dim / 32u) * 34u;
-        const uint64_t f16_row_bytes = (uint64_t)in_dim * sizeof(uint16_t);
-        const uint64_t q_a_bytes = (uint64_t)q_rank * q8_row_bytes;
-        const uint64_t kv_bytes = (uint64_t)kv_dim * q8_row_bytes;
-        const uint64_t weight0_bytes = (uint64_t)width0 * f16_row_bytes;
-        const uint64_t weight1_bytes = (uint64_t)width1 * f16_row_bytes;
-        const uint64_t state_rows = ratio == 4u ? 2u * ratio : ratio;
-        const uint64_t ape0_bytes = (uint64_t)width0 * ratio *
-                                    (ape0_type == 1u ? 2u : 4u);
-        const uint64_t ape1_bytes = (uint64_t)width1 * ratio *
-                                    (ape1_type == 1u ? 2u : 4u);
-        if (q_a_offset > model_size || q_a_bytes > model_size - q_a_offset ||
-            kv_offset > model_size || kv_bytes > model_size - kv_offset ||
-            weight0_kv_offset > model_size ||
-            weight0_bytes > model_size - weight0_kv_offset ||
-            weight0_score_offset > model_size ||
-            weight0_bytes > model_size - weight0_score_offset ||
-            weight1_kv_offset > model_size ||
-            weight1_bytes > model_size - weight1_kv_offset ||
-            weight1_score_offset > model_size ||
-            weight1_bytes > model_size - weight1_score_offset ||
-            ape0_offset > model_size || ape0_bytes > model_size - ape0_offset ||
-            ape1_offset > model_size || ape1_bytes > model_size - ape1_offset) {
-            return -1;
-        }
-        if (ds4_gpu_tensor_bytes(qr) < (uint64_t)q_rank * sizeof(float) ||
-            ds4_gpu_tensor_bytes(kv_raw) < (uint64_t)kv_dim * sizeof(float) ||
-            ds4_gpu_tensor_bytes(out0_kv) < (uint64_t)width0 * sizeof(float) ||
-            ds4_gpu_tensor_bytes(out0_score) < (uint64_t)width0 * sizeof(float) ||
-            ds4_gpu_tensor_bytes(out1_kv) < (uint64_t)width1 * sizeof(float) ||
-            ds4_gpu_tensor_bytes(out1_score) < (uint64_t)width1 * sizeof(float) ||
-            ds4_gpu_tensor_bytes(x) < (uint64_t)in_dim * sizeof(float) ||
-            ds4_gpu_tensor_bytes(state0_kv) < state_rows * width0 * sizeof(float) ||
-            ds4_gpu_tensor_bytes(state0_score) < state_rows * width0 * sizeof(float) ||
-            ds4_gpu_tensor_bytes(state1_kv) < state_rows * width1 * sizeof(float) ||
-            ds4_gpu_tensor_bytes(state1_score) < state_rows * width1 * sizeof(float)) {
-            return -1;
-        }
-
-        uint64_t q_a_inner = 0, kv_inner = 0;
-        uint64_t w0kv_inner = 0, w0sc_inner = 0, w1kv_inner = 0, w1sc_inner = 0;
-        uint64_t ape0_inner = 0, ape1_inner = 0;
-        id<MTLBuffer> qw0buf = ds4_gpu_wrap_model_range(model_map, model_size, q_a_offset, q_a_bytes, &q_a_inner);
-        id<MTLBuffer> qw1buf = ds4_gpu_wrap_model_range(model_map, model_size, kv_offset, kv_bytes, &kv_inner);
-        id<MTLBuffer> w0kvbuf = ds4_gpu_wrap_model_range(model_map, model_size, weight0_kv_offset, weight0_bytes, &w0kv_inner);
-        id<MTLBuffer> w0scbuf = ds4_gpu_wrap_model_range(model_map, model_size, weight0_score_offset, weight0_bytes, &w0sc_inner);
-        id<MTLBuffer> w1kvbuf = width1 != 0u
-            ? ds4_gpu_wrap_model_range(model_map, model_size, weight1_kv_offset,
-                                       weight1_bytes, &w1kv_inner)
-            : w0kvbuf;
-        id<MTLBuffer> w1scbuf = width1 != 0u
-            ? ds4_gpu_wrap_model_range(model_map, model_size, weight1_score_offset,
-                                       weight1_bytes, &w1sc_inner)
-            : w0scbuf;
-        id<MTLBuffer> ape0buf = ds4_gpu_wrap_model_range(model_map, model_size, ape0_offset, ape0_bytes, &ape0_inner);
-        id<MTLBuffer> ape1buf = width1 != 0u
-            ? ds4_gpu_wrap_model_range(model_map, model_size, ape1_offset,
-                                       ape1_bytes, &ape1_inner)
-            : ape0buf;
-        if (width1 == 0u) {
-            w1kv_inner = w0kv_inner;
-            w1sc_inner = w0sc_inner;
-            ape1_inner = ape0_inner;
-        }
-        if (!qw0buf || !qw1buf || !w0kvbuf || !w0scbuf ||
-            !w1kvbuf || !w1scbuf || !ape0buf || !ape1buf) return -1;
-
-        ds4_gpu_q8_0_matvec_args args0 = ds4_gpu_make_q8_0_mv_args(in_dim, q_rank);
-        ds4_gpu_q8_0_matvec_args args1 = ds4_gpu_make_q8_0_mv_args(in_dim, kv_dim);
-        args0.nr0 = 2;
-        args1.nr0 = 2;
-        ds4_gpu_f16_matvec_args cargs = ds4_gpu_make_f16_mv_args(in_dim, width0);
-        cargs.nr0 = 2;
-        ds4_gpu_dsv4_compressor_store_one_args store0_args = {
-            .width = width0,
-            .ratio = ratio,
-            .pos = pos,
-            .ape_type = ape0_type,
-        };
-        ds4_gpu_dsv4_compressor_store_one_args store1_args = {
-            .width = width1,
-            .ratio = ratio,
-            .pos = pos,
-            .ape_type = ape1_type,
-        };
-        const uint32_t max_out = q_rank > kv_dim ? q_rank : kv_dim;
-        const uint32_t pair_vtgs = (max_out + 1u) / 2u;
-        id<MTLComputePipelineState> pipeline = ds4_gpu_get_mul_mv_pipeline(
-            "kernel_dsv4_qkv_pair_quad_compressor_store_q8_0", 8);
-        if (!pipeline) return 0;
-
-        int owned = 0;
-        id<MTLCommandBuffer> cb = ds4_gpu_command_buffer(&owned);
-        if (!cb) return 0;
-        id<MTLComputeCommandEncoder> enc = ds4_gpu_compute_encoder(cb);
-        [enc setComputePipelineState:pipeline];
-        [enc setBytes:&args0 length:sizeof(args0) atIndex:0];
-        [enc setBytes:&args1 length:sizeof(args1) atIndex:1];
-        [enc setBytes:&cargs length:sizeof(cargs) atIndex:2];
-        [enc setBytes:&store0_args length:sizeof(store0_args) atIndex:3];
-        [enc setBytes:&store1_args length:sizeof(store1_args) atIndex:4];
-        [enc setBytes:&pair_vtgs length:sizeof(pair_vtgs) atIndex:5];
-        [enc setBuffer:qw0buf offset:(NSUInteger)q_a_inner atIndex:6];
-        [enc setBuffer:qw1buf offset:(NSUInteger)kv_inner atIndex:7];
-        [enc setBuffer:w0kvbuf offset:(NSUInteger)w0kv_inner atIndex:8];
-        [enc setBuffer:w0scbuf offset:(NSUInteger)w0sc_inner atIndex:9];
-        [enc setBuffer:w1kvbuf offset:(NSUInteger)w1kv_inner atIndex:10];
-        [enc setBuffer:w1scbuf offset:(NSUInteger)w1sc_inner atIndex:11];
-        [enc setBuffer:ds4_gpu_tensor_buffer(x) offset:ds4_gpu_tensor_offset(x) atIndex:12];
-        [enc setBuffer:ds4_gpu_tensor_buffer(qr) offset:ds4_gpu_tensor_offset(qr) atIndex:13];
-        [enc setBuffer:ds4_gpu_tensor_buffer(kv_raw) offset:ds4_gpu_tensor_offset(kv_raw) atIndex:14];
-        [enc setBuffer:ds4_gpu_tensor_buffer(out0_kv) offset:ds4_gpu_tensor_offset(out0_kv) atIndex:15];
-        [enc setBuffer:ds4_gpu_tensor_buffer(out0_score) offset:ds4_gpu_tensor_offset(out0_score) atIndex:16];
-        [enc setBuffer:ds4_gpu_tensor_buffer(out1_kv) offset:ds4_gpu_tensor_offset(out1_kv) atIndex:17];
-        [enc setBuffer:ds4_gpu_tensor_buffer(out1_score) offset:ds4_gpu_tensor_offset(out1_score) atIndex:18];
-        [enc setBuffer:ape0buf offset:(NSUInteger)ape0_inner atIndex:19];
-        [enc setBuffer:ape1buf offset:(NSUInteger)ape1_inner atIndex:20];
-        [enc setBuffer:ds4_gpu_tensor_buffer(state0_kv) offset:ds4_gpu_tensor_offset(state0_kv) atIndex:21];
-        [enc setBuffer:ds4_gpu_tensor_buffer(state0_score) offset:ds4_gpu_tensor_offset(state0_score) atIndex:22];
-        [enc setBuffer:ds4_gpu_tensor_buffer(state1_kv) offset:ds4_gpu_tensor_offset(state1_kv) atIndex:23];
-        [enc setBuffer:ds4_gpu_tensor_buffer(state1_score) offset:ds4_gpu_tensor_offset(state1_score) atIndex:24];
-        [enc setThreadgroupMemoryLength:2u * 2u * 2u * 32u * sizeof(float) atIndex:0];
-        [enc dispatchThreadgroups:MTLSizeMake(
-                (NSUInteger)(pair_vtgs + 1u) / 2u +
-                ((NSUInteger)width0 + (NSUInteger)width1 + 1u) / 2u, 1, 1)
-             threadsPerThreadgroup:MTLSizeMake(32, 8, 1)];
-        ds4_gpu_end_compute_encoder(cb, enc);
-
-        if (!ds4_gpu_finish_command_buffer(
-                cb, owned, "qkv pair + quad compressor store")) {
-            return -1;
-        }
-    }
-
-    return 1;
-}
-
 int ds4_gpu_matmul_f32_tensor(
         ds4_gpu_tensor       *out,
         const void             *model_map,
@@ -21611,38 +20832,6 @@ int ds4_gpu_head_rms_norm_rope_tail_tensor(
     return 1;
 }
 
-int ds4_gpu_attn_q_b_f16_head_rms_rope_tail_tensor(
-        ds4_gpu_tensor       *out,
-        ds4_gpu_tensor       *q_half,
-        const void           *model_map,
-        uint64_t              model_size,
-        uint64_t              weight_offset,
-        uint64_t              in_dim,
-        uint64_t              out_dim,
-        const ds4_gpu_tensor *x,
-        uint32_t              n_tok,
-        uint32_t              n_head,
-        uint32_t              head_dim,
-        uint32_t              n_rot,
-        uint32_t              pos0,
-        uint32_t              n_ctx_orig,
-        bool                  inverse,
-        float                 freq_base,
-        float                 freq_scale,
-        float                 ext_factor,
-        float                 attn_factor,
-        float                 beta_fast,
-        float                 beta_slow,
-        float                 eps) {
-    (void)out; (void)q_half; (void)model_map; (void)model_size;
-    (void)weight_offset; (void)in_dim; (void)out_dim; (void)x;
-    (void)n_tok; (void)n_head; (void)head_dim; (void)n_rot; (void)pos0;
-    (void)n_ctx_orig; (void)inverse; (void)freq_base; (void)freq_scale;
-    (void)ext_factor; (void)attn_factor; (void)beta_fast; (void)beta_slow;
-    (void)eps;
-    return 0;
-}
-
 int ds4_gpu_dsv4_fp8_kv_quantize_tensor(
         ds4_gpu_tensor *x,
         uint32_t          n_tok,
@@ -21735,7 +20924,6 @@ int ds4_gpu_dsv4_indexer_qat_tensor(
 
     return 1;
 }
-
 
 static void ds4_gpu_set_rows_thread_shape(
         uint32_t    width,
@@ -25065,25 +24253,6 @@ int ds4_gpu_attention_output_q4_K_batch_tensor(
         }
         return ok ? 1 : 0;
     }
-}
-
-int ds4_gpu_attention_output_q8_batch_f16_tensor(
-        ds4_gpu_tensor       *out_h,
-        ds4_gpu_tensor       *low,
-        const void             *model_map,
-        uint64_t                model_size,
-        uint64_t                out_a_offset,
-        uint64_t                out_b_offset,
-        uint64_t                group_dim,
-        uint64_t                rank,
-        uint32_t                n_groups,
-        uint64_t                out_dim,
-        const ds4_gpu_tensor *heads,
-        uint32_t                n_tokens) {
-    (void)out_h; (void)low; (void)model_map; (void)model_size;
-    (void)out_a_offset; (void)out_b_offset; (void)group_dim; (void)rank;
-    (void)n_groups; (void)out_dim; (void)heads; (void)n_tokens;
-    return 0;
 }
 
 int ds4_gpu_matmul_q8_0_kslice_tensor(
@@ -33184,7 +32353,6 @@ int ds4_gpu_routed_moe_set_selected_override(const int32_t *selected, uint32_t n
     return 1;
 }
 
-
 /* Single-simdgroup MXFP4 decode MoE policy: the nsg=1 pair_swiglu/sum6
  * variants are the pre-M5 Apple-Silicon default for single-token decode
  * (bit-exact; only the row-to-simdgroup mapping changes).  Read on the
@@ -37892,7 +37060,6 @@ int ds4_gpu_hc_rms_norm_mix_f16_tensor(
     return 1;
 }
 
-
 int ds4_gpu_hc_rms_norm_mix_split_norm_f16_tensor(
         ds4_gpu_tensor       *mix,
         ds4_gpu_tensor       *out,
@@ -38818,18 +37985,6 @@ int ds4_gpu_hc_expand_split_tensor(
     return 1;
 }
 
-int ds4_gpu_hc_expand_split_half_tensor(
-        ds4_gpu_tensor       *out_hc,
-        const ds4_gpu_tensor *block_out_h,
-        const ds4_gpu_tensor *residual_hc,
-        const ds4_gpu_tensor *split,
-        uint32_t                n_embd,
-        uint32_t                n_hc) {
-    (void)out_hc; (void)block_out_h; (void)residual_hc; (void)split;
-    (void)n_embd; (void)n_hc;
-    return 0;
-}
-
 int ds4_gpu_hc_expand_add_split_tensor(
         ds4_gpu_tensor       *out_hc,
         const ds4_gpu_tensor *block_out,
@@ -38937,19 +38092,6 @@ int ds4_gpu_hc_expand_add_split_tensor(
     }
 
     return 1;
-}
-
-int ds4_gpu_hc_expand_add_split_half_add_tensor(
-        ds4_gpu_tensor       *out_hc,
-        const ds4_gpu_tensor *block_out,
-        const ds4_gpu_tensor *block_add_h,
-        const ds4_gpu_tensor *residual_hc,
-        const ds4_gpu_tensor *split,
-        uint32_t                n_embd,
-        uint32_t                n_hc) {
-    (void)out_hc; (void)block_out; (void)block_add_h; (void)residual_hc;
-    (void)split; (void)n_embd; (void)n_hc;
-    return 0;
 }
 
 int ds4_gpu_shared_down_hc_expand_q8_0_tensor(
@@ -39198,8 +38340,6 @@ int ds4_gpu_matmul_q8_0_hc_expand_tensor(
     return 1;
 }
 
-
-
 /* Kimi Delta Attention primitive shared with the GLM-5.3 graph. */
 static int glm53_gpu_mul_u64(uint64_t a, uint64_t b, uint64_t *out) {
     if (!out || (a != 0 && b > UINT64_MAX / a)) return 0;
@@ -39330,24 +38470,8 @@ typedef struct {
 
 typedef struct {
     uint32_t rows;
-    uint32_t grid_h;
-    uint32_t grid_w;
-    float eps;
-} glm53_vision_qkv_args;
-
-typedef struct {
-    uint32_t rows;
     float scale;
 } glm53_vision_attention_args;
-
-typedef struct {
-    uint32_t dst_row;
-    uint32_t image_row;
-    uint32_t rows;
-    uint32_t total_rows;
-    uint32_t width;
-    uint32_t hc;
-} glm53_vision_scatter_args;
 
 static int glm53_vision_dispatch_rows(
         const char           *kernel,
@@ -39836,13 +38960,6 @@ cleanup:
     return ok;
 }
 
-typedef struct {
-    uint32_t n_heads;
-    uint32_t n_rows;
-    float lower_bound;
-    float norm_eps;
-} glm53_gpu_kda_args;
-
 static bool dsv41_tensor_has_floats(const ds4_gpu_tensor *tensor, uint64_t count) {
     return tensor && count <= UINT64_MAX / sizeof(float) &&
            ds4_gpu_tensor_bytes(tensor) >= count * sizeof(float);
@@ -40141,184 +39258,3 @@ int ds4_gpu_dsv41_gather_kv(ds4_gpu_tensor *out, const ds4_gpu_tensor *source,
         return ds4_gpu_finish_command_buffer(cb, owned, "V4.1 sparse KV gather");
     }
 }
-
-/* Qwen3.8-Flash-Next kernels (metal/qwen4.metal): one dispatch per wrapper,
- * weights bound from the model map by offset, transients as ds4_gpu_tensors.
- * Every wrapper joins the active command batch. */
-
-typedef struct {
-    id<MTLBuffer> buf;
-    NSUInteger    off;
-} qwen4_bind;
-
-enum {
-    QWEN4_K_HC_NORM_F16 = 0,
-    QWEN4_K_HC_NORM_F32,
-    QWEN4_K_HC_NORM_Q8,
-    QWEN4_K_HC_NORM_REUSE_F16,
-    QWEN4_K_HC_NORM_REUSE_F32,
-    QWEN4_K_HC_NORM_REUSE_Q8,
-    QWEN4_K_HC_GATE_MIX_F16,
-    QWEN4_K_HC_GATE_MIX_F16_PF,
-    QWEN4_K_HC_GATE_MIX_F32,
-    QWEN4_K_HC_GATE_MIX_Q8,
-    QWEN4_K_HC_GATE_MIX_PAIR_F16,
-    QWEN4_K_HC_GATE_MIX_PAIR_F16_PF,
-    QWEN4_K_HC_GATE_MIX_PAIR_F32,
-    QWEN4_K_HC_GATE_MIX_PAIR_Q8,
-    QWEN4_K_MULTI_GEMV,
-    QWEN4_K_HC_COMBINE,
-    QWEN4_K_CONV_STREAM,
-    QWEN4_K_GDN_PREP,
-    QWEN4_K_GDN_SCAN,
-    QWEN4_K_GDN_SCAN_R4,
-    QWEN4_K_GDN_OUT,
-    QWEN4_K_PLE_GATE,
-    QWEN4_K_PLE_CONV,
-    QWEN4_K_ROUTER,
-    QWEN4_K_ATTN_PREP,
-    QWEN4_K_IDX_BLOCK_KEY,
-    QWEN4_K_IDX_SCORE,
-    QWEN4_K_IDX_SCORE_VEC,
-    QWEN4_K_IDX_SELECT,
-    QWEN4_K_IDX_SELECT_PRE,
-    QWEN4_K_IDX_SCORE_MM,
-    QWEN4_K_IDX_EXPAND,
-    QWEN4_K_ATTN_DECODE_NPT8,
-    QWEN4_K_ATTN_DECODE_NPT4,
-    QWEN4_K_ATTN_DECODE_NPT1,
-    QWEN4_K_ATTN_MERGE_NPT8,
-    QWEN4_K_ATTN_MERGE_NPT4,
-    QWEN4_K_ATTN_MERGE_NPT1,
-    QWEN4_K_ATTN_MERGE_WIDE_NPT8,
-    QWEN4_K_ATTN_MERGE_WIDE_NPT4,
-    QWEN4_K_ATTN_MM,
-    QWEN4_K_MOE_MID,
-    QWEN4_K_MOE_MID_Q4K,
-    QWEN4_K_MOE_MID_Q4K_NR1,
-    QWEN4_K_MOE_DOWN,
-    QWEN4_K_MOE_DOWN_MXFP4_PF,
-    QWEN4_K_MOE_MID_Q4K_GROUPED,
-    QWEN4_K_MOE_DOWN_MXFP4_GROUPED,
-    QWEN4_K_MOE_REDUCE,
-    QWEN4_K_HC_COMBINE_NORM,
-    QWEN4_K_ARGMAX,
-    QWEN4_K_MTP_STAGE,
-    QWEN4_K_MTP_COMBINE,
-    QWEN4_K_GDN_FRONT,
-    QWEN4_K_MOE_BUILD_LISTS,
-    QWEN4_K_MOE_MM_MID,
-    QWEN4_K_MOE_MM_MID_NT1,
-    QWEN4_K_MOE_MM_MID_NT2,
-    QWEN4_K_MOE_MM_DOWN,
-    QWEN4_K_MOE_MM_DOWN_NT1,
-    QWEN4_K_MOE_MM_DOWN_NT2,
-    QWEN4_K_MOE_MM_DOWN_NT8,
-    QWEN4_K_MOE_MM_MID_NT8,
-    QWEN4_K_MOE_MM_MID_NAX,
-    QWEN4_K_MOE_MM_DOWN_NAX,
-    QWEN4_K_MOE_MM_MID_NAX64,
-    QWEN4_K_MOE_MM_DOWN_NAX64,
-    QWEN4_K_MOE_MM_MID_NAXF,
-    QWEN4_K_MOE_MM_DOWN_NAXF,
-    QWEN4_K_MOE_MM_MID_NAXF64,
-    QWEN4_K_MOE_MM_DOWN_NAXF64,
-    QWEN4_K_MOE_MM_MID_NAXC,
-    QWEN4_K_MOE_MM_DOWN_NAXC,
-    QWEN4_K_MOE_MM_MID_NAXC64,
-    QWEN4_K_MOE_MM_DOWN_NAXC64,
-    QWEN4_K_ROWS_F32_TO_F16,
-    QWEN4_K_DENSE_MM,
-    QWEN4_K_DENSE_MM_REDUCE,
-    QWEN4_K_BATCH_MM_Q8_T1,
-    QWEN4_K_BATCH_MM_Q8_T2,
-    QWEN4_K_GDN_SCAN_ROWS,
-    QWEN4_K_CONV_STREAM_ROWS,
-    QWEN4_K_GDN_SCAN_ROWS2,
-    QWEN4_K_CONV_STREAM_ROWS2,
-    QWEN4_K_ATTN_PREP_ROWS,
-    QWEN4_K_IDX_BLOCK_KEY_ROWS,
-    QWEN4_K_IDX_SCORE_ROWS,
-    QWEN4_K_IDX_SELECT_ROWS,
-    QWEN4_K_IDX_EXPAND_ROWS,
-    QWEN4_K_ATTN_DECODE_ROWS_NPT8,
-    QWEN4_K_ATTN_DECODE_ROWS_NPT4,
-    QWEN4_K_ATTN_MERGE_ROWS_NPT8,
-    QWEN4_K_ATTN_MERGE_ROWS_NPT4,
-    QWEN4_K_HC_LO_ACT,
-    QWEN4_K_HC_MIX_ROWS,
-    QWEN4_K_VIS_PATCH_FINISH,
-    QWEN4_K_VIS_LAYERNORM,
-    QWEN4_K_VIS_QKV_ROPE,
-    QWEN4_K_VIS_ATTENTION,
-    QWEN4_K_VIS_BIAS_RESIDUAL,
-    QWEN4_K_VIS_BIAS_ACT,
-    QWEN4_K_COUNT,
-};
-
-typedef struct {
-    uint32_t n_tokens, n_slots, n_out, in_dim, out_rows, weight_type, row_bytes, list_cap;
-    uint64_t expert_bytes;
-    uint32_t n_expert, tiles_per_launch, tail_base, expert_major;
-} qwen4_moe_mm_args;
-
-static id<MTLComputePipelineState> g_qwen4_pipelines[QWEN4_K_COUNT];
-#define QWEN4_ATTN_NSG 4
-#define QWEN4_ATTN_MAX_SPLITS 64
-#define QWEN4_ATTN_ROWS_MAX 64     /* decode batch rows the attention rows kernels take */
-
-typedef struct {
-    uint32_t n_tokens, n_slots, in_dim, out_rows, weight_type, row_bytes;
-    uint64_t expert_bytes;
-    uint32_t has_shared, shared_type, shared_row_bytes, n_total_expert;
-    uint32_t list_cap, pad0;
-} qwen4_moe_args;
-
-static ds4_gpu_tensor *g_qwen4_gdn_slots;
-
-/* ---- GDN rows by address: one or two tokens per session ---------------- */
-
-
-typedef struct {
-    uint64_t state, hist, snap_state, snap_hist;
-    uint32_t row0, n_tok, pad0, pad1;
-} qwen4_gdn_row_entry;
-
-
-/* keys per split of the partial-softmax decode path (DS4_QWEN4_ATTN_SPLIT_KEYS overrides) */
-/* ---- decode batch: attention over rows ----
- *
- * The caches stay per session, so the rows kernels find each row's through
- * a table of GPU addresses (one entry per row, staged per layer) and the
- * dispatch makes those buffers resident.  Every kernel keeps the single-row
- * arithmetic, so a row's outputs match the per-row dispatches bit for bit. */
-
-typedef struct {
-    uint64_t k_cache, v_cache, ik_cache, block_key, pos3;
-    uint32_t pos, n_blocks, use_sel, pad0;
-} qwen4_attn_row_entry;
-
-static ds4_gpu_tensor *g_qwen4_nax_half_x, *g_qwen4_nax_half_mid, *g_qwen4_nax_half_midr;
-static uint64_t g_qwen4_nax_half_x_bytes, g_qwen4_nax_half_mid_bytes, g_qwen4_nax_half_midr_bytes;
-static const ds4_gpu_tensor *g_qwen4_nax_half_mid_for;
-static uint64_t g_qwen4_nax_half_mid_count;
-static void qwen4_nax_release_scratch(void) {
-    if (g_qwen4_nax_half_x) ds4_gpu_tensor_free(g_qwen4_nax_half_x);
-    if (g_qwen4_nax_half_mid) ds4_gpu_tensor_free(g_qwen4_nax_half_mid);
-    if (g_qwen4_nax_half_midr) ds4_gpu_tensor_free(g_qwen4_nax_half_midr);
-    g_qwen4_nax_half_x = g_qwen4_nax_half_mid = g_qwen4_nax_half_midr = NULL;
-    g_qwen4_nax_half_x_bytes = g_qwen4_nax_half_mid_bytes = g_qwen4_nax_half_midr_bytes = 0;
-    g_qwen4_nax_half_mid_for = NULL;
-    g_qwen4_nax_half_mid_count = 0;
-}
-static ds4_gpu_tensor *g_qwen4_dense_mm_partials;
-static uint64_t g_qwen4_dense_mm_partials_bytes;
-
-static void qwen4_batch_release_scratch(void) {
-    ds4_gpu_tensor_free(g_qwen4_dense_mm_partials);
-    ds4_gpu_tensor_free(g_qwen4_gdn_slots);
-    g_qwen4_dense_mm_partials = g_qwen4_gdn_slots = NULL;
-    g_qwen4_dense_mm_partials_bytes = 0;
-    for (unsigned i = 0; i < QWEN4_K_COUNT; i++) g_qwen4_pipelines[i] = nil;
-}
-

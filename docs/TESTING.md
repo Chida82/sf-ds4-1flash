@@ -20,7 +20,7 @@ On Metal, small GPU tensor tests are available without loading a full GGUF:
 
 `make test` also includes model-backed tests. Select the right GGUF and ensure
 that it fits before running it; do not accidentally load a large model on a
-single device during multi-GPU QA.
+single Mac during two-Mac tensor-parallel QA.
 
 ## Investigating output
 

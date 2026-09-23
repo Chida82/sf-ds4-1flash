@@ -10,22 +10,6 @@ struct glm53_bf16_matmul_args {
     uint n_rows;
 };
 
-kernel void kernel_glm53_embedding_bf16(
-        constant glm53_bf16_matmul_args &args,
-        device const ushort             *weights,
-        device const int                *tokens,
-        device float                    *out,
-        uint2 gid [[thread_position_in_grid]]) {
-    const uint d = gid.x;
-    const uint row = gid.y;
-    if (d >= args.in_dim || row >= args.n_rows) return;
-    const int token = tokens[row];
-    out[(ulong)row * args.in_dim + d] =
-        token >= 0 && (uint)token < args.out_dim
-            ? glm53_bf16_to_f32(weights[(ulong)(uint)token * args.in_dim + d])
-            : 0.0f;
-}
-
 static inline void glm53_mul_mv_bf16_f32_row(
         constant glm53_bf16_matmul_args &args,
         device const ushort             *weights,
@@ -89,27 +73,6 @@ kernel void kernel_glm53_mul_mv_bf16_f32(
         ushort nsg [[simdgroups_per_threadgroup]]) {
     glm53_mul_mv_bf16_f32_row(args, weights, x, out,
                               tgpig, lane, sg, nsg);
-}
-
-kernel void kernel_glm53_mul_mv_bf16_f32_qkv(
-        constant glm53_bf16_matmul_args &args,
-        device const ushort             *weights_q,
-        device const ushort             *weights_k,
-        device const ushort             *weights_v,
-        device const float              *x,
-        device float                    *out_q,
-        device float                    *out_k,
-        device float                    *out_v,
-        uint3 tgpig [[threadgroup_position_in_grid]],
-        ushort lane [[thread_index_in_simdgroup]],
-        ushort sg [[simdgroup_index_in_threadgroup]],
-        ushort nsg [[simdgroups_per_threadgroup]]) {
-    device const ushort *weights = tgpig.z == 0u ? weights_q :
-                                     (tgpig.z == 1u ? weights_k : weights_v);
-    device float *out = tgpig.z == 0u ? out_q :
-                            (tgpig.z == 1u ? out_k : out_v);
-    glm53_mul_mv_bf16_f32_row(args, weights, x, out,
-                              tgpig.xy, lane, sg, nsg);
 }
 
 struct glm53_bf16_block16 {

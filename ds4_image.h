@@ -19,17 +19,13 @@ typedef struct {
     uint8_t fingerprint[32];
 } ds4_image;
 
-typedef struct {
-    uint32_t content_width;
-    uint32_t content_height;
-    uint32_t padded_width;
-    uint32_t padded_height;
-    uint32_t grid_width;
-    uint32_t grid_height;
-    uint32_t patch_count;
-    uint32_t image_token_count;
-    float *patches;
-} ds4_image_patches;
+typedef enum {
+    DS4_DEEPSEEK4_IMAGE_START = 0,
+    DS4_DEEPSEEK4_IMAGE_PAD = 1,
+    DS4_DEEPSEEK4_IMAGE = 2,
+    DS4_DEEPSEEK4_IMAGE_NEWLINE = 3,
+    DS4_DEEPSEEK4_IMAGE_END = 4,
+} ds4_deepseek4_image_token_type;
 
 typedef struct {
     uint32_t content_width;
@@ -43,14 +39,6 @@ typedef struct {
     uint32_t patch_count;
     float *patches;
 } ds4_deepseek4_image_patches;
-
-typedef enum {
-    DS4_DEEPSEEK4_IMAGE_START = 0,
-    DS4_DEEPSEEK4_IMAGE_PAD = 1,
-    DS4_DEEPSEEK4_IMAGE = 2,
-    DS4_DEEPSEEK4_IMAGE_NEWLINE = 3,
-    DS4_DEEPSEEK4_IMAGE_END = 4,
-} ds4_deepseek4_image_token_type;
 
 typedef struct {
     uint32_t token_count;
@@ -73,26 +61,6 @@ int ds4_image_decode_file(
         size_t error_cap);
 
 void ds4_image_free(ds4_image *image);
-
-int ds4_image_preprocess_glm53(
-        ds4_image_patches *out,
-        const ds4_image   *image,
-        uint32_t           min_image_tokens,
-        uint32_t           max_image_tokens,
-        char              *error,
-        size_t             error_cap);
-
-/* Qwen3-VL style: resize to multiples of 32 within the token budget, normalize
- * with mean/std 0.5, emit 3*16*16 patches in 2x2 merge-window order. */
-int ds4_image_preprocess_qwen4(
-        ds4_image_patches *out,
-        const ds4_image   *image,
-        uint32_t           min_image_tokens,
-        uint32_t           max_image_tokens,
-        char              *error,
-        size_t             error_cap);
-
-void ds4_image_patches_free(ds4_image_patches *patches);
 
 int ds4_image_preprocess_deepseek4(
         ds4_deepseek4_image_patches *out,
