@@ -475,8 +475,6 @@ void ds4_tp_usage(FILE *fp) {
         "  --transport <auto|rdma|tcp> Gate transport (default auto).\n"
         "  --rdma-device <name>        Select a verbs device such as rdma_en1.\n"
         "  --rdma-gid-index <n>        Select the local verbs GID index.\n"
-        "  --tensor-parallel-token-prefill\n"
-        "                              GLM diagnostic: prefill one token at a time.\n"
         "  --debug-hash <n>            Cross-check hidden state every n tokens.\n");
 }
 
@@ -516,8 +514,6 @@ int ds4_tp_parse_cli_arg(
         }
         opt->rdma_gid_index = (int)value;
         opt->rdma_gid_index_set = true;
-    } else if (!strcmp(arg, "--tensor-parallel-token-prefill")) {
-        opt->glm_token_prefill = true;
     } else if (!strcmp(arg, "--debug-hash")) {
         if (i + 1 >= argc) goto missing;
         opt->debug_hash = atoi(argv[++i]);
@@ -605,7 +601,7 @@ int ds4_tp_validate_engine_options(
     if (!ds4_tp_enabled(&opt->tp)) {
         if (opt->tp.requested || opt->tp.transport != DS4_TP_TRANSPORT_AUTO ||
             opt->tp.rdma_device || opt->tp.rdma_gid_index_set ||
-            opt->tp.glm_token_prefill || opt->tp.debug_hash != 0) {
+            opt->tp.debug_hash != 0) {
             tp_set_err(err, errlen,
                        "tensor-parallel options require --tensor-parallel and --role");
             return 0;
@@ -613,15 +609,8 @@ int ds4_tp_validate_engine_options(
         return 1;
     }
     bool supported_backend = opt->backend == DS4_BACKEND_METAL;
-#if !defined(__APPLE__) && !defined(DS4_ROCM_BUILD) && !defined(DS4_NO_GPU)
-    supported_backend |= opt->backend == DS4_BACKEND_CUDA;
-#endif
     if (!supported_backend) {
         tp_set_err(err, errlen, "network tensor parallelism requires Metal or supported CUDA models");
-        return 0;
-    }
-    if (opt->backend == DS4_BACKEND_CUDA && (opt->cuda_tensor_parallel || opt->ssd_streaming)) {
-        tp_set_err(err, errlen, "network CUDA TP requires one GPU per rank and resident expert shards");
         return 0;
     }
     if (opt->distributed.role != DS4_DISTRIBUTED_NONE) {

@@ -2,11 +2,17 @@
 
 Here we collect prefill and generation speed obtained with different hardware.
 
-Run `ds4-bench` as:
+sf-ablate(ds4): the CSV and SVG baselines that used to live here were measured
+on DeepSeek V4 Flash and V4 PRO, which this fork does not run. They were
+deleted rather than relabelled -- a number carried over from another model is
+worse than no number. Contribute a DeepSeek V4.1 Flash sweep from your own
+hardware with the command below.
+
+Run `sf-ds4-1flash-bench` as:
 
 ```
-./ds4-bench \
-  -m ds4flash.gguf \
+./sf-ds4-1flash-bench \
+  -m deepseek-v4.1-flash.gguf \
   --prompt-file speed-bench/promessi_sposi.txt \
   --ctx-start 2048 \
   --ctx-max 65536 \
@@ -34,7 +40,7 @@ Build the balanced, same-engine Metal decode comparison with:
 ```
 make metal-decode-schedule-bench
 ./speed-bench/metal_decode_schedule_bench \
-  -m ds4flash.gguf \
+  -m deepseek-v4.1-flash.gguf \
   --include-selection
 ```
 
@@ -87,44 +93,18 @@ Numeric runtime tuning controls can use `--candidate-value TEXT` (default `1`), 
 dispatch time: this harness keeps one engine alive and cannot compare settings
 cached during initialization.
 
-`DS4_QWEN4_TIMING=2` reports each prefill chunk's position, token count, and
-stage times, including the attention mixer separately from GDN/attention.
-These measurements include synchronization overhead and are for attribution;
-use uninstrumented alternating runs for throughput claims.
-`DS4_QWEN4_MOE_PROFILE=1` further splits tiled MoE into routing, expert-list
-construction, routed/shared gate-up, routed/shared down, and reduction,
-reporting one line per layer. Its synchronization also makes it diagnostic only.
-
-Qwen routed MoE quantization specialization is enabled by default on M3 Ultra.
-`DS4_QWEN4_MOE_MM_SPECIALIZE=0` restores the generic kernels; `=1` opts in on
-other devices. To compare the final default against rollback, pass
-`--candidate-env DS4_QWEN4_MOE_MM_SPECIALIZE --candidate-value 0` to the harness.
-
 ### Concurrency: many requests at once
 
 `session_concurrency_bench` measures the engine without HTTP overhead.
 
 ```sh
 make session-concurrency-bench
-./speed-bench/session_concurrency_bench -m ds4flash.gguf \
+./speed-bench/session_concurrency_bench -m deepseek-v4.1-flash.gguf \
   --concurrency 1,2,4,8 --ctx 4096 --gen 128 --budget-gib 28 \
   --csv /tmp/concurrency.csv
 ```
 
-Streams use different corpus offsets to avoid identical expert routing.
-The report includes aggregate and per-stream throughput, step latency and
-prefill time. Set `--budget-gib` to bound session allocations; monitor actual
-memory and swap too. `--mixed` adds a concurrent continued prefill, `--spec`
-enables Qwen MTP, and `--verify` fails on a greedy-token mismatch against
-serial decoding. Use the official-continuation scorer to assess quality when
-different reduction orders change a close token choice.
-
 For an interleaved comparison against a diagnostic rollback:
-
-```sh
-./speed-bench/session_concurrency_bench --ctx 4096 --concurrency 8 \
-  --candidate-env DS4_QWEN4_SESSION_BATCH --candidate-value 0 --repeat 3
-```
 
 The control unsets the variable; the candidate sets it in alternating ABBA
 blocks. Use only controls read at dispatch time. Keep prompts, context, memory

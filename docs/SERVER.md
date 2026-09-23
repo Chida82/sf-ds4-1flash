@@ -5,10 +5,10 @@
 ## Start locally
 
 ```sh
-./ds4-server --ctx 32768
+./sf-ds4-1flash-server --ctx 32768
 ```
 
-The default address is `http://127.0.0.1:8000`. Use `--host 0.0.0.0` to listen
+The default address is `http://127.0.0.1:8002`. Use `--host 0.0.0.0` to listen
 on other interfaces. Restrict access to trusted clients; for an Internet-facing
 deployment, put authentication and TLS in front of the server.
 
@@ -29,13 +29,13 @@ relative runtime files such as Metal kernels can be found.
 | `POST /v1/completions` | Text completions |
 | `POST /v1/messages` | Anthropic-style messages |
 
-The Flash and PRO names accepted by the model endpoints are compatibility
-aliases, not separate loaded models. The GGUF passed at startup selects the model.
+The model id is `deepseek-v4.1-flash`. `deepseek-chat` and `deepseek-reasoner`
+are accepted as thinking switches (off and on) for the same loaded model. The GGUF passed at startup selects the model.
 
 ```sh
-curl http://127.0.0.1:8000/v1/chat/completions \
+curl http://127.0.0.1:8002/v1/chat/completions \
   -H 'Content-Type: application/json' \
-  -d '{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"Explain Redis streams."}],"stream":true}'
+  -d '{"model":"deepseek-v4.1-flash","messages":[{"role":"user","content":"Explain Redis streams."}],"stream":true}'
 ```
 
 Chat, Responses, and Anthropic support tools and SSE streaming. Reasoning is
@@ -52,7 +52,7 @@ thinking object, or a non-thinking model alias for direct answers.
 ## Multiple sessions
 
 ```sh
-./ds4-server --ctx 4096 --batched-session 4
+./sf-ds4-1flash-server --ctx 4096 --batched-session 4
 ```
 
 Without `--batched-session`, there is one resident session. With it, the server
@@ -60,36 +60,17 @@ preallocates independent KV states and queues requests when all slots are busy.
 Choose context and slot count together: a context that fits once may not fit
 four times. Idle slots can be cached before reuse; active requests are not evicted.
 
-Where the model supports it, the slots share one prefill workspace instead of
-each keeping its own, so an extra slot costs only its caches. That matters most
-for Qwen3.8 Flash Next, whose transients are sized by the prefill chunk rather
-than by the context: at the default chunk they run to several GiB per session.
-The startup line reports both figures.
-
 | Backend/model | Decode execution |
 | --- | --- |
 | Metal, resident Flash | Native shared-expert/QKV batching where supported |
 | Metal, resident V4.1 Flash | Native decoding for 2-8 sessions |
 | Metal RDMA TP, V4.1 Flash | Native decoding for 3-8 sessions; ordered fallback for two |
 | Metal SSD streaming, V4.1 Flash | Ordered fallback |
-| Metal, GLM 5.2 | Ordered fallback |
-| Metal, GLM 5.3 | Native batching through 2051 visible tokens; ordered fallback afterward |
-| Metal, Qwen3.8 Flash Next | Native batching of the shared work; recurrent state, caches and PLE history stay per session |
-| CUDA, supported multi-GPU Flash TP layout | Native grouped decode and mixed prefill/decode |
-| Single-GPU CUDA, including Spark | Ordered fallback |
 
 Fallback executes the rows separately. It provides concurrency and scheduling
 fairness, not the aggregate speedup of native batching. Native grouping may
 change floating-point reduction order slightly. V4.1 sessions containing images
 use the ordered fallback.
-
-Long prefills yield to active decoders in bounded intervals, normally 128
-tokens. `--mixed-prefill-quantum N` changes that interval for testing.
-Session-batched serving uses ordinary target decoding, except Qwen3.8 on
-Metal, where `--mtp` also batches speculative decoding. Its
-`--mtp-exact-sampling` mode uses ordinary batches for nonzero-temperature
-requests. Other models do not use MTP/DSpark while session batching is active.
-For the eight-L40S example, see [CUDA GPUs](CUDA_MULTI_GPU.md#serve-multiple-users).
 
 ## Images
 
@@ -106,7 +87,7 @@ a 64 MiB HTTP body.
 Disk caching saves useful prefixes across slot reuse and server restarts:
 
 ```sh
-./ds4-server --ctx 100000 \
+./sf-ds4-1flash-server --ctx 100000 \
   --kv-disk-dir /tmp/ds4-kv --kv-disk-space-mb 8192
 ```
 
@@ -123,7 +104,7 @@ Defaults are intended to avoid saving fragile token boundaries. For unusual
 workloads, the controls are `--kv-cache-min-tokens`,
 `--kv-cache-cold-max-tokens`, `--kv-cache-continued-interval-tokens`,
 `--kv-cache-boundary-trim-tokens`, and `--kv-cache-boundary-align-tokens`.
-Check `./ds4-server --help` for their defaults.
+Check `./sf-ds4-1flash-server --help` for their defaults.
 
 Quantization variants may share compatible prefixes. Add
 `--kv-cache-reject-different-quant` for same-quant reuse only.
@@ -146,4 +127,4 @@ generated text, and tool-parser events. Traces can contain sensitive content.
 Cache formats are implementation details. The current header and extension
 definitions are in [ds4_kvstore.h](../ds4_kvstore.h) and
 [ds4_kvstore.c](../ds4_kvstore.c); model-specific payload handling is in
-[ds4.c](../ds4.c).
+[ds4.c](../sf-ds4-1flash.c).

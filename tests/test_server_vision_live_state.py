@@ -5,12 +5,12 @@ continuation contract.
 Requires an idle, image-capable server: a vision model plus its encoder, with
 at least four resident sessions for the eviction section:
 
-    ./ds4-server -m <vision-model>.gguf --vision <encoder>.gguf \
+    ./sf-ds4-1flash-server -m <vision-model>.gguf --vision <encoder>.gguf \
         --batched-session 4 --trace /tmp/ds4-live-state-trace.log \
         > /tmp/ds4-live-state.log 2>&1
 
     python3 tests/test_server_vision_live_state.py --url http://127.0.0.1:8080 \
-        --model deepseek-v4-flash --section eviction --log /tmp/ds4-live-state.log
+        --model deepseek-v4.1-flash --section eviction --log /tmp/ds4-live-state.log
 
 Sections:
   eviction  Conversations that own a checkpoint keep their slots: a request
@@ -247,7 +247,7 @@ def tool_409_section(args):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--url", default="http://127.0.0.1:8080")
-    parser.add_argument("--model", default="deepseek-v4-flash")
+    parser.add_argument("--model", default="deepseek-v4.1-flash")
     parser.add_argument("--section", choices=["eviction", "tool-409"], required=True)
     parser.add_argument("--log", type=Path,
                         help="server stderr log, for the eviction assertions")

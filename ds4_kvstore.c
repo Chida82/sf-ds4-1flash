@@ -3,9 +3,8 @@
 /* Shared disk KV checkpoint file support.
  *
  * The low-level file layout and payload helpers are intentionally shared.  The
- * ds4-server still owns the automatic byte-prefix cache policy built on top of
- * this file; ds4-agent uses only the same durable format for explicit sessions,
- * with its own policy in ds4_agent.c.  Protocol-specific extras, such as the
+ * ds4-server owns the automatic byte-prefix cache policy built on top of this
+ * file.  Protocol-specific extras, such as the
  * server's tool-id -> exact DSML trailer, are attached through trailer hooks and
  * still live with the protocol code that owns those mappings. */
 
@@ -177,8 +176,7 @@ uint8_t ds4_kvstore_reason_code(const char *reason) {
     if (!strcmp(reason, "continued")) return DS4_KVSTORE_REASON_CONTINUED;
     if (!strcmp(reason, "evict")) return DS4_KVSTORE_REASON_EVICT;
     if (!strcmp(reason, "shutdown")) return DS4_KVSTORE_REASON_SHUTDOWN;
-    if (!strcmp(reason, "agent-system")) return DS4_KVSTORE_REASON_AGENT_SYSTEM;
-    if (!strcmp(reason, "agent-session")) return DS4_KVSTORE_REASON_AGENT_SESSION;
+    /* sf-ablate(agent): agent-system/agent-session reasons were written only by ds4_agent.c; enumerators kept as the on-disk reason upper bound */
     return DS4_KVSTORE_REASON_UNKNOWN;
 }
 

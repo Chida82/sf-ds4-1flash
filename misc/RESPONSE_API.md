@@ -354,7 +354,7 @@ Remaining risks / follow-up:
 
 Restart / disk recovery test:
 
-- Stopped the old server and started a fresh `ds4-server` with the existing
+- Stopped the old server and started a fresh `sf-ds4-1flash-server` with the existing
   `/tmp/kvcache-responses-switch3` directory.
 - Resumed the existing Codex session
   `019e23a9-821c-7e40-8c00-122646d7fda7` after process restart.
@@ -418,7 +418,7 @@ Post-merge stress pass, 2026-05-14:
 - Unit/build checks after the change:
   `make ds4_test`, `./ds4_test --server`, and `make ds4-server` all passed.
 - Live stress server:
-  `./ds4-server -m gguf/DeepSeek-V4-Flash-IQ2XXS-w2Q2K-AProjQ8-SExpQ8-OutQ8-chat-v2-imatrix.gguf --ctx 100000 --kv-disk-dir /tmp/ds4-kv-stress --kv-disk-space-mb 8192 --trace /tmp/ds4-response-stress-trace.txt`.
+  `./sf-ds4-1flash-server -m gguf/DeepSeek-V4-Flash-IQ2XXS-w2Q2K-AProjQ8-SExpQ8-OutQ8-chat-v2-imatrix.gguf --ctx 100000 --kv-disk-dir /tmp/ds4-kv-stress --kv-disk-space-mb 8192 --trace /tmp/ds4-response-stress-trace.txt`.
 - Pi, using the OpenAI-compatible chat/completions path, completed a multi-tool
   session and a resumed turn. The trace showed normal live-prefix reuse:
   requests after the first cold prompt used `cache_source: memory-token` with

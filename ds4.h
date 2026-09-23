@@ -124,7 +124,6 @@ typedef struct {
     const char *rdma_device;
     int rdma_gid_index;
     bool rdma_gid_index_set;
-    bool glm_token_prefill;
     int debug_hash;             /* cross-check hidden state every N tokens */
 } ds4_tp_options;
 
@@ -222,26 +221,6 @@ typedef struct {
 
 int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt);
 
-/* Multi-GPU pipeline-parallel entry point (wave 2).
- *
- * Accepts an optional ds4_gpu_config (defined in ds4_gpu_mgpu.h) that
- * lets callers describe a multi-GPU placement target. Passing NULL is
- * back-compatible with ds4_engine_open and produces identical engine
- * state — bit-equivalent execution at runtime.
- *
- * When a non-NULL config is supplied AND the computed placement spans
- * more than one tier (either multiple GPUs or any CPU-spill), this
- * wave-2 implementation prints the layout and refuses to open: full
- * multi-tier execution wiring lands in a follow-up task
- * (mgpu-graph-session-execution). Callers receive a non-zero return
- * and a documented stderr notice. */
-/* ds4_gpu_config is declared in ds4_gpu_mgpu.h, which callers should
- * include separately. We forward-declare it here so this header can be
- * used as-is (callers passing NULL don't need the struct definition). */
-struct ds4_gpu_config;
-int ds4_engine_create_with_gpu_config(ds4_engine **out,
-                                       const ds4_engine_options *opt,
-                                       const struct ds4_gpu_config *gpu_cfg);
 void ds4_engine_close(ds4_engine *e);
 void ds4_engine_summary(ds4_engine *e);
 int ds4_engine_vocab_size(ds4_engine *e);
@@ -340,13 +319,6 @@ int ds4_engine_generate_argmax(ds4_engine *e, const ds4_tokens *prompt,
                                void *emit_ud,
                                ds4_session_progress_fn progress,
                                void *progress_ud);
-int ds4_engine_collect_imatrix(ds4_engine *e,
-                               const char *dataset_path,
-                               const char *output_path,
-                               int ctx_size,
-                               int max_prompts,
-                               int max_tokens,
-                               int min_expert_samples);
 void ds4_engine_dump_tokens(ds4_engine *e, const ds4_tokens *tokens);
 int ds4_dump_text_tokenization(const char *model_path, const char *text, FILE *fp);
 int ds4_dump_chat_tokenization(const char *model_path,

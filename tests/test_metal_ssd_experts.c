@@ -213,9 +213,6 @@ int main(int argc, char **argv) {
         const int ok = ds4_gpu_init() && check_streaming_table_admission();
         ds4_gpu_cleanup();
         return ok ? 0 : 1;
-    } else if (argc == 2 && !strcmp(argv[1], "--full-glm-shape")) {
-        D = 6144;
-        H = 2048;
     } else if (argc == 2 && !strcmp(argv[1], "--q4")) {
         E = 384;
         N = 6;
@@ -227,7 +224,7 @@ int main(int argc, char **argv) {
         block_bytes = sizeof(mxfp4_block);
         block_values = 32;
     } else if (argc != 1) {
-        fprintf(stderr, "usage: %s [--full-glm-shape | --q4 | --mxfp4 | --table-admission]\n", argv[0]);
+        fprintf(stderr, "usage: %s [--q4 | --mxfp4 | --table-admission]\n", argv[0]);
         return 1;
     }
     const uint64_t row = D / block_values * block_bytes;

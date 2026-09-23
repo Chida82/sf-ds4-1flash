@@ -6,8 +6,6 @@
 #include "../ds4_gpu.h"
 #include <math.h>
 
-bool ds4_test_dspark_cache_window_crop(void);
-bool ds4_test_dspark_prefix_capture(ds4_engine *engine, const ds4_tokens *prompt);
 
 static ds4_engine *test_engine_fast;
 static ds4_engine *test_engine_quality;
@@ -16,7 +14,7 @@ static char *test_read_file(const char *path);
 
 static const char *test_model_path(void) {
     const char *model_path = getenv("DS4_TEST_MODEL");
-    return (model_path && model_path[0]) ? model_path : "ds4flash.gguf";
+    return (model_path && model_path[0]) ? model_path : SF_DEFAULT_MODEL;
 }
 
 static bool test_env_bool(const char *name) {
@@ -94,18 +92,12 @@ static void test_restore_canonical_streaming_prefill(
 static ds4_backend test_model_backend(void) {
     const char *backend = getenv("DS4_TEST_BACKEND");
     if (backend && !strcmp(backend, "cpu")) return DS4_BACKEND_CPU;
-#ifdef __APPLE__
     return DS4_BACKEND_METAL;
-#else
-    return DS4_BACKEND_CUDA;
-#endif
 }
 
 static ds4_engine *test_open_engine(bool quality) {
     ds4_engine *engine = NULL;
-    /* DS4_TEST_MTP loads the MTP head on the fast engine so the speculative
-     * verify regression can reuse it; draft=4 hits the multi-row verify path. */
-    const char *mtp = getenv("DS4_TEST_MTP");
+    /* sf-ablate(specdec): DS4_TEST_MTP loaded an external support head for the speculative verify test; no speculative decoding here */
     ds4_engine_options opt = {
         .model_path = test_model_path(),
         .backend = test_model_backend(),
@@ -118,10 +110,6 @@ static ds4_engine *test_open_engine(bool quality) {
             test_env_gib("DS4_TEST_SSD_STREAMING_CACHE_GB"),
         .ssd_streaming_preload_experts =
             test_env_u32("DS4_TEST_SSD_STREAMING_PRELOAD_EXPERTS"),
-        .mtp_path = (mtp && mtp[0] && !quality) ? mtp : NULL,
-        .mtp_draft_tokens = (mtp && mtp[0] && !quality) ? 4 : 0,
-        .glm_mtp = test_env_bool("DS4_TEST_GLM_MTP"),
-        .dspark_exact_sampling = test_env_bool("DS4_TEST_MTP_EXACT"),
     };
     TEST_ASSERT(ds4_engine_open(&engine, &opt) == 0);
     return engine;
@@ -148,362 +136,8 @@ static void test_close_engine(bool quality) {
     *slot = NULL;
 }
 
-/* Qwen3.8 rewind: one token back restores the verify snapshot, anything else
- * resets the recurrent state and replays the kept tokens on the next eval;
- * both must land on the logits a fresh session produces for the same tokens. */
-static void test_session_rewind_replay(void) {
-    ds4_engine *engine = test_get_engine(false);
-    if (!engine) return;
-    if (!ds4_engine_is_qwen4(engine)) {
-        puts("session-rewind: Qwen3.8 model required, skipped");
-        return;
-    }
-    ds4_session *live = NULL, *fresh = NULL;
-    ds4_tokens prompt = {0}, replay = {0};
-    char err[192] = {0};
-    ds4_token_score got[8], want[8];
-    const bool mtp = test_env_bool("DS4_TEST_GLM_MTP");
-    if (mtp) setenv("DS4_QWEN4_SPEC_FORCE_ACCEPT", "1", 1);
-
-    ds4_chat_begin(engine, &prompt);
-    ds4_chat_append_message(engine, &prompt, "user", "Count from one to ten.");
-    ds4_chat_append_assistant_prefix(engine, &prompt, DS4_THINK_NONE);
-    TEST_ASSERT(ds4_session_create(&live, engine, 1024) == 0);
-    TEST_ASSERT(ds4_session_create(&fresh, engine, 1024) == 0);
-    if (!live || !fresh) goto cleanup;
-    TEST_ASSERT(ds4_session_sync(live, &prompt, err, sizeof(err)) == 0);
-    for (int i = 0; i < prompt.len; i++) ds4_tokens_push(&replay, prompt.v[i]);
-
-    /* three greedy steps; under MTP the first cycle seeds a draft and the
-     * forced-accept cycles after it commit token pairs */
-    int last_n = 1;
-    for (int step = 0; step < 3; step++) {
-        const int first = ds4_session_argmax(live);
-        if (mtp) {
-            int acc[2] = {0, 0};
-            last_n = ds4_session_eval_speculative_argmax(live, first, 2, -1, acc, 2, err, sizeof(err));
-            TEST_ASSERT(last_n == 1 || last_n == 2);
-            if (last_n < 1) goto cleanup;
-            for (int i = 0; i < last_n; i++) ds4_tokens_push(&replay, acc[i]);
-        } else {
-            TEST_ASSERT(ds4_session_eval(live, first, err, sizeof(err)) == 0);
-            ds4_tokens_push(&replay, first);
-        }
-    }
-    if (mtp) TEST_ASSERT(last_n == 2);   /* the one-token rewind below takes the snapshot path */
-    TEST_ASSERT(ds4_session_pos(live) == replay.len);
-    if (mtp) TEST_ASSERT(ds4_session_top_logprobs(live, want, 8) == 8);
-
-    /* rewind one token (snapshot path under MTP) and re-evaluate it */
-    const int last = replay.v[replay.len - 1];
-    ds4_session_rewind(live, replay.len - 1);
-    TEST_ASSERT(ds4_session_pos(live) == replay.len - 1);
-    if (mtp) {
-        ds4_session_snapshot rewound = {0};
-        TEST_ASSERT(ds4_session_save_snapshot(live, &rewound, err, sizeof(err)) == 0);
-        if (rewound.ptr) {
-            TEST_ASSERT(ds4_session_load_snapshot(fresh, &rewound, err, sizeof(err)) == 0);
-            TEST_ASSERT(ds4_session_eval(fresh, last, err, sizeof(err)) == 0);
-            TEST_ASSERT(ds4_session_top_logprobs(fresh, got, 8) == 8);
-            TEST_ASSERT(got[0].id == want[0].id);
-            for (int i = 0; i < 8; i++) TEST_ASSERT(fabsf(got[i].logprob - want[i].logprob) < 2e-3f);
-        }
-        ds4_session_snapshot_free(&rewound);
-    }
-    TEST_ASSERT(ds4_session_eval(live, last, err, sizeof(err)) == 0);
-    /* Match the replay's prefill/decode split. A full-prefix prefill uses
-     * different floating-point accumulation than the final decode step. */
-    ds4_tokens prefix = replay;
-    prefix.len--;
-    if (!mtp) {
-        TEST_ASSERT(ds4_session_sync(fresh, &prefix, err, sizeof(err)) == 0);
-        TEST_ASSERT(ds4_session_eval(fresh, last, err, sizeof(err)) == 0);
-        TEST_ASSERT(ds4_session_top_logprobs(fresh, want, 8) == 8);
-    }
-    /* MTP restores row zero of the verifier snapshot: re-evaluating row one
-     * must reproduce its original logits, including the prior decode state. */
-    TEST_ASSERT(ds4_session_top_logprobs(live, got, 8) == 8);
-    TEST_ASSERT(got[0].id == want[0].id);
-    for (int i = 0; i < 8; i++) TEST_ASSERT(fabsf(got[i].logprob - want[i].logprob) < 2e-3f);
-
-    /* rewind two tokens (reset + replay path) and re-evaluate both */
-    ds4_session_rewind(live, replay.len - 2);
-    TEST_ASSERT(ds4_session_pos(live) == replay.len - 2);
-    TEST_ASSERT(ds4_session_eval(live, replay.v[replay.len - 2], err, sizeof(err)) == 0);
-    TEST_ASSERT(ds4_session_eval(live, last, err, sizeof(err)) == 0);
-    TEST_ASSERT(ds4_session_pos(live) == replay.len);
-    ds4_session_free(fresh);
-    fresh = NULL;
-    TEST_ASSERT(ds4_session_create(&fresh, engine, 1024) == 0);
-    if (!fresh) goto cleanup;
-    prefix.len = replay.len - 2;
-    TEST_ASSERT(ds4_session_sync(fresh, &prefix, err, sizeof(err)) == 0);
-    TEST_ASSERT(ds4_session_eval(fresh, replay.v[replay.len - 2], err, sizeof(err)) == 0);
-    TEST_ASSERT(ds4_session_eval(fresh, last, err, sizeof(err)) == 0);
-    TEST_ASSERT(ds4_session_top_logprobs(fresh, want, 8) == 8);
-    TEST_ASSERT(ds4_session_top_logprobs(live, got, 8) == 8);
-    TEST_ASSERT(got[0].id == want[0].id);
-    for (int i = 0; i < 8; i++) TEST_ASSERT(fabsf(got[i].logprob - want[i].logprob) < 2e-3f);
-
-cleanup:
-    ds4_tokens_free(&replay);
-    ds4_tokens_free(&prompt);
-    ds4_session_free(fresh);
-    ds4_session_free(live);
-}
-
-/* Issue #8 regression: the server rewinds a verified block to its start and
- * re-evaluates the kept token when exact sampling crosses a tool
- * sampling-mode boundary at nonzero temperature.  The rewind must restore
- * the pre-verify snapshot and land on the logits a session that never ran
- * the verify produces for the same committed tokens; before the fix the
- * rewind reset the recurrent state and the next eval replayed the whole
- * kept context.  Needs DS4_TEST_GLM_MTP and DS4_TEST_MTP_EXACT. */
-static void test_session_rewind_resample_boundary(void) {
-    ds4_engine *engine = test_get_engine(false);
-    if (!engine) return;
-    if (!ds4_engine_is_qwen4(engine) || !ds4_engine_mtp_exact_sampling(engine)) {
-        puts("session-rewind-resample: Qwen3.8 model with DS4_TEST_MTP_EXACT required, skipped");
-        return;
-    }
-    ds4_session *live = NULL, *fresh = NULL;
-    ds4_tokens prompt = {0};
-    char err[192] = {0};
-    ds4_token_score got[8], want[8];
-    uint64_t rng = 12345;
-
-    ds4_chat_begin(engine, &prompt);
-    ds4_chat_append_message(engine, &prompt, "user", "List the primary colors, then name two fruits.");
-    ds4_chat_append_assistant_prefix(engine, &prompt, DS4_THINK_NONE);
-    TEST_ASSERT(ds4_session_create(&live, engine, 1024) == 0);
-    TEST_ASSERT(ds4_session_create(&fresh, engine, 1024) == 0);
-    if (!live || !fresh) goto cleanup;
-    TEST_ASSERT(ds4_session_sync(live, &prompt, err, sizeof(err)) == 0);
-
-    int acc[2] = {0, 0};
-    int block_start = -1;
-    for (int attempt = 0; attempt < 64; attempt++) {
-        const int tok = ds4_session_sample(live, 1.0f, 0, 1.0f, 0.0f, &rng);
-        block_start = ds4_session_pos(live);
-        const int ntok = ds4_session_eval_speculative(
-            live, tok, 8, ds4_token_eos(engine), 1.0f, 0, 1.0f, 0.0f, &rng,
-            acc, 2, err, sizeof(err));
-        TEST_ASSERT(ntok >= 1);
-        if (ntok < 1) { block_start = -1; goto cleanup; }
-        if (ntok == 2) break;   /* an accepted two-row block to rewind */
-        block_start = -1;
-    }
-    TEST_ASSERT(block_start >= 0);
-    if (block_start < 0) goto cleanup;
-
-    /* the server resample flow: rewind to the block start, re-evaluate the
-     * kept token so the next sample uses the boundary's new mode */
-    ds4_session_rewind(live, block_start);
-    TEST_ASSERT(ds4_session_pos(live) == block_start);
-    TEST_ASSERT(ds4_session_eval(live, acc[0], err, sizeof(err)) == 0);
-    TEST_ASSERT(ds4_session_pos(live) == block_start + 1);
-
-    /* reference: the same committed tokens, one row at a time, no verify */
-    TEST_ASSERT(ds4_session_sync(fresh, &prompt, err, sizeof(err)) == 0);
-    const ds4_tokens *hist = ds4_session_tokens(live);
-    TEST_ASSERT(hist->len > prompt.len);
-    for (int i = prompt.len; i < hist->len; i++) {
-        TEST_ASSERT(ds4_session_eval(fresh, hist->v[i], err, sizeof(err)) == 0);
-    }
-    TEST_ASSERT(ds4_session_pos(fresh) == ds4_session_pos(live));
-    TEST_ASSERT(ds4_session_top_logprobs(live, got, 8) == 8);
-    TEST_ASSERT(ds4_session_top_logprobs(fresh, want, 8) == 8);
-    TEST_ASSERT(got[0].id == want[0].id);
-    for (int i = 0; i < 8; i++) TEST_ASSERT(fabsf(got[i].logprob - want[i].logprob) < 2e-3f);
-
-cleanup:
-    ds4_tokens_free(&prompt);
-    ds4_session_free(fresh);
-    ds4_session_free(live);
-}
-
 /* A continued checkpoint must be loadable and immediately sampleable at a
  * completed prefill chunk, including after a resumed prefill or cancellation. */
-typedef struct {
-    ds4_session *session;
-    ds4_session_payload_file payload;
-    int pos;
-    bool captured;
-    bool cancel;
-} test_qwen_prefill_checkpoint;
-
-static void test_qwen_capture_prefill(void *ud, const char *event, int current, int total) {
-    test_qwen_prefill_checkpoint *p = ud;
-    if (strcmp(event, "prefill_chunk") || current <= 0 || current >= total || p->captured) return;
-    p->captured = true;
-    p->pos = current;
-    char err[192] = {0};
-    int rc = ds4_session_stage_payload(p->session, &p->payload, err, sizeof(err));
-    if (rc) fprintf(stderr, "ds4-test: prefill checkpoint at %d: %s\n", current, err);
-    TEST_ASSERT(rc == 0);
-}
-
-static bool test_qwen_cancel_after_checkpoint(void *ud) {
-    test_qwen_prefill_checkpoint *p = ud;
-    return p->cancel && p->captured;
-}
-
-static void test_qwen_prefill_scores_equal(ds4_session *a, ds4_session *b) {
-    ds4_token_score got[8], want[8];
-    TEST_ASSERT(ds4_session_top_logprobs(a, got, 8) == 8);
-    TEST_ASSERT(ds4_session_top_logprobs(b, want, 8) == 8);
-    for (int i = 0; i < 8; i++) {
-        TEST_ASSERT(got[i].id == want[i].id);
-        TEST_ASSERT(fabsf(got[i].logit - want[i].logit) < 1e-5f);
-    }
-}
-
-static void test_qwen_prefill_checkpoints(void) {
-    ds4_engine *engine = test_get_engine(false);
-    if (!engine || !ds4_engine_is_qwen4(engine)) {
-        puts("prefill-checkpoints: Qwen3.8 model required, skipped");
-        return;
-    }
-    char *saved_chunk = test_save_env("DS4_QWEN4_PREFILL_CHUNK");
-    setenv("DS4_QWEN4_PREFILL_CHUNK", "128", 1);
-    ds4_session *live = NULL, *reference = NULL, *restored = NULL;
-    ds4_tokens prompt = {0};
-    buf text = {0};
-    char err[192] = {0};
-    for (int i = 0; i < 200; i++) buf_puts(&text, "The harbor records the weather and shipping schedules. ");
-    ds4_encode_chat_prompt(engine, NULL, text.ptr, DS4_THINK_NONE, &prompt);
-    buf_free(&text);
-    TEST_ASSERT(prompt.len > 512);
-    TEST_ASSERT(ds4_session_create(&live, engine, 1024) == 0);
-    TEST_ASSERT(ds4_session_create(&reference, engine, 1024) == 0);
-    TEST_ASSERT(ds4_session_create(&restored, engine, 1024) == 0);
-    if (!live || !reference || !restored || prompt.len <= 512) goto cleanup;
-
-    for (int round = 0; round < 3; round++) {
-        test_qwen_prefill_checkpoint capture = {.session = live, .cancel = round == 2};
-        if (round == 2) ds4_session_invalidate(live);
-        ds4_tokens target = prompt;
-        target.len = round == 1 ? 512 : 256;
-        ds4_session_set_progress(live, test_qwen_capture_prefill, &capture);
-        ds4_session_set_cancel(live, test_qwen_cancel_after_checkpoint, &capture);
-        int rc = ds4_session_sync(live, &target, err, sizeof(err));
-        ds4_session_set_progress(live, NULL, NULL);
-        ds4_session_set_cancel(live, NULL, NULL);
-        TEST_ASSERT(rc == (capture.cancel ? DS4_SESSION_SYNC_INTERRUPTED : 0));
-        TEST_ASSERT(capture.captured && capture.payload.path);
-        TEST_ASSERT(capture.pos == (round == 1 ? 384 : 128));
-        if (!capture.payload.path) continue;
-
-        ds4_session_invalidate(reference);
-        ds4_tokens prefix = prompt;
-        prefix.len = capture.pos;
-        TEST_ASSERT(ds4_session_sync(reference, &prefix, err, sizeof(err)) == 0);
-        FILE *fp = fopen(capture.payload.path, "rb");
-        TEST_ASSERT(fp != NULL);
-        if (fp) {
-            TEST_ASSERT(ds4_session_load_payload(restored, fp, capture.payload.bytes, err, sizeof(err)) == 0);
-            fclose(fp);
-            TEST_ASSERT(ds4_session_pos(restored) == capture.pos);
-            /* Compare against an independent prefill, not the source's possibly
-             * stale logits. Also verify the serialized recurrent state by
-             * continuing both sessions to the same full prefix. */
-            test_qwen_prefill_scores_equal(restored, reference);
-            if (capture.cancel) test_qwen_prefill_scores_equal(live, reference);
-            TEST_ASSERT(ds4_session_sync(restored, &target, err, sizeof(err)) == 0);
-            if (capture.cancel) TEST_ASSERT(ds4_session_sync(live, &target, err, sizeof(err)) == 0);
-            test_qwen_prefill_scores_equal(restored, live);
-        }
-        ds4_session_payload_file_free(&capture.payload);
-    }
-    /* Rewind outside a speculative snapshot resets the recurrent graph but
-     * retains the transcript. A subsequent sync must replay that prefix,
-     * whether it appends new tokens or requests the retained prefix itself. */
-    for (int append = 0; append < 2; append++) {
-        ds4_tokens target = prompt;
-        target.len = 512;
-        TEST_ASSERT(ds4_session_sync(live, &target, err, sizeof(err)) == 0);
-        ds4_session_rewind(live, 128);
-        target.len = append ? 384 : 128;
-        TEST_ASSERT(ds4_session_sync(live, &target, err, sizeof(err)) == 0);
-        ds4_session_invalidate(reference);
-        TEST_ASSERT(ds4_session_sync(reference, &target, err, sizeof(err)) == 0);
-        test_qwen_prefill_scores_equal(live, reference);
-        const int token = ds4_session_argmax(reference);
-        TEST_ASSERT(ds4_session_eval(live, token, err, sizeof(err)) == 0);
-        TEST_ASSERT(ds4_session_eval(reference, token, err, sizeof(err)) == 0);
-        test_qwen_prefill_scores_equal(live, reference);
-    }
-cleanup:
-    ds4_session_free(restored);
-    ds4_session_free(reference);
-    ds4_session_free(live);
-    ds4_tokens_free(&prompt);
-    test_restore_env("DS4_QWEN4_PREFILL_CHUNK", saved_chunk);
-}
-
-static void test_qwen_restore_reused_session(void) {
-    ds4_engine *engine = test_get_engine(false);
-    if (!engine || !ds4_engine_is_qwen4(engine) || !test_env_bool("DS4_TEST_GLM_MTP")) {
-        puts("qwen4-restore-reuse: Qwen3.8 with MTP required, skipped");
-        return;
-    }
-    char *saved_force = test_save_env("DS4_QWEN4_SPEC_FORCE_ACCEPT");
-    setenv("DS4_QWEN4_SPEC_FORCE_ACCEPT", "1", 1);
-    ds4_session *live = NULL, *reference = NULL;
-    ds4_tokens prompt = {0}, other = {0};
-    ds4_session_snapshot snapshot = {0};
-    char err[192] = {0};
-    ds4_encode_chat_prompt(engine, NULL, "Count from one to ten.", DS4_THINK_NONE, &prompt);
-    TEST_ASSERT(ds4_session_create(&live, engine, 1024) == 0);
-    TEST_ASSERT(ds4_session_create(&reference, engine, 1024) == 0);
-    if (!live || !reference) goto cleanup;
-    TEST_ASSERT(ds4_session_sync(live, &prompt, err, sizeof(err)) == 0);
-    for (int step = 0; step < 3; step++) {
-        int accepted[2];
-        int n = ds4_session_eval_speculative_argmax(live, ds4_session_argmax(live),
-                                                   2, -1, accepted, 2, err, sizeof(err));
-        TEST_ASSERT(n == (step == 0 ? 1 : 2));
-        if (n < 1) goto cleanup;
-    }
-    const ds4_tokens *tokens = ds4_session_tokens(live);
-    for (int i = 0; i < tokens->len; i++) ds4_tokens_push(&other, tokens->v[i]);
-    /* Same positions, different history: the old verifier snapshots must not
-     * survive loading this checkpoint into the already-used session. */
-    other.v[prompt.len / 2] = prompt.v[prompt.len / 2 + 1];
-    TEST_ASSERT(ds4_session_sync(reference, &other, err, sizeof(err)) == 0);
-    TEST_ASSERT(ds4_session_save_snapshot(reference, &snapshot, err, sizeof(err)) == 0);
-    if (!snapshot.ptr) goto cleanup;
-    TEST_ASSERT(ds4_session_load_snapshot(live, &snapshot, err, sizeof(err)) == 0);
-    ds4_session_rewind(live, other.len - 1);
-    TEST_ASSERT(ds4_session_eval(live, other.v[other.len - 1], err, sizeof(err)) == 0);
-    ds4_tokens prefix = other;
-    prefix.len--;
-    ds4_session_invalidate(reference);
-    TEST_ASSERT(ds4_session_sync(reference, &prefix, err, sizeof(err)) == 0);
-    TEST_ASSERT(ds4_session_eval(reference, other.v[other.len - 1], err, sizeof(err)) == 0);
-    test_qwen_prefill_scores_equal(live, reference);
-
-    /* A truncated logits read must not leave a sampleable checkpoint. */
-    FILE *fp = tmpfile();
-    TEST_ASSERT(fp != NULL);
-    if (fp) {
-        size_t bytes = 13u * sizeof(uint32_t) + (size_t)other.len * sizeof(uint32_t) + 17u;
-        TEST_ASSERT(bytes < snapshot.len);
-        TEST_ASSERT(fwrite(snapshot.ptr, 1, bytes, fp) == bytes);
-        rewind(fp);
-        TEST_ASSERT(ds4_session_load_payload(live, fp, snapshot.len, err, sizeof(err)) != 0);
-        TEST_ASSERT(ds4_session_argmax(live) == -1);
-        fclose(fp);
-    }
-cleanup:
-    ds4_session_snapshot_free(&snapshot);
-    ds4_tokens_free(&other);
-    ds4_tokens_free(&prompt);
-    ds4_session_free(reference);
-    ds4_session_free(live);
-    test_restore_env("DS4_QWEN4_SPEC_FORCE_ACCEPT", saved_force);
-}
-
 static void test_session_snapshot_roundtrip(void) {
     ds4_engine *engine = test_get_engine(false);
     if (!engine) return;
@@ -517,17 +151,7 @@ static void test_session_snapshot_roundtrip(void) {
     ds4_token_score reference_after[8];
     ds4_token_score restored_before[8];
     ds4_token_score restored_after[8];
-    enum { GLM_MTP_SNAPSHOT_CYCLES = 16 };
-    int reference_accepted[GLM_MTP_SNAPSHOT_CYCLES * 2] = {0};
-    int reference_counts[GLM_MTP_SNAPSHOT_CYCLES] = {0};
-    int reference_total = 0;
-    const bool test_glm_mtp = test_env_bool("DS4_TEST_GLM_MTP");
-#ifdef DS4_ROCM_BUILD
-    const float continued_logit_tolerance =
-        ds4_engine_is_glm53(engine) ? 1e-5f : 1e-6f;
-#else
     const float continued_logit_tolerance = 1e-6f;
-#endif
 
     uint32_t ctx = test_env_u32("DS4_TEST_SNAPSHOT_CTX");
     if (ctx == 0) ctx = 1024;
@@ -548,8 +172,7 @@ static void test_session_snapshot_roundtrip(void) {
                             "Give one concise reason to test session restore.");
     ds4_chat_append_assistant_prefix(engine, &prompt, DS4_THINK_NONE);
     TEST_ASSERT(prompt.len > 0);
-    fprintf(stderr, "ds4-test: snapshot prompt=%d ctx=%u glm_mtp=%d\n",
-            prompt.len, ctx, test_glm_mtp);
+    fprintf(stderr, "ds4-test: snapshot prompt=%d ctx=%u\n", prompt.len, ctx);
     TEST_ASSERT(ds4_session_sync(reference, &prompt, err, sizeof(err)) == 0);
     TEST_ASSERT(ds4_session_top_logprobs(reference, before, 8) == 8);
     TEST_ASSERT(ds4_session_save_snapshot(reference, &snapshot,
@@ -581,22 +204,8 @@ static void test_session_snapshot_roundtrip(void) {
     TEST_ASSERT(payload_matches);
     if (!payload_matches) goto cleanup;
 
-    if (test_glm_mtp) {
-        for (int cycle = 0; cycle < GLM_MTP_SNAPSHOT_CYCLES; cycle++) {
-            const int first = ds4_session_argmax(reference);
-            const int n = ds4_session_eval_speculative_argmax(
-                    reference, first, 2, -1,
-                    reference_accepted + reference_total, 2,
-                    err, sizeof(err));
-            TEST_ASSERT(n > 0 && n <= 2);
-            if (n <= 0 || n > 2) goto cleanup;
-            reference_counts[cycle] = n;
-            reference_total += n;
-        }
-    } else {
-        TEST_ASSERT(ds4_session_eval(reference, before[0].id,
-                                     err, sizeof(err)) == 0);
-    }
+    TEST_ASSERT(ds4_session_eval(reference, before[0].id,
+                                 err, sizeof(err)) == 0);
     TEST_ASSERT(ds4_session_top_logprobs(reference, reference_after, 8) == 8);
     ds4_session_free(reference);
     reference = NULL;
@@ -633,38 +242,8 @@ static void test_session_snapshot_roundtrip(void) {
         TEST_ASSERT(fabsf(restored_before[i].logit - before[i].logit) <= 1e-6f);
     }
 
-    if (test_glm_mtp) {
-        int restored_total = 0;
-        int single_cycles = 0;
-        int double_cycles = 0;
-        for (int cycle = 0; cycle < GLM_MTP_SNAPSHOT_CYCLES; cycle++) {
-            int restored_accepted[2] = {0};
-            const int first = ds4_session_argmax(restored);
-            TEST_ASSERT(first == reference_accepted[restored_total]);
-            const int n = ds4_session_eval_speculative_argmax(
-                    restored, first, 2, -1,
-                    restored_accepted, 2, err, sizeof(err));
-            TEST_ASSERT(n == reference_counts[cycle]);
-            if (n != reference_counts[cycle]) goto cleanup;
-            for (int i = 0; i < n; i++) {
-                TEST_ASSERT(restored_accepted[i] ==
-                            reference_accepted[restored_total + i]);
-            }
-            restored_total += n;
-            single_cycles += n == 1;
-            double_cycles += n == 2;
-        }
-        TEST_ASSERT(restored_total == reference_total);
-        fprintf(stderr,
-                "ds4-test: GLM MTP snapshot cycles=%d single=%d double=%d tokens=%d\n",
-                GLM_MTP_SNAPSHOT_CYCLES,
-                single_cycles,
-                double_cycles,
-                restored_total);
-    } else {
-        TEST_ASSERT(ds4_session_eval(restored, before[0].id,
-                                     err, sizeof(err)) == 0);
-    }
+    TEST_ASSERT(ds4_session_eval(restored, before[0].id,
+                                 err, sizeof(err)) == 0);
     TEST_ASSERT(ds4_session_top_logprobs(restored, restored_after, 8) == 8);
     for (int i = 0; i < 8; i++) {
         if (restored_after[i].id != reference_after[i].id ||
@@ -681,34 +260,6 @@ static void test_session_snapshot_roundtrip(void) {
         TEST_ASSERT(fabsf(restored_after[i].logit -
                           reference_after[i].logit) <=
                     continued_logit_tolerance);
-    }
-    if (test_glm_mtp) {
-        TEST_ASSERT(ds4_session_sync(restored, &prompt,
-                                     err, sizeof(err)) == 0);
-        TEST_ASSERT(ds4_session_top_logprobs(restored,
-                                             restored_before, 8) == 8);
-        for (int i = 0; i < 8; i++) {
-            TEST_ASSERT(restored_before[i].id == before[i].id);
-            TEST_ASSERT(fabsf(restored_before[i].logit - before[i].logit) <=
-                        1e-6f);
-        }
-        int reuse_single = 0;
-        int reuse_double = 0;
-        for (int cycle = 0; cycle < 4; cycle++) {
-            int cycle_accepted[2] = {0};
-            const int first = ds4_session_argmax(restored);
-            const int n = ds4_session_eval_speculative_argmax(
-                    restored, first, 2, -1,
-                    cycle_accepted, 2, err, sizeof(err));
-            TEST_ASSERT(n > 0 && n <= 2);
-            if (n <= 0 || n > 2) goto cleanup;
-            reuse_single += n == 1;
-            reuse_double += n == 2;
-        }
-        fprintf(stderr,
-                "ds4-test: GLM MTP context reuse single=%d double=%d\n",
-                reuse_single,
-                reuse_double);
     }
 
 cleanup:
@@ -1259,10 +810,6 @@ static void test_metal_store_raw_kv_batch_wrap(void) {
 
     ds4_gpu_tensor_free(kv);
     ds4_gpu_tensor_free(raw);
-}
-
-static void test_dspark_cache_window_crop(void) {
-    TEST_ASSERT(ds4_test_dspark_cache_window_crop());
 }
 
 static void test_metal_q8_0_decode_pair_exact_case(
@@ -5132,7 +4679,6 @@ static void test_metal_kernel_group(void) {
     test_metal_q8_0_prefill_matmul();
     test_metal_pack_slot_rows_f32();
     test_metal_store_raw_kv_batch_wrap();
-    test_dspark_cache_window_crop();
     test_metal_q8_0_decode_pair_exact();
 #if defined(__APPLE__)
     test_metal_f16_compressor_pair_state_store_exact();
@@ -5193,201 +4739,6 @@ static void test_metal_short_prefill_ratio4(void) {
         ds4_session_free(session);
         ds4_tokens_free(&prompt);
     }
-}
-
-typedef struct {
-    int expected_start;
-    int expected_total;
-    int last_current;
-    int chunk_events;
-    int display_events;
-    int intermediate_events;
-    bool invalid;
-} test_continued_prefill_progress;
-
-static void test_continued_prefill_progress_cb(
-        void       *ud,
-        const char *event,
-        int         current,
-        int         total) {
-    test_continued_prefill_progress *p = ud;
-    const bool chunk = !strcmp(event, "prefill_chunk");
-    const bool display = !strcmp(event, "prefill_display");
-    if (!chunk && !display) return;
-
-    if (total != p->expected_total || current < p->expected_start ||
-        current > total || current < p->last_current) {
-        p->invalid = true;
-    }
-    if (current > p->expected_start && current < total) {
-        p->intermediate_events++;
-    }
-    if (current > p->last_current) p->last_current = current;
-    if (chunk) p->chunk_events++;
-    if (display) p->display_events++;
-}
-
-static double test_monotonic_seconds(void) {
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (double)ts.tv_sec + (double)ts.tv_nsec / 1000000000.0;
-}
-
-static bool test_sync_continued_prefill_stage(
-        ds4_session *session,
-        ds4_tokens  *prompt,
-        int          previous_len,
-        int          next_len,
-        double      *elapsed_out) {
-    test_continued_prefill_progress progress = {
-        .expected_start = previous_len,
-        .expected_total = next_len,
-        .last_current = previous_len,
-    };
-    char err[160] = {0};
-    prompt->len = next_len;
-    ds4_session_set_progress(session, test_continued_prefill_progress_cb,
-                             &progress);
-    ds4_session_set_display_progress(session,
-                                     test_continued_prefill_progress_cb,
-                                     &progress);
-    const double started = test_monotonic_seconds();
-    const int rc = ds4_session_sync(session, prompt, err, sizeof(err));
-    const double elapsed = test_monotonic_seconds() - started;
-    ds4_session_set_progress(session, NULL, NULL);
-    ds4_session_set_display_progress(session, NULL, NULL);
-    if (elapsed_out) *elapsed_out = elapsed;
-
-    if (rc != 0) {
-        fprintf(stderr,
-                "ds4-test: continued prefill %d -> %d failed: %s\n",
-                previous_len, next_len, err);
-    }
-    const int added = next_len - previous_len;
-    fprintf(stderr,
-            "ds4-test: continued prefill +%d: %.2f ms, %.1f t/s, "
-            "chunk=%d display=%d intermediate=%d\n",
-            added, elapsed * 1000.0,
-            elapsed > 0.0 ? (double)added / elapsed : 0.0,
-            progress.chunk_events, progress.display_events,
-            progress.intermediate_events);
-
-    TEST_ASSERT(rc == 0);
-    TEST_ASSERT(!progress.invalid);
-    TEST_ASSERT(progress.chunk_events > 0);
-    TEST_ASSERT(progress.last_current == next_len);
-    if (added > 1 &&
-        (added >= 32 ||
-         !test_env_bool("DS4_TEST_CONTINUED_PREFILL_ALLOW_COARSE"))) {
-        TEST_ASSERT(progress.intermediate_events > 0);
-    }
-    if (added >= 32) TEST_ASSERT(progress.display_events > 0);
-    return rc == 0 && !progress.invalid;
-}
-
-static bool test_top_tokens_overlap(
-        const ds4_token_score *a,
-        const ds4_token_score *b,
-        int                    count) {
-    bool a0_in_b = false;
-    bool b0_in_a = false;
-    for (int i = 0; i < count; i++) {
-        if (a[0].id == b[i].id) a0_in_b = true;
-        if (b[0].id == a[i].id) b0_in_a = true;
-    }
-    return a0_in_b && b0_in_a;
-}
-
-static void test_glm53_continued_prefill(void) {
-    ds4_engine *engine = test_get_engine(false);
-    if (!engine || !ds4_engine_is_glm53(engine)) {
-        fprintf(stderr,
-                "ds4-test: glm53-continued-prefill skipped (GLM 5.3 model required)\n");
-        return;
-    }
-
-    const int base_len = 64;
-    uint32_t large_add = test_env_u32("DS4_TEST_CONTINUED_PREFILL_TOKENS");
-    if (large_add == 0) large_add = 256;
-    uint32_t large_steps = test_env_u32("DS4_TEST_CONTINUED_PREFILL_STEPS");
-    if (large_steps == 0) large_steps = 1;
-    const uint64_t final_len64 = (uint64_t)base_len + 4u +
-                                 (uint64_t)large_add * large_steps;
-    TEST_ASSERT(final_len64 < INT_MAX - 128);
-    if (final_len64 >= INT_MAX - 128) return;
-    const int final_len = (int)final_len64;
-    int ctx_size = final_len + 128;
-    if (ctx_size < 4096) ctx_size = 4096;
-
-    ds4_tokens pattern = {0};
-    ds4_tokens prompt = {0};
-    ds4_session *resumed = NULL;
-    ds4_session *cold = NULL;
-    ds4_token_score resumed_top[8] = {0};
-    ds4_token_score cold_top[8] = {0};
-    char err[160] = {0};
-    ds4_tokenize_text(engine,
-                      " continued prefill checks latency throughput and progress",
-                      &pattern);
-    TEST_ASSERT(pattern.len > 0);
-    if (pattern.len == 0) goto cleanup;
-    ds4_chat_begin(engine, &prompt);
-    while (prompt.len < final_len) {
-        ds4_tokens_push(&prompt, pattern.v[prompt.len % pattern.len]);
-    }
-
-    TEST_ASSERT(ds4_session_create(&resumed, engine, ctx_size) == 0);
-    if (!resumed) goto cleanup;
-
-    prompt.len = base_len;
-    TEST_ASSERT(ds4_session_sync(resumed, &prompt, err, sizeof(err)) == 0);
-    if (!test_sync_continued_prefill_stage(resumed, &prompt,
-                                           base_len, base_len + 1, NULL)) {
-        goto cleanup;
-    }
-    if (!test_sync_continued_prefill_stage(resumed, &prompt,
-                                           base_len + 1, base_len + 4, NULL)) {
-        goto cleanup;
-    }
-    int previous_len = base_len + 4;
-    for (uint32_t step = 0; step < large_steps; step++) {
-        const int next_len = previous_len + (int)large_add;
-        if (!test_sync_continued_prefill_stage(resumed, &prompt,
-                                               previous_len, next_len, NULL)) {
-            goto cleanup;
-        }
-        previous_len = next_len;
-    }
-    TEST_ASSERT(ds4_session_top_logprobs(resumed, resumed_top, 8) == 8);
-    ds4_session_free(resumed);
-    resumed = NULL;
-
-    TEST_ASSERT(ds4_session_create(&cold, engine, ctx_size) == 0);
-    if (!cold) goto cleanup;
-    prompt.len = final_len;
-    TEST_ASSERT(ds4_session_sync(cold, &prompt, err, sizeof(err)) == 0);
-    TEST_ASSERT(ds4_session_top_logprobs(cold, cold_top, 8) == 8);
-    int same_rank = 0;
-    float max_same_rank_delta = 0.0f;
-    for (int i = 0; i < 8; i++) {
-        if (resumed_top[i].id != cold_top[i].id) continue;
-        same_rank++;
-        const float delta = fabsf(resumed_top[i].logit - cold_top[i].logit);
-        if (delta > max_same_rank_delta) max_same_rank_delta = delta;
-    }
-    fprintf(stderr,
-            "ds4-test: continued/cold final top token %d/%d, "
-            "same-rank top8=%d, max same-rank logit delta=%.6g\n",
-            resumed_top[0].id, cold_top[0].id,
-            same_rank, max_same_rank_delta);
-    TEST_ASSERT(resumed_top[0].id == cold_top[0].id);
-    TEST_ASSERT(test_top_tokens_overlap(resumed_top, cold_top, 8));
-
-cleanup:
-    ds4_session_free(cold);
-    ds4_session_free(resumed);
-    ds4_tokens_free(&prompt);
-    ds4_tokens_free(&pattern);
 }
 
 static char *test_read_file(const char *path) {
@@ -5516,16 +4867,6 @@ static bool test_hex_to_bytes(const char *hex, unsigned char *out, int cap, int 
     }
     *len = n;
     return true;
-}
-
-static bool test_token_bytes_equal(ds4_engine *engine, int token,
-                                   const unsigned char *want, int want_len) {
-    size_t got_len = 0;
-    char *got = ds4_token_text(engine, token, &got_len);
-    bool eq = got && got_len == (size_t)want_len &&
-              memcmp(got, want, (size_t)want_len) == 0;
-    free(got);
-    return eq;
 }
 
 static void test_long_prefill_progress(void *ud, const char *event, int current, int total) {
@@ -5700,414 +5041,9 @@ static bool test_fill_vector_case(FILE *fp, test_vec_case *vc) {
     return false;
 }
 
-static void test_logprob_vector_case(ds4_engine *engine, const test_vec_case *vc) {
-    char *prompt_text = test_read_file(vc->prompt_path);
-    TEST_ASSERT(prompt_text != NULL);
-    if (!prompt_text) return;
-
-    ds4_tokens prompt = {0};
-    ds4_encode_chat_prompt(engine, "", prompt_text, DS4_THINK_NONE, &prompt);
-    free(prompt_text);
-
-    ds4_session *session = NULL;
-    TEST_ASSERT(ds4_session_create(&session, engine, vc->ctx) == 0);
-    if (!session) {
-        ds4_tokens_free(&prompt);
-        return;
-    }
-
-    char err[160];
-    if (ds4_session_sync(session, &prompt, err, sizeof(err)) != 0) {
-        fprintf(stderr, "ds4-test: vector %s prefill failed: %s\n", vc->id, err);
-        TEST_ASSERT(false);
-        ds4_session_free(session);
-        ds4_tokens_free(&prompt);
-        return;
-    }
-
-    ds4_token_score scores[20];
-    for (int i = 0; i < vc->nsteps; i++) {
-        const test_vec_step *step = &vc->steps[i];
-        int nscore = ds4_session_top_logprobs(session, scores, 20);
-        int token = ds4_session_argmax(session);
-        if (!test_token_bytes_equal(engine, token, step->selected, step->selected_len)) {
-            fprintf(stderr, "ds4-test: vector %s step %d selected token mismatch\n",
-                    vc->id, i);
-            TEST_ASSERT(false);
-        }
-
-        for (int t = 0; t < step->ntop; t++) {
-            bool found = false;
-            float local_lp = 0.0f;
-            for (int j = 0; j < nscore; j++) {
-                if (scores[j].id < 0) continue;
-                if (test_token_bytes_equal(engine, scores[j].id,
-                                           step->top[t].bytes,
-                                           step->top[t].len)) {
-                    found = true;
-                    local_lp = scores[j].logprob;
-                    break;
-                }
-            }
-            if (!found) {
-                fprintf(stderr, "ds4-test: vector %s step %d official top token missing locally\n",
-                        vc->id, i);
-                TEST_ASSERT(false);
-            } else if (fabsf(local_lp - step->top[t].logprob) > 4.0f) {
-                fprintf(stderr,
-                        "ds4-test: vector %s step %d logprob delta too high: local=%g official=%g\n",
-                        vc->id, i, local_lp, step->top[t].logprob);
-                TEST_ASSERT(false);
-            }
-        }
-
-        if (i + 1 < vc->nsteps) {
-            if (ds4_session_eval(session, token, err, sizeof(err)) != 0) {
-                fprintf(stderr, "ds4-test: vector %s step %d eval failed: %s\n",
-                        vc->id, i, err);
-                TEST_ASSERT(false);
-                break;
-            }
-        }
-    }
-
-    ds4_session_free(session);
-    ds4_tokens_free(&prompt);
-}
-
-static bool test_logprob_vector_case_disabled(const char *path,
-                                              const test_vec_case *vc) {
-    /*
-     * This one long-context vector currently matches the public DeepSeek API less
-     * after adding the official Hadamard+FP4 indexer path.  The public official
-     * implementation and the API appear to disagree here; the official graph has
-     * slightly lower local perplexity on the A/B check we ran, so DS4 keeps that
-     * implementation and only excludes this brittle API fixture for now.
-     */
-    return !strcmp(path, "tests/test-vectors/flash-pre-0731/official.vec") &&
-           !strcmp(vc->id, "long_memory_archive");
-}
-
-static void test_official_logprob_vectors_run(const char *case_filter) {
-    const char *path = getenv("DS4_TEST_VECTOR_FILE");
-    if (!path || !path[0]) {
-        path = "tests/test-vectors/flash-0731/official.vec";
-    }
-    FILE *fp = fopen(path, "rb");
-    TEST_ASSERT(fp != NULL);
-    if (!fp) return;
-
-    char *saved_prefill_chunk = test_save_env("DS4_METAL_PREFILL_CHUNK");
-    char *saved_disable_metal4 = test_save_env("DS4_METAL_DISABLE_METAL4");
-    test_streaming_prefill_env saved_canonical_streaming_prefill =
-        test_force_canonical_streaming_prefill();
-    setenv("DS4_METAL_PREFILL_CHUNK", "2048", 1);
-    if (getenv("DS4_TEST_LOGPROB_AUTO_METAL") == NULL) {
-        setenv("DS4_METAL_DISABLE_METAL4", "1", 1);
-    } else {
-        unsetenv("DS4_METAL_DISABLE_METAL4");
-    }
-    ds4_engine *engine = test_open_engine(false);
-    if (!engine) {
-        test_restore_canonical_streaming_prefill(saved_canonical_streaming_prefill);
-        test_restore_env("DS4_METAL_DISABLE_METAL4", saved_disable_metal4);
-        test_restore_env("DS4_METAL_PREFILL_CHUNK", saved_prefill_chunk);
-        fclose(fp);
-        return;
-    }
-
-    test_vec_case vc;
-    int ran = 0;
-    while (test_read_vector_case(fp, &vc)) {
-        if (!test_fill_vector_case(fp, &vc)) break;
-        if (case_filter && case_filter[0] && strcmp(vc.id, case_filter)) {
-            continue;
-        }
-        if (test_logprob_vector_case_disabled(path, &vc)) {
-            fprintf(stderr, "ds4-test: vector %s skipped (API/official graph mismatch)\n",
-                    vc.id);
-            continue;
-        }
-        fprintf(stderr, "ds4-test: vector %s\n", vc.id);
-        test_logprob_vector_case(engine, &vc);
-        ran++;
-    }
-    TEST_ASSERT(!case_filter || !case_filter[0] || ran == 1);
-    ds4_engine_close(engine);
-    test_restore_canonical_streaming_prefill(saved_canonical_streaming_prefill);
-    test_restore_env("DS4_METAL_DISABLE_METAL4", saved_disable_metal4);
-    test_restore_env("DS4_METAL_PREFILL_CHUNK", saved_prefill_chunk);
-    fclose(fp);
-}
-
-static void test_official_logprob_vectors(void) {
-    test_official_logprob_vectors_run(NULL);
-}
-
-static void test_metal_ssd_streaming_cache_pressure(void) {
-#ifndef __APPLE__
-    fprintf(stderr,
-            "ds4-test: Metal SSD streaming cache-pressure repro skipped "
-            "(Metal-only)\n");
-#else
-    /*
-     * Regression repro for GitHub issue #384.
-     *
-     * The bug needs the Metal SSD-streaming decode layer-batch path and a small
-     * routed-expert cache. Under pressure, a cache entry referenced by an
-     * already-encoded-but-not-yet-executed layer can be reused for a later
-     * layer in the same command buffer, producing deterministic wrong logits.
-     */
-    char *saved_streaming = test_save_env("DS4_TEST_SSD_STREAMING");
-    char *saved_cache_gb = test_save_env("DS4_TEST_SSD_STREAMING_CACHE_GB");
-    char *saved_cache_experts =
-        test_save_env("DS4_TEST_SSD_STREAMING_CACHE_EXPERTS");
-    char *saved_disable_layer_batch =
-        test_save_env("DS4_METAL_DISABLE_STREAMING_LAYER_BATCH");
-    char *saved_disable_static_decode =
-        test_save_env("DS4_METAL_DISABLE_STREAMING_STATIC_DECODE_MAP");
-    char *saved_one_stage =
-        test_save_env("DS4_METAL_MOE_ONE_STAGE_PROFILE");
-
-    setenv("DS4_TEST_SSD_STREAMING", "1", 1);
-    setenv("DS4_TEST_SSD_STREAMING_CACHE_GB", "16", 1);
-    unsetenv("DS4_TEST_SSD_STREAMING_CACHE_EXPERTS");
-    unsetenv("DS4_METAL_DISABLE_STREAMING_LAYER_BATCH");
-    unsetenv("DS4_METAL_DISABLE_STREAMING_STATIC_DECODE_MAP");
-    unsetenv("DS4_METAL_MOE_ONE_STAGE_PROFILE");
-
-    fprintf(stderr,
-            "ds4-test: Metal SSD streaming cache-pressure repro "
-            "(16GiB cache, layer-batched decode, short_code_completion)\n");
-    test_official_logprob_vectors_run("short_code_completion");
-
-    test_restore_env("DS4_METAL_MOE_ONE_STAGE_PROFILE", saved_one_stage);
-    test_restore_env("DS4_METAL_DISABLE_STREAMING_STATIC_DECODE_MAP",
-                     saved_disable_static_decode);
-    test_restore_env("DS4_METAL_DISABLE_STREAMING_LAYER_BATCH",
-                     saved_disable_layer_batch);
-    test_restore_env("DS4_TEST_SSD_STREAMING_CACHE_EXPERTS",
-                     saved_cache_experts);
-    test_restore_env("DS4_TEST_SSD_STREAMING_CACHE_GB", saved_cache_gb);
-    test_restore_env("DS4_TEST_SSD_STREAMING", saved_streaming);
-#endif
-}
-
 static void test_logits_topk(const float *logits, int n, int *out, int k);
 static bool test_topk_contains(const int *top, int k, int id);
 
-#define TEST_LOCAL_GOLDEN_MAX_TOP 128
-
-typedef struct {
-    int id;
-    float logit;
-} test_local_golden_top;
-
-typedef struct {
-    char id[96];
-    char mode[16];
-    char prompt_path[512];
-    int ctx;
-    int frontier;
-    int ntop;
-    test_local_golden_top top[TEST_LOCAL_GOLDEN_MAX_TOP];
-} test_local_golden_case;
-
-static bool test_read_local_golden_case(FILE *fp, test_local_golden_case *tc) {
-    char line[2048];
-    memset(tc, 0, sizeof(*tc));
-    while (fgets(line, sizeof(line), fp)) {
-        char *p = test_trim_line(line);
-        if (!p[0] || p[0] == '#') continue;
-        if (sscanf(p, "case %95s %15s %d %d %511s %d",
-                   tc->id, tc->mode, &tc->ctx, &tc->frontier,
-                   tc->prompt_path, &tc->ntop) == 6) {
-            TEST_ASSERT(tc->ctx > tc->frontier);
-            TEST_ASSERT(tc->frontier > 0);
-            TEST_ASSERT(tc->ntop > 0 && tc->ntop <= TEST_LOCAL_GOLDEN_MAX_TOP);
-            return true;
-        }
-        TEST_ASSERT(!"unexpected line before local golden case");
-        return false;
-    }
-    return false;
-}
-
-static bool test_fill_local_golden_case(FILE *fp, test_local_golden_case *tc) {
-    char line[2048];
-    int seen = 0;
-    while (fgets(line, sizeof(line), fp)) {
-        char *p = test_trim_line(line);
-        if (!p[0] || p[0] == '#') continue;
-        if (!strcmp(p, "end")) {
-            TEST_ASSERT(seen == tc->ntop);
-            return seen == tc->ntop;
-        }
-        int rank = -1;
-        int id = -1;
-        float logit = 0.0f;
-        if (sscanf(p, "top %d %d %f", &rank, &id, &logit) != 3) {
-            TEST_ASSERT(!"bad local golden top line");
-            return false;
-        }
-        TEST_ASSERT(rank == seen);
-        TEST_ASSERT(seen < tc->ntop);
-        if (seen >= tc->ntop) return false;
-        tc->top[seen].id = id;
-        tc->top[seen].logit = logit;
-        seen++;
-    }
-    TEST_ASSERT(!"unterminated local golden case");
-    return false;
-}
-
-static int test_local_golden_overlap(const test_local_golden_case *tc,
-                                     const int *cand_top,
-                                     int n) {
-    int overlap = 0;
-    if (n > tc->ntop) n = tc->ntop;
-    for (int i = 0; i < n; i++) {
-        if (test_topk_contains(cand_top, n, tc->top[i].id)) overlap++;
-    }
-    return overlap;
-}
-
-static float test_local_golden_max_abs(const test_local_golden_case *tc,
-                                       const float *cand_logits,
-                                       int n) {
-    float max_abs = 0.0f;
-    if (n > tc->ntop) n = tc->ntop;
-    for (int i = 0; i < n; i++) {
-        const int id = tc->top[i].id;
-        if (id < 0) continue;
-        const float abs_delta = fabsf(cand_logits[id] - tc->top[i].logit);
-        if (abs_delta > max_abs) max_abs = abs_delta;
-    }
-    return max_abs;
-}
-
-static void test_local_golden_case_run(ds4_engine *engine,
-                                       const test_local_golden_case *tc) {
-    char *prompt_text = test_read_file(tc->prompt_path);
-    TEST_ASSERT(prompt_text != NULL);
-    if (!prompt_text) return;
-
-    ds4_tokens prompt = {0};
-    if (!strcmp(tc->mode, "text")) {
-        ds4_tokenize_text(engine, prompt_text, &prompt);
-    } else if (!strcmp(tc->mode, "rendered")) {
-        ds4_tokenize_rendered_chat(engine, prompt_text, &prompt);
-    } else if (!strcmp(tc->mode, "chat")) {
-        ds4_encode_chat_prompt(engine, "", prompt_text, DS4_THINK_NONE, &prompt);
-    } else {
-        TEST_ASSERT(!"unknown local golden prompt mode");
-    }
-    free(prompt_text);
-    TEST_ASSERT(prompt.len >= tc->frontier);
-    if (prompt.len < tc->frontier) {
-        ds4_tokens_free(&prompt);
-        return;
-    }
-
-    ds4_tokens prefix = {
-        .v = prompt.v,
-        .len = tc->frontier,
-        .cap = tc->frontier,
-    };
-
-    ds4_session *session = NULL;
-    TEST_ASSERT(ds4_session_create(&session, engine, tc->ctx) == 0);
-    if (!session) {
-        ds4_tokens_free(&prompt);
-        return;
-    }
-
-    char err[160];
-    TEST_ASSERT(ds4_session_sync(session, &prefix, err, sizeof(err)) == 0);
-
-    const int vocab = ds4_engine_vocab_size(engine);
-    float *cand_logits = malloc((size_t)vocab * sizeof(cand_logits[0]));
-    TEST_ASSERT(cand_logits != NULL);
-    if (cand_logits &&
-        ds4_session_copy_logits(session, cand_logits, vocab) == vocab) {
-        int cand_top[TEST_LOCAL_GOLDEN_MAX_TOP];
-        const int ntop = tc->ntop < TEST_LOCAL_GOLDEN_MAX_TOP ?
-                         tc->ntop : TEST_LOCAL_GOLDEN_MAX_TOP;
-        test_logits_topk(cand_logits, vocab, cand_top, ntop);
-
-        const int top5_overlap = test_local_golden_overlap(tc, cand_top, 5);
-        const int top20_overlap = test_local_golden_overlap(tc, cand_top, 20);
-        const int top64_overlap = test_local_golden_overlap(tc, cand_top, 64);
-        const float top20_max_abs =
-            test_local_golden_max_abs(tc, cand_logits, 20);
-
-        fprintf(stderr,
-                "ds4-test: local golden %s top1 ref=%d cand=%d "
-                "top5_overlap=%d/5 top20_overlap=%d/20 top64_overlap=%d/64 "
-                "top20_max_abs=%g\n",
-                tc->id, tc->top[0].id, cand_top[0],
-                top5_overlap, top20_overlap, top64_overlap, top20_max_abs);
-
-        /*
-         * This is intentionally tolerant: it is meant to catch substantial
-         * backend drift (wrong tiling, skipped work, bad dispatch), not tiny
-         * floating-point differences from otherwise sane kernel changes.
-         */
-        TEST_ASSERT(cand_top[0] == tc->top[0].id);
-        TEST_ASSERT(top5_overlap >= 4);
-        TEST_ASSERT(top20_overlap >= 15);
-        TEST_ASSERT(top64_overlap >= 40);
-        TEST_ASSERT(top20_max_abs <= 8.0f);
-    } else {
-        TEST_ASSERT(false);
-    }
-
-    free(cand_logits);
-    ds4_session_free(session);
-    ds4_tokens_free(&prompt);
-}
-
-static void test_local_golden_vectors(void) {
-    const char *path = getenv("DS4_TEST_LOCAL_GOLDEN_FILE");
-    if (!path || !path[0]) {
-        path = "tests/test-vectors/flash-0731/local-golden.vec";
-    }
-    FILE *fp = fopen(path, "rb");
-    TEST_ASSERT(fp != NULL);
-    if (!fp) return;
-
-    char *saved_prefill_chunk = test_save_env("DS4_METAL_PREFILL_CHUNK");
-    char *saved_disable_metal4 = test_save_env("DS4_METAL_DISABLE_METAL4");
-    char *saved_moe_tile_max = test_save_env("DS4_METAL_MOE_TILE_MAX");
-    test_streaming_prefill_env saved_canonical_streaming_prefill =
-        test_force_canonical_streaming_prefill();
-    setenv("DS4_METAL_PREFILL_CHUNK", "4096", 1);
-    setenv("DS4_METAL_DISABLE_METAL4", "1", 1);
-    unsetenv("DS4_METAL_MOE_TILE_MAX");
-
-    ds4_engine *engine = test_open_engine(false);
-    if (!engine) {
-        test_restore_canonical_streaming_prefill(saved_canonical_streaming_prefill);
-        test_restore_env("DS4_METAL_MOE_TILE_MAX", saved_moe_tile_max);
-        test_restore_env("DS4_METAL_DISABLE_METAL4", saved_disable_metal4);
-        test_restore_env("DS4_METAL_PREFILL_CHUNK", saved_prefill_chunk);
-        fclose(fp);
-        return;
-    }
-
-    test_local_golden_case tc;
-    while (test_read_local_golden_case(fp, &tc)) {
-        if (!test_fill_local_golden_case(fp, &tc)) break;
-        test_local_golden_case_run(engine, &tc);
-    }
-
-    ds4_engine_close(engine);
-    test_restore_canonical_streaming_prefill(saved_canonical_streaming_prefill);
-    test_restore_env("DS4_METAL_MOE_TILE_MAX", saved_moe_tile_max);
-    test_restore_env("DS4_METAL_DISABLE_METAL4", saved_disable_metal4);
-    test_restore_env("DS4_METAL_PREFILL_CHUNK", saved_prefill_chunk);
-    fclose(fp);
-}
 
 #define TEST_MPP_EQ_MAX_CASES 8
 #define TEST_MPP_EQ_TOPK 20
@@ -6669,7 +5605,7 @@ static void test_streaming_decode_prefill_correctness(void) {
 static const char *test_tool_call_request_json(void) {
     return
         "{"
-        "\"model\":\"deepseek-v4-flash\","
+        "\"model\":\"deepseek-v4.1-flash\","
         "\"messages\":[{\"role\":\"user\",\"content\":\""
             TEST_LIST_FILES_USER_PROMPT
         "\"}],"
@@ -6688,7 +5624,7 @@ static char *test_tool_result_request_json(const char *assistant_content,
 
     buf b = {0};
     buf_puts(&b,
-        "{\"model\":\"deepseek-v4-flash\",\"messages\":["
+        "{\"model\":\"deepseek-v4.1-flash\",\"messages\":["
         "{\"role\":\"user\",\"content\":");
     json_escape(&b, TEST_LIST_FILES_USER_PROMPT);
     buf_puts(&b, "},{\"role\":\"assistant\",\"content\":");
@@ -6951,245 +5887,7 @@ static void test_tool_call_quality(void) {
     test_close_engine(true);
 }
 
-/* Greedy speculative decode: capture committed tokens and the largest accepted
- * chunk, so the caller can confirm the multi-row verify path actually ran. */
-static bool test_mtp_capture_speculative(ds4_engine *engine, const ds4_tokens *prompt,
-                                         int max_tokens, int *out, int *out_len,
-                                         int *max_chunk) {
-    *out_len = 0;
-    *max_chunk = 0;
-    ds4_session *session = NULL;
-    TEST_ASSERT(ds4_session_create(&session, engine, prompt->len + max_tokens + 16) == 0);
-    if (!session) return false;
 
-    char err[160];
-    bool ok = ds4_session_sync(session, prompt, err, sizeof(err)) == 0;
-    TEST_ASSERT(ok);
-
-    const int eos = ds4_token_eos(engine);
-    int n = 0;
-    bool stop = false;
-    while (ok && !stop && n < max_tokens) {
-        const int token = ds4_session_argmax(session);
-        if (token == eos) break;
-
-        int toks[17]; /* base token + draft depth, which the engine clamps to 16 */
-        const int ntok = ds4_session_eval_speculative_argmax(
-            session, token, max_tokens - n, eos, toks,
-            (int)(sizeof(toks) / sizeof(toks[0])), err, sizeof(err));
-        if (ntok < 0) { ok = false; TEST_ASSERT(false); break; }
-        if (ntok > *max_chunk) *max_chunk = ntok;
-
-        for (int j = 0; j < ntok; j++) {
-            if (toks[j] == eos) { stop = true; break; }
-            out[n++] = toks[j];
-            if (n >= max_tokens) { stop = true; break; }
-        }
-    }
-
-    *out_len = n;
-    ds4_session_free(session);
-    return ok;
-}
-
-/* Replay toks[] through plain decode and return the largest gap between a
- * position's argmax logit and the committed token's logit.  Correct speculation
- * commits (near-)argmax tokens (gap ~0); a mis-committed token gives a big gap. */
-static bool test_mtp_worst_argmax_gap(ds4_engine *engine, const ds4_tokens *prompt,
-                                      const int *toks, int n,
-                                      float *worst_gap, int *worst_at) {
-    *worst_gap = 0.0f;
-    *worst_at = -1;
-    ds4_session *session = NULL;
-    TEST_ASSERT(ds4_session_create(&session, engine, prompt->len + n + 16) == 0);
-    if (!session) return false;
-
-    char err[160];
-    bool ok = ds4_session_sync(session, prompt, err, sizeof(err)) == 0;
-    TEST_ASSERT(ok);
-
-    for (int i = 0; ok && i < n; i++) {
-        ds4_token_score best, cur;
-        ok = ds4_session_top_logprobs(session, &best, 1) >= 1 &&
-             ds4_session_token_logprob(session, toks[i], &cur) == 1;
-        TEST_ASSERT(ok);
-        if (!ok) break;
-
-        const float gap = best.logit - cur.logit;
-        if (gap > *worst_gap) { *worst_gap = gap; *worst_at = i; }
-        if (ds4_session_eval(session, toks[i], err, sizeof(err)) != 0) { ok = false; TEST_ASSERT(false); break; }
-    }
-
-    ds4_session_free(session);
-    return ok;
-}
-
-/* Verbatim-copy task: keeps the model confident (a mis-committed token shows as
- * a large argmax gap) and draft acceptance high (so the multi-row verify path is
- * exercised across the generation). */
-static const char *test_mtp_copy_prompt(void) {
-    return
-        "Reproduce the following C code EXACTLY, character for character, "
-        "inside a single code block and output nothing else:\n\n"
-        "```c\n"
-        "static uint32_t clamp_u32(uint32_t v, uint32_t lo, uint32_t hi) {\n"
-        "    if (v < lo) return lo;\n"
-        "    if (v > hi) return hi;\n"
-        "    return v;\n"
-        "}\n"
-        "\n"
-        "static uint32_t ring_advance(uint32_t pos, uint32_t cap) {\n"
-        "    uint32_t next = pos + 1u;\n"
-        "    return next >= cap ? 0u : next;\n"
-        "}\n"
-        "\n"
-        "static int scratch_init(scratch *s, uint32_t ctx_size) {\n"
-        "    if (ctx_size == 0u) ctx_size = 1u;\n"
-        "    s->ctx_size = ctx_size;\n"
-        "    s->comp_cap = ctx_size / 4u + 2u;\n"
-        "    s->rows = clamp_u32(s->comp_cap, 1u, 4096u);\n"
-        "    s->head = 0u;\n"
-        "    return s->rows > 0u ? 0 : -1;\n"
-        "}\n"
-        "```\n";
-}
-
-#define TEST_MTP_MAXGEN 256
-#define TEST_DSPARK_MAXGEN 128
-
-static ds4_engine *test_open_dspark_engine(const char *support_path) {
-    ds4_engine *engine = NULL;
-    ds4_engine_options opt = {
-        .model_path = test_model_path(),
-#ifdef __APPLE__
-        .backend = DS4_BACKEND_METAL,
-#else
-        .backend = DS4_BACKEND_CUDA,
-#endif
-        .quality = false,
-        .prefill_chunk = 512,
-        .ssd_streaming = test_env_bool("DS4_TEST_SSD_STREAMING"),
-        .ssd_streaming_cold = test_env_bool("DS4_TEST_SSD_STREAMING_COLD"),
-        .ssd_streaming_cache_experts =
-            test_env_u32("DS4_TEST_SSD_STREAMING_CACHE_EXPERTS"),
-        .ssd_streaming_cache_bytes =
-            test_env_gib("DS4_TEST_SSD_STREAMING_CACHE_GB"),
-        .ssd_streaming_preload_experts =
-            test_env_u32("DS4_TEST_SSD_STREAMING_PRELOAD_EXPERTS"),
-        .mtp_path = support_path,
-        .mtp_draft_tokens = 0,
-        .dspark = true,
-        .dspark_confidence_threshold = 0.9f,
-        .dspark_confidence_threshold_set = true,
-    };
-    const int rc = ds4_engine_open(&engine, &opt);
-    TEST_ASSERT(rc == 0);
-    return rc == 0 ? engine : NULL;
-}
-
-/* Regression for the swapped top-k arguments in metal_graph_verify_suffix_tops
- * at draft depth > 2.  Replays the committed speculative tokens through plain
- * decode and requires each to be a (near-)argmax: that is the verify invariant,
- * and unlike comparing token streams it tolerates the near-greedy tie
- * divergences.  Needs an MTP head, so it self-skips without DS4_TEST_MTP. */
-static void test_mtp_verify_depth(void) {
-    ds4_engine *engine = test_get_engine(false);
-    if (!engine || !ds4_engine_has_mtp(engine)) {
-        fprintf(stderr, "ds4-test: mtp-verify-depth skipped (set DS4_TEST_MTP to an MTP GGUF)\n");
-        return;
-    }
-    TEST_ASSERT(ds4_engine_mtp_draft_tokens(engine) > 2);
-
-    ds4_tokens prompt = {0};
-    ds4_chat_begin(engine, &prompt);
-    ds4_chat_append_message(engine, &prompt, "user", test_mtp_copy_prompt());
-    ds4_chat_append_assistant_prefix(engine, &prompt, DS4_THINK_NONE);
-    TEST_ASSERT(prompt.len > 0);
-
-    int *spec = malloc((size_t)TEST_MTP_MAXGEN * sizeof(*spec));
-    TEST_ASSERT(spec != NULL);
-    if (spec && prompt.len > 0) {
-        int nspec = 0, max_chunk = 0;
-        const bool ok_spec = test_mtp_capture_speculative(engine, &prompt, TEST_MTP_MAXGEN,
-                                                          spec, &nspec, &max_chunk);
-        TEST_ASSERT(ok_spec);
-        TEST_ASSERT(max_chunk > 1);  /* multi-token chunks committed: the multi-row path ran */
-        TEST_ASSERT(nspec > 128);    /* enough output to surface the bug, incl. a spurious-EOS truncation */
-
-        float worst_gap = 0.0f;
-        int worst_at = -1;
-        const bool ok_check = test_mtp_worst_argmax_gap(engine, &prompt, spec, nspec,
-                                                        &worst_gap, &worst_at);
-        TEST_ASSERT(ok_check);
-        fprintf(stderr, "ds4-test: mtp-verify-depth nspec=%d max_chunk=%d worst_argmax_gap=%.3f at=%d\n",
-                nspec, max_chunk, worst_gap, worst_at);
-        TEST_ASSERT(worst_gap <= 2.0f);  /* correct: ~0; bug: ~21 on the reference model */
-    }
-
-    free(spec);
-    ds4_tokens_free(&prompt);
-}
-
-/* Same invariant as the MTP depth smoke, but for the DSpark support model.  This
- * is separate from the fixture because it teacher-forces every committed token
- * through normal decode and directly checks that DSpark never commits a token
- * that was not near the target argmax. */
-static void test_dspark_verify_depth(void) {
-    const char *support = getenv("DS4_TEST_DSPARK");
-    if (!support || !support[0]) {
-        fprintf(stderr, "ds4-test: dspark-verify-depth skipped (set DS4_TEST_DSPARK to a DSpark support GGUF)\n");
-        return;
-    }
-
-    char *saved_scheduler = test_save_env("DS4_DSPARK_SCHEDULER");
-    setenv("DS4_DSPARK_SCHEDULER", "0", 1);
-
-    ds4_engine *engine = test_open_dspark_engine(support);
-    ds4_tokens prompt = {0};
-    int *spec = NULL;
-
-    if (engine) {
-        const int draft_depth = ds4_engine_mtp_draft_tokens(engine);
-        TEST_ASSERT(draft_depth > 2);
-
-        ds4_chat_begin(engine, &prompt);
-        ds4_chat_append_message(engine, &prompt, "user", test_mtp_copy_prompt());
-        ds4_chat_append_assistant_prefix(engine, &prompt, DS4_THINK_NONE);
-        TEST_ASSERT(prompt.len > 0);
-
-        TEST_ASSERT(ds4_test_dspark_prefix_capture(engine, &prompt));
-
-        spec = malloc((size_t)TEST_DSPARK_MAXGEN * sizeof(*spec));
-        TEST_ASSERT(spec != NULL);
-        if (draft_depth > 2 && spec && prompt.len > 0) {
-            int nspec = 0, max_chunk = 0;
-            const bool ok_spec = test_mtp_capture_speculative(engine, &prompt,
-                                                              TEST_DSPARK_MAXGEN,
-                                                              spec, &nspec,
-                                                              &max_chunk);
-            TEST_ASSERT(ok_spec);
-            TEST_ASSERT(max_chunk > 1);
-            TEST_ASSERT(nspec > 64);
-
-            float worst_gap = 0.0f;
-            int worst_at = -1;
-            const bool ok_check = test_mtp_worst_argmax_gap(engine, &prompt,
-                                                            spec, nspec,
-                                                            &worst_gap,
-                                                            &worst_at);
-            TEST_ASSERT(ok_check);
-            fprintf(stderr,
-                    "ds4-test: dspark-verify-depth nspec=%d max_chunk=%d draft_depth=%d worst_argmax_gap=%.3f at=%d\n",
-                    nspec, max_chunk, draft_depth, worst_gap, worst_at);
-            TEST_ASSERT(worst_gap <= 2.0f);
-        }
-    }
-
-    free(spec);
-    ds4_tokens_free(&prompt);
-    ds4_engine_close(engine);
-    test_restore_env("DS4_DSPARK_SCHEDULER", saved_scheduler);
-}
 #endif
 
 static void test_server_unit_group(void) {
@@ -7207,24 +5905,14 @@ typedef struct {
 
 static const ds4_test_entry test_entries[] = {
 #ifndef DS4_NO_GPU
-    {"--qwen4-prefill-checkpoints", "qwen4-prefill-checkpoints", "Qwen chunk checkpoints restore matching logits and state", test_qwen_prefill_checkpoints},
-    {"--qwen4-restore-reuse", "qwen4-restore-reuse", "Qwen restore discards old verifier state and rejects truncated payloads", test_qwen_restore_reused_session},
     {"--session-snapshot", "session-snapshot", "session snapshot and recurrent-state round trip", test_session_snapshot_roundtrip},
-    {"--session-rewind", "session-rewind", "Qwen3.8 rewind by snapshot restore and by replay", test_session_rewind_replay},
-    {"--session-rewind-resample", "session-rewind-resample", "exact-sampling tool-boundary resample rewind restores the block-start state", test_session_rewind_resample_boundary},
     {"--long-context", "long-context", "long-context story fact-recall regression", test_long_story_fact_recall},
     {"--tool-call-quality", "tool-call-quality", "model tool call and post-result stop regression", test_tool_call_quality},
     {"--think-tool-recovery", "think-tool-recovery", "recover a complete tool call emitted inside unclosed reasoning", test_think_tool_recovery},
-    {"--logprob-vectors", "logprob-vectors", "official API top-logprob vector comparison on the standard Metal path", test_official_logprob_vectors},
-    {"--metal-ssd-streaming-cache-pressure", "metal-ssd-streaming-cache-pressure", "Metal SSD-streaming layer-batched decode cache-pressure repro for issue #384", test_metal_ssd_streaming_cache_pressure},
-    {"--local-golden-vectors", "local-golden-vectors", "local top-k/logit drift regression for long Metal prefill", test_local_golden_vectors},
     {"--metal-short-prefill", "metal-short-prefill", "Metal ratio-4 short prefill regression", test_metal_short_prefill_ratio4},
-    {"--glm53-continued-prefill", "glm53-continued-prefill", "GLM 5.3 resumed prefill latency, throughput, progress, and cold-path agreement", test_glm53_continued_prefill},
     {"--metal-kernels", "metal-kernels", "isolated Metal kernel numeric regressions", test_metal_kernel_group},
     {"--metal-tensor-equivalence", "metal-tensor-equivalence", "fast/quality Metal prompt-logit and greedy equivalence", test_metal_mpp_equivalence},
     {"--streaming-decode-prefill-correctness", "streaming-decode-prefill-correctness", "streaming decode-style cold prefill drift and repeatability", test_streaming_decode_prefill_correctness},
-    {"--mtp-verify-depth", "mtp-verify-depth", "MTP speculative verify commits autoregressive-identical tokens at draft depth > 2", test_mtp_verify_depth},
-    {"--dspark-verify-depth", "dspark-verify-depth", "DSpark speculative verify commits autoregressive-identical tokens at draft depth > 2", test_dspark_verify_depth},
 #endif
     {"--server", "server", "server parser/rendering/cache unit tests", test_server_unit_group},
 };
@@ -7246,8 +5934,8 @@ static void test_print_help(const char *prog) {
     puts("  -h, --help");
     puts("      Show this help.");
     puts("\nEnvironment:");
-    puts("  DS4_TEST_MODEL=FILE        Model path. Default: ds4flash.gguf");
-    puts("  DS4_TEST_BACKEND=cpu       Run model tests on CPU instead of Metal/CUDA.");
+    puts("  DS4_TEST_MODEL=FILE        Model path. Default: " SF_DEFAULT_MODEL);
+    puts("  DS4_TEST_BACKEND=cpu       Run model tests on CPU instead of Metal.");
     puts("  DS4_TEST_SSD_STREAMING=1   Run model tests through Metal SSD streaming.");
     puts("  DS4_TEST_SSD_STREAMING_CACHE_GB=N  Streaming routed expert cache in GiB.");
     puts("  DS4_TEST_SSD_STREAMING_CACHE_EXPERTS=N  Streaming routed expert cache count.");
@@ -7255,16 +5943,9 @@ static void test_print_help(const char *prog) {
     puts("  DS4_METAL_DISABLE_STREAMING_COLD_DECODE_PREFILL=1  Force canonical streamed cold prefill.");
     puts("  DS4_TEST_SNAPSHOT_PROMPT=FILE  Prompt for the session snapshot round trip.");
     puts("  DS4_TEST_SNAPSHOT_CTX=N        Context for the session snapshot round trip.");
-    puts("  DS4_TEST_GLM_MTP=1             Include embedded GLM MTP in snapshot verification.");
     puts("  DS4_TEST_LONG_PROMPT=FILE  Rendered long-context story fact prompt.");
-    puts("  DS4_TEST_VECTOR_FILE=FILE  Official fixture. Default: flash-0731/official.vec.");
-    puts("  DS4_TEST_LOCAL_GOLDEN_FILE=FILE  Local fixture. Default: flash-0731/local-golden.vec.");
+    puts("  DS4_TEST_VECTOR_FILE=FILE  Prompt index (V4 Flash fixture; prompts only). Default: flash-0731/official.vec.");
     puts("  DS4_TEST_MPP_EQ_CASE=NAME  Run only Tensor equivalence cases whose id contains NAME.");
-    puts("  DS4_TEST_MTP=FILE         Legacy MTP support GGUF for --mtp-verify-depth.");
-    puts("  DS4_TEST_DSPARK=FILE      DSpark support GGUF for --dspark-verify-depth.");
-    puts("  DS4_TEST_CONTINUED_PREFILL_TOKENS=N  Large suffix size for --glm53-continued-prefill.");
-    puts("  DS4_TEST_CONTINUED_PREFILL_STEPS=N   Number of consecutive large suffixes to test.");
-    puts("  DS4_TEST_CONTINUED_PREFILL_ALLOW_COARSE=1  Permit coarse short-suffix progress for baseline timing.");
 }
 
 static const ds4_test_entry *test_find_entry(const char *arg) {

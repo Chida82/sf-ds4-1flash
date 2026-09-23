@@ -12,15 +12,20 @@ y = y - scale * direction[layer] * dot(direction[layer], y)
 Positive scale removes the represented direction. Negative scale amplifies it.
 With no steering file or zero scales, ds4 follows the normal inference path.
 
-The file shape depends on the model:
+**DeepSeek V4.1 Flash does not support steering.** The engine refuses to start
+when `--dir-steering-file` is passed, exactly as it does upstream:
 
-- DeepSeek V4 Flash: `43 x 4096`.
-- GLM 5.3 Flash: `45 x 4096`. The separate MTP predictor layer is omitted.
-- Qwen3.8 Flash Next: `48 x 2560`. FFN steering is applied to each
-  hyper-connection branch of the residual; dumps average those branches
-  at the last prompt token.
+```text
+ds4: V4.1 requires Metal or single-GPU CUDA per rank (optional network tensor
+parallelism); DSpark, steering and legacy diagnostics are not supported
+```
 
-GLM 5.2 steering is not implemented.
+The tooling, the file format and the runtime options below are kept unchanged
+(SPEC.md §B: steering stays in every child even where the model rejects it), so
+a future model or an upstream change can use them without reinventing them.
+The checked-in vector under `out/` was built for another model -- its shape is
+`43 x 4096`, while this model is 40 layers of 5120 -- and is kept only as a
+format example.
 
 ## Runtime Options
 
@@ -33,27 +38,6 @@ GLM 5.2 steering is not implemented.
 The FFN output is usually the best first target because it is late enough in
 each layer to represent behavior, style, and topic signals. Attention steering
 is available for experiments, but it can be more fragile.
-
-## GLM 5.3 Example
-
-Build a GLM 5.3 direction from paired target and control prompt lists:
-
-```sh
-python3 dir-steering/tools/build_direction.py \
-  --profile glm-5.3-flash \
-  --ds4 ./ds4 \
-  --model gguf/GLM-5.3-Flash-Q2.gguf \
-  --good-file /path/to/target-prompts.txt \
-  --bad-file /path/to/control-prompts.txt \
-  --out dir-steering/out/glm53-direction.json \
-  --component ffn_out \
-  --ctx 512
-```
-
-Generated `.f32` vectors are local artifacts and are not stored in the
-repository. GLM 5.3 steering works with `--mtp`, `ds4-server`, native session
-batching, and two-Mac tensor parallelism. For tensor parallelism, pass the same
-steering file and scales to both the worker and coordinator.
 
 ## Verbosity Example
 
@@ -72,8 +56,8 @@ Build the vector:
 ```sh
 python3 dir-steering/tools/build_direction.py \
   --profile deepseek-v4-flash \
-  --ds4 ./ds4 \
-  --model ds4flash.gguf \
+  --ds4 ./sf-ds4-1flash \
+  --model deepseek-v4.1-flash.gguf \
   --good-file dir-steering/examples/succinct.txt \
   --bad-file dir-steering/examples/verbose.txt \
   --out dir-steering/out/verbosity.json \
@@ -91,7 +75,7 @@ dir-steering/out/verbosity.f32
 Try a terse run:
 
 ```sh
-./ds4 -m ds4flash.gguf --nothink --temp 0 -n 160 \
+./sf-ds4-1flash -m deepseek-v4.1-flash.gguf --nothink --temp 0 -n 160 \
   --dir-steering-file dir-steering/out/verbosity.f32 \
   --dir-steering-ffn -1 \
   -p "Explain why databases use indexes."
@@ -100,7 +84,7 @@ Try a terse run:
 Try a verbose run:
 
 ```sh
-./ds4 -m ds4flash.gguf --nothink --temp 0 -n 220 \
+./sf-ds4-1flash -m deepseek-v4.1-flash.gguf --nothink --temp 0 -n 220 \
   --dir-steering-file dir-steering/out/verbosity.f32 \
   --dir-steering-ffn 2 \
   -p "Explain why databases use indexes."
@@ -118,8 +102,8 @@ Use the sweep helper to test several strengths on a fixed prompt set:
 
 ```sh
 python3 dir-steering/tools/run_sweep.py \
-  --ds4 ./ds4 \
-  --model ds4flash.gguf \
+  --ds4 ./sf-ds4-1flash \
+  --model deepseek-v4.1-flash.gguf \
   --direction dir-steering/out/verbosity.f32 \
   --prompts dir-steering/examples/eval_prompts.txt \
   --scales "-1,-0.5,0,0.5,1,2" \
@@ -182,28 +166,3 @@ Style control:
 The method is not a fine-tune. It is a low-rank runtime edit, so it works best
 for coarse behavior, topic, or style directions that are consistently present in
 the activation captures.
-
-## Qwen3.8 Flash Next
-
-Capture uses `--think` / `--nothink`
-(not `--think-high`). Dumps track the prompt phase explicitly, including
-one-token tails, and retain the last prompt token during ordinary and MTP
-decode. `attn_out` captures the output projection of both GDN and full-attention
-layers, giving one row for each of the 48 trunk layers:
-
-```sh
-python3 dir-steering/tools/build_direction.py \
-  --profile qwen3.8-flash-next \
-  --ds4 ./ds4 \
-  --model gguf/Qwen3.8-Flash-Next-Q4.gguf \
-  --good-file /path/to/target-prompts.txt \
-  --bad-file /path/to/control-prompts.txt \
-  --out dir-steering/out/qwen38-direction.json \
-  --component ffn_out \
-  --ctx 512
-```
-
-Qwen steering is Metal-only. `--mtp-model`, SSD streaming, and `--power`
-remain unsupported for this graph. The bank contains only the 48 trunk layers;
-the embedded MTP predictor remains unsteered. Its drafts are verified by the
-steered target trunk, so `--mtp` remains supported.
