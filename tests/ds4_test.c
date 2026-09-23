@@ -5605,7 +5605,7 @@ static void test_streaming_decode_prefill_correctness(void) {
 static const char *test_tool_call_request_json(void) {
     return
         "{"
-        "\"model\":\"deepseek-v4-flash\","
+        "\"model\":\"deepseek-v4.1-flash\","
         "\"messages\":[{\"role\":\"user\",\"content\":\""
             TEST_LIST_FILES_USER_PROMPT
         "\"}],"
@@ -5624,7 +5624,7 @@ static char *test_tool_result_request_json(const char *assistant_content,
 
     buf b = {0};
     buf_puts(&b,
-        "{\"model\":\"deepseek-v4-flash\",\"messages\":["
+        "{\"model\":\"deepseek-v4.1-flash\",\"messages\":["
         "{\"role\":\"user\",\"content\":");
     json_escape(&b, TEST_LIST_FILES_USER_PROMPT);
     buf_puts(&b, "},{\"role\":\"assistant\",\"content\":");

@@ -29,8 +29,8 @@ relative runtime files such as Metal kernels can be found.
 | `POST /v1/completions` | Text completions |
 | `POST /v1/messages` | Anthropic-style messages |
 
-Other model names accepted by the model endpoints are compatibility aliases
-inherited from upstream, not separate loaded models. The GGUF passed at startup selects the model.
+The model id is `deepseek-v4.1-flash`. `deepseek-chat` and `deepseek-reasoner`
+are accepted as thinking switches (off and on) for the same loaded model. The GGUF passed at startup selects the model.
 
 ```sh
 curl http://127.0.0.1:8002/v1/chat/completions \

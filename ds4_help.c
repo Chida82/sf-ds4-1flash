@@ -265,11 +265,6 @@ static void print_cli_diagnostics(FILE *fp, const help_colors *c) {
     opt(fp, c, "--decode-consistency N", "Compare N-token decode logits with a fresh full prefill.");
     opt(fp, c, "--expert-profile FILE", "Metal-only: write routed expert locality/cache simulation JSON.");
     opt(fp, c, "--perplexity-file FILE", "Score raw text with teacher-forced NLL.");
-    opt(fp, c, "--imatrix-dataset FILE", "Rendered prompt dataset for imatrix collection.");
-    opt(fp, c, "--imatrix-out FILE", "Write llama-compatible routed-MoE imatrix .dat.");
-    opt(fp, c, "--imatrix-max-prompts N", "Stop imatrix collection after N prompts.");
-    opt(fp, c, "--imatrix-max-tokens N", "Stop imatrix collection after N prompt tokens.");
-    opt(fp, c, "--imatrix-min-expert-samples N", "Continue until every routed expert has N samples.");
     opt(fp, c, "--head-test", "Run the output HC/logits head after the native slice.");
     opt(fp, c, "--first-token-test", "Run exact CPU whole-model pass for the first prompt token.");
     opt(fp, c, "--metal-graph-test", "Compare first GPU-resident graph stages with CPU.");
@@ -301,7 +296,7 @@ static void print_server_api(FILE *fp, const help_colors *c) {
     opt(fp, c, "--batched-session N", "Keep N resident sessions and batch decode-ready requests.");
     opt(fp, c, "--mixed-prefill-quantum N", "Prefill chunk while generations are active. Default: 128");
     para(fp, c, "Endpoints: /v1/chat/completions, /v1/responses, /v1/completions, and /v1/messages.");
-    para(fp, c, "Model endpoint aliases include deepseek-v4-flash and deepseek-v4-pro; both serve the loaded GGUF.");
+    para(fp, c, "Model id: deepseek-v4.1-flash. deepseek-chat and deepseek-reasoner select thinking off/on.");
     fputc('\n', fp);
 }
 

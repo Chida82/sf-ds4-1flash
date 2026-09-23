@@ -47,10 +47,13 @@
 *.dSYM/
 __pycache__/
 *.pyc
-/gguf-tools/libds4quants.dylib
-/gguf-tools/libds4quants.so
 /misc/
 .*.swp
 .DS_Store
 
 /tests/test_q8_prefill_variants
+/gguf-tools/quality-testing/score_official
+/gguf-tools/quality-testing/score_official.dSYM/
+/gguf-tools/quality-testing/__pycache__/
+/gguf-tools/quality-testing/data/*
+!/gguf-tools/quality-testing/data/README.md

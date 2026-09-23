@@ -45,23 +45,17 @@ The CPU backend is a reference/debug path, not the production performance
 target. Remember that executing the CPU path on Metal can crash the system
 because of a kernel bug in macOS.
 
-## Quality Checks For Quantization Changes
+## Quality Checks For Engine Changes
 
-Build the scorer:
-
-```sh
-make -C gguf-tools quality-score
-```
-
-Then score old and new GGUFs against the same manifest and compare:
+Build the scorer and score the model before and after the change against the
+same tracked V4.1 manifest:
 
 ```sh
-gguf-tools/quality-testing/score_official OLD.gguf \
-  gguf-tools/quality-testing/data/manifest.tsv /tmp/old.tsv 4096
-
-gguf-tools/quality-testing/score_official NEW.gguf \
-  gguf-tools/quality-testing/data/manifest.tsv /tmp/new.tsv 4096
-
+make gguf-tools/quality-testing/score_official
+M=gguf-tools/quality-testing/deepseek-v4.1-flash-20260910/manifest.tsv
+gguf-tools/quality-testing/score_official deepseek-v4.1-flash.gguf $M /tmp/old.tsv 4096
+# ... apply the change, rebuild, then:
+gguf-tools/quality-testing/score_official deepseek-v4.1-flash.gguf $M /tmp/new.tsv 4096
 python3 gguf-tools/quality-testing/compare_scores.py /tmp/old.tsv /tmp/new.tsv
 ```
 

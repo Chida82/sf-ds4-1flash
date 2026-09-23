@@ -12,7 +12,7 @@ parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--url", default="http://127.0.0.1:8080")
 parser.add_argument("--pi", type=Path, required=True)
 parser.add_argument("--output", type=Path, required=True)
-parser.add_argument("--model", default="deepseek-v4-flash")
+parser.add_argument("--model", default="deepseek-v4.1-flash")
 parser.add_argument("--api", action="append", choices=[
     "openai-completions", "openai-responses", "anthropic-messages"])
 args = parser.parse_args()

@@ -84,8 +84,11 @@ Each process maps only its assigned layers, retaining that slice of the KV
 state. Layer ranges are inclusive. `N:output` includes the final layer and
 output head. Activations travel from one stage to the next over TCP.
 
-For V4.1 Flash on two machines, run `./download.sh q2` on both, then start each side.
-Replace the example address with your coordinator's reachable address:
+**Not working for DeepSeek V4.1 yet.** The layer-slice entry points still run
+the generic graph that V4.1 does not allocate; the mode is kept and scheduled to
+be fixed. Use tensor parallelism above for two Macs today. The commands below
+show the intended usage. Replace the example address with your coordinator's
+reachable address:
 
 ```sh
 # Machine A.

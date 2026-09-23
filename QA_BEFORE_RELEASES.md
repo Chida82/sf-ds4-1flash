@@ -371,16 +371,8 @@ the long sparse-boundary tests; neither substitutes for the other.
 
 ### Metal
 
-- Audit the completed GGUF against its pinned source with
-  `gguf-tools/deepseek41_validate_gguf.py --payload`, including native Engram rows.
-  Repeat for calibrated weights using the actual imatrix. Record expert coverage;
-  synthetic fixture statistics must never become a release calibration file.
-  For Q4, pass `--quant q4` to both converter and validator. Convert from the
-  original safetensors with the retained imatrix, not from the Q2 GGUF. A valid
-  tensor inventory does not replace real-model quality tests for that recipe.
 - Run `make test-engram test-deepseek41-gguf test-quality-api` and
-  `./ds4_test --server`,
-  the V4.1 manifest tests and the official RoPE/quantization primitive checks.
+  `./ds4_test --server`.
   Run `make test-download-model` to check that `download.sh` only creates
   symlinks into the Hugging Face cache and the default model link. Check the
   published artifacts with `./download.sh q2` and `./download.sh vision` on a

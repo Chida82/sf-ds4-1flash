@@ -16,7 +16,7 @@ import urllib.request
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--url", default="http://127.0.0.1:8080")
-    parser.add_argument("--model", default="deepseek-v4-flash")
+    parser.add_argument("--model", default="deepseek-v4.1-flash")
     parser.add_argument("--archive-lines", type=int, default=320)
     parser.add_argument("--append-only", action="store_true",
                         help="only run the long-prefix image append sequence")

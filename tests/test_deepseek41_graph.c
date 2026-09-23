@@ -273,44 +273,6 @@ static bool cancel_progress(void *ud) {
     return p->cancel_at > 0 && p->progress >= p->cancel_at;
 }
 
-static int check_imatrix_inputs(void) {
-    ds4_imatrix_collector c = {0};
-    ds4_gpu_tensor *x = NULL, *mid = NULL, *selected = NULL;
-    int rc = 1;
-    REQUIRE(imatrix_collector_init(&c, 1, "synthetic"));
-    x = ds4_gpu_tensor_alloc(DS4_N_EMBD * 4u);
-    mid = ds4_gpu_tensor_alloc(DS4_N_EXPERT_USED * DS4_N_FF_EXP * 4u);
-    selected = ds4_gpu_tensor_alloc(DS4_N_EXPERT_USED * 4u);
-    REQUIRE(x && mid && selected);
-    float *xp = ds4_gpu_tensor_contents(x), *mp = ds4_gpu_tensor_contents(mid);
-    int *sp = ds4_gpu_tensor_contents(selected);
-    for (uint32_t i = 0; i < DS4_N_EMBD; i++) xp[i] = (float)(i % 11u) - 5;
-    for (uint32_t s = 0; s < DS4_N_EXPERT_USED; s++) {
-        sp[s] = (int)(DS4_N_EXPERT - 1 - s * 17);
-        for (uint32_t i = 0; i < DS4_N_FF_EXP; i++)
-            mp[s * DS4_N_FF_EXP + i] = (float)(s + 1) * ((float)(i % 7u) - 3) / 8;
-    }
-    for (int i = 0; i < 2; i++)
-        REQUIRE(imatrix_collect_tensor_batch(&c, x, mid, selected, false, 3, 1));
-    for (uint32_t s = 0; s < DS4_N_EXPERT_USED; s++) {
-        const uint32_t expert = (uint32_t)sp[s];
-        REQUIRE(c.gate_up_count[3][expert] == 2 && c.down_count[3][expert] == 2);
-        for (uint32_t i = 0; i < DS4_N_EMBD; i++)
-            REQUIRE(imatrix_gate_up_ptr(&c, 3, expert)[i] == 2 * xp[i] * xp[i]);
-        for (uint32_t i = 0; i < DS4_N_FF_EXP; i++) {
-            const float value = mp[s * DS4_N_FF_EXP + i];
-            REQUIRE(imatrix_down_ptr(&c, 3, expert)[i] == 2 * value * value);
-        }
-    }
-    REQUIRE(c.gate_up_count[3][0] == 0 && c.observed_routes == 2 * DS4_N_EXPERT_USED);
-    puts("V4.1 imatrix normalized inputs, weighted down rows and expert IDs: PASS");
-    rc = 0;
-done:
-    ds4_gpu_tensor_free(x); ds4_gpu_tensor_free(mid); ds4_gpu_tensor_free(selected);
-    imatrix_collector_free(&c);
-    return rc;
-}
-
 static int check_sessions(const char *path) {
     int cwd_fd = open(".", O_RDONLY);
     ds4_engine *engine = NULL;
@@ -328,7 +290,6 @@ static int check_sessions(const char *path) {
     REQUIRE(ds4_session_create(&s, engine, 256) == 0);
     REQUIRE(ds4_session_create(&restored, engine, 256) == 0);
     REQUIRE(fchdir(cwd_fd) == 0);
-    REQUIRE(check_imatrix_inputs() == 0);
     ds4_session_set_progress(s, note_progress, &progress);
     for (int i = 0; i < 129; i++) ds4_tokens_push(&tokens, 100 + i);
     REQUIRE(ds4_session_set_power(s, 50) != 0 && ds4_session_power(s) == 100);
@@ -434,6 +395,22 @@ done:
     return rc;
 }
 
+static bool read_text_file(const char *path, char **out, size_t *len) {
+    FILE *fp = fopen(path, "rb");
+    if (!fp) return false;
+    if (fseek(fp, 0, SEEK_END) != 0) { fclose(fp); return false; }
+    long n = ftell(fp);
+    if (n < 0 || fseek(fp, 0, SEEK_SET) != 0) { fclose(fp); return false; }
+    char *buf = malloc((size_t)n + 1);
+    bool ok = buf && fread(buf, 1, (size_t)n, fp) == (size_t)n;
+    fclose(fp);
+    if (!ok) { free(buf); return false; }
+    buf[n] = '\0';
+    *out = buf;
+    *len = (size_t)n;
+    return true;
+}
+
 static int check_long_sessions(const char *path, const char *prompt_path) {
     ds4_engine *engine = NULL;
     ds4_session *s = NULL, *restored = NULL;
@@ -446,7 +423,7 @@ static int check_long_sessions(const char *path, const char *prompt_path) {
     ds4_engine_options opt = {.model_path = path, .backend = DS4_BACKEND_METAL,
         .context_size = 32768, .power_percent = 100, .ssd_streaming = true,
         .ssd_streaming_cache_bytes = UINT64_C(64) * 1024 * 1024 * 1024};
-    REQUIRE(imatrix_read_text_file(prompt_path, &prompt, &prompt_bytes));
+    REQUIRE(read_text_file(prompt_path, &prompt, &prompt_bytes));
     REQUIRE(prompt_bytes > 0 && ds4_engine_open(&engine, &opt) == 0);
     ds4_encode_chat_prompt(engine, NULL, prompt, DS4_THINK_NONE, &tokens);
     const int total = tokens.len;
@@ -513,7 +490,7 @@ static int check_prefill(const char *path, const char *prompt_path,
     if (encoder) setenv("DS4_METAL_DISABLE_V41_WIDE_PREFILL", "1", 1);
     REQUIRE(!getenv("DS4_METAL_DISABLE_V41_LAYER_PREFILL"));
     REQUIRE(!getenv(disable));
-    REQUIRE(imatrix_read_text_file(prompt_path, &prompt, &prompt_bytes));
+    REQUIRE(read_text_file(prompt_path, &prompt, &prompt_bytes));
     REQUIRE(ds4_engine_open(&engine, &opt) == 0);
     ds4_encode_chat_prompt(engine, NULL, prompt, DS4_THINK_NONE, &tokens);
     REQUIRE(tokens.len >= (encoder ? 16903 : 3588));
@@ -636,7 +613,7 @@ static int check_encoder(const char *path, const char *prompt_path) {
         .context_size = 4096, .power_percent = 100, .ssd_streaming = true,
         .ssd_streaming_cache_bytes = UINT64_C(80) << 30};
     setenv("DS4_METAL_DISABLE_V41_WIDE_PREFILL", "1", 1);
-    REQUIRE(imatrix_read_text_file(prompt_path, &prompt, &prompt_bytes));
+    REQUIRE(read_text_file(prompt_path, &prompt, &prompt_bytes));
     REQUIRE(ds4_engine_open(&engine, &opt) == 0);
     ds4_encode_chat_prompt(engine, NULL, prompt, DS4_THINK_NONE, &tokens);
     REQUIRE(tokens.len > 1025);
@@ -834,7 +811,7 @@ static int check_wide_prefill(const char *path, const char *prompt_path,
         .context_size = context, .power_percent = 100, .ssd_streaming = true,
         .ssd_streaming_cache_bytes = UINT64_C(64) << 30};
     if (!decoder_cancel && !control_env) setenv("DS4_METAL_DISABLE_V41_DECODER_SUFFIX", "1", 1);
-    REQUIRE(imatrix_read_text_file(prompt_path, &prompt, &prompt_bytes));
+    REQUIRE(read_text_file(prompt_path, &prompt, &prompt_bytes));
     REQUIRE(ds4_engine_open(&engine, &opt) == 0);
     ds4_encode_chat_prompt(engine, NULL, prompt, DS4_THINK_NONE, &tokens);
     REQUIRE(tokens.len > (wide_case ? 26624 : 18433));
@@ -999,7 +976,7 @@ static int check_prefill_alias_fallback(const char *path, const char *prompt_pat
         .ssd_streaming_cache_bytes = UINT64_C(64) << 30};
     const char *flags[] = {"DS4_METAL_DISABLE_V41_BATCH_ATTN",
         "DS4_METAL_DISABLE_V41_BATCH_MOE", "DS4_METAL_DISABLE_V41_BATCH_HC"};
-    REQUIRE(imatrix_read_text_file(prompt_path, &prompt, &bytes));
+    REQUIRE(read_text_file(prompt_path, &prompt, &bytes));
     REQUIRE(ds4_engine_open(&engine, &opt) == 0);
     ds4_encode_chat_prompt(engine, NULL, prompt, DS4_THINK_NONE, &tokens);
     REQUIRE(tokens.len > 50);
@@ -1069,7 +1046,7 @@ static int check_deferred_decoder(const char *path, const char *prompt_path) {
     ds4_engine_options opt = {.model_path = path, .backend = DS4_BACKEND_METAL,
         .context_size = 57344, .power_percent = 100, .ssd_streaming = true,
         .ssd_streaming_cache_bytes = UINT64_C(48) << 30};
-    REQUIRE(imatrix_read_text_file(prompt_path, &prompt, &bytes));
+    REQUIRE(read_text_file(prompt_path, &prompt, &bytes));
     REQUIRE(ds4_engine_open(&engine, &opt) == 0);
     ds4_encode_chat_prompt(engine, NULL, prompt, DS4_THINK_NONE, &tokens);
     REQUIRE(tokens.len >= 49157);
@@ -1163,7 +1140,7 @@ static int check_sweep_partitions(const char *path, const char *prompt_path) {
     ds4_engine_options opt = {.model_path = path, .backend = DS4_BACKEND_METAL,
         .context_size = 53248, .power_percent = 100, .ssd_streaming = true,
         .ssd_streaming_cache_bytes = UINT64_C(56) << 30};
-    REQUIRE(imatrix_read_text_file(prompt_path, &prompt, &bytes));
+    REQUIRE(read_text_file(prompt_path, &prompt, &bytes));
     REQUIRE(ds4_engine_open(&engine, &opt) == 0);
     ds4_encode_chat_prompt(engine, NULL, prompt, DS4_THINK_NONE, &tokens);
     REQUIRE(tokens.len > 49152);
@@ -1219,7 +1196,7 @@ static int check_decoder_suffix(const char *path, const char *prompt_path) {
     /* Hold arithmetic fixed to isolate dependency pruning from GEMM tiling. */
     setenv("DS4_METAL_DISABLE_V41_BATCH_MOE", "1", 1);
     setenv("DS4_METAL_DISABLE_V41_BATCH_ATTN", "1", 1);
-    REQUIRE(imatrix_read_text_file(prompt_path, &prompt, &prompt_bytes));
+    REQUIRE(read_text_file(prompt_path, &prompt, &prompt_bytes));
     REQUIRE(ds4_engine_open(&engine, &opt) == 0);
     ds4_encode_chat_prompt(engine, NULL, prompt, DS4_THINK_NONE, &tokens);
     REQUIRE(tokens.len > 16386);

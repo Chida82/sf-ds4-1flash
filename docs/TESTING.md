@@ -38,9 +38,7 @@ contain real conversations.
 
 ## Tools and source references
 
-- [GGUF conversion and quantization](../gguf-tools/README.md)
-- [Imatrix collection](../gguf-tools/imatrix/README.md) and
-  [calibration corpus](../gguf-tools/imatrix/dataset/README.md)
+- [Official-continuation quality testing](../gguf-tools/quality-testing/README.md)
 - [Steering vectors](../dir-steering/README.md)
 - [Benchmark scripts and charts](../speed-bench/README.md)
 - [Evaluation data and licenses](../EVAL_DATA.md)

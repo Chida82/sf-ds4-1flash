@@ -67,8 +67,7 @@ For images, download the matching encoder and add it to the same command:
 Vision works with SSD streaming, full residency and two-Mac TP. Pass the encoder
 on both TP ranks. Use `/read image.png` in `sf-ds4-1flash` or the
 [server image API](SERVER.md#images). V4 Flash vision encoders do not
-work with V4.1. See [conversion](../gguf-tools/README.md#convert-deepseek-v41-flash)
-to build the GGUFs from safetensors.
+work with V4.1.
 
 ## Vision
 

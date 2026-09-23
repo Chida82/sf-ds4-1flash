@@ -21,7 +21,7 @@ what this repo is and how to work in it. For code-quality rules read
 | Memory | **SSD streaming is the normal mode**: Q2 is 341 GiB against a 128 GB machine. See "SSD streaming is not optional" below |
 | Speculative decoding | none |
 | Steering | tooling kept (SPEC.md §B), but the model **refuses to start** with `--dir-steering-file`, exactly as upstream |
-| TP / RDMA / pipeline | yes |
+| TP / RDMA / pipeline | tensor parallel (TP, RDMA/TCP) works on the V4.1 graph. **Pipeline (layer-slice) is kept but does not work for V4.1 yet**: the `ds4_session_*layer*` entry points run the old `ds4_gpu_graph` code on a graph V4.1 never allocates (same in upstream). Kept by owner decision, to be fixed: do not ablate the graph code it reaches |
 | Upstream base | never written down: `git describe --tags --match 'sync-*' --abbrev=0` names the last sync, `git merge-base HEAD upstream/main` the base. A SHA typed into a file is a second source of truth that goes stale (SPEC.md §A) |
 
 Other children of the family may be installed on the same machine: paths and
@@ -146,14 +146,13 @@ Do not reintroduce them, and do not infer a mechanism from an identifier's
 name: `glm_mtp` was the built-in-MTP switch every MTP model shared, not a GLM
 thing, and it is pinned false here.
 
-The DSpark draft/verify engine is still compiled in, marked `sf-keep` in
-`ds4.c`. It hangs off `ds4_gpu_graph`, the DeepSeek V4 Flash/PRO Metal graph
-that this model never allocates: `ds4_session_create` early-returns for
-`DS4_MODEL_FAMILY_DEEPSEEK41` into `ds41_graph_alloc`. So it is unreachable at
-runtime but still structurally reachable from live session helpers that clear
-its state unconditionally. Removing it means removing the whole `ds4_gpu_graph`
-session path, which also hosts twelve `metal_graph_*` helpers the `ds41_*`
-graph does call. That is a separately measured ablation.
+The DSpark draft/verify engine and the legacy speculative paths are gone: the
+public `ds4_session_eval_speculative*` entry points are one ordinary decode, and
+`ds4_session_tp_spec_cycle` refuses VERIFY frames. What remains of the generic
+`ds4_gpu_graph` (`s->graph`, `metal_graph_*`) is either shared with the V4.1
+graph (stream/page-in helpers, `metal_graph_matmul_dense_quant_kslice`,
+`metal_graph_tp_env_flag`) or reached only by the pipeline layer-slice entry
+points, which are kept on purpose (see the Identity table).
 
 ## Names that lie: do not remove by name, verify by reachability
 
@@ -168,8 +167,11 @@ child has established:
 | `ds4_gpu_mgpu.h` | not a CUDA header: the only reachable definer of `DS4_MAX_GPUS`, `struct ds4_gpu_tensor` and `ds4_gpu_config` for **both** the Metal and the CPU build | `ds4.c` includes it unconditionally; it sizes ~190 live graph arrays |
 | `ds4_gpu_args.c/.h` | the opposite trap: the name says CUDA, `nm` says two pure-C string functions. Removed because the `--gpu*` flags went, not because it was CUDA code | `nm -u` resolved no CUDA symbol |
 | `metal_graph_cuda_*`, `engine_cuda_tp_*` | the Metal graph host, named after the feature CUDA had first. Live, and not guarded by any CUDA macro | ~40 functions with live call sites |
-| `glm53_quantize.py`, `glm53_validate_gguf.py`, `glm53_manifest.py`, `deepseek4_vision.py` | dependencies of **this model's** converters | `deepseek41_quantize.py`, `deepseek41_validate_gguf.py` and `deepseek41_vision.py` import them |
 | `metal/deepseek4_vision.metal`, `metal/glm53_bf16.metal`, `metal/glm53_vision.metal` | required by the V4.1 vision encoder | deleting them breaks vision, not GLM |
+| `glm53_vision_dispatch_*`, `ds4_gpu_glm53_matmul_bf16` (in `ds4_metal.m`) | helpers of `ds4_gpu_deepseek4_vision_encode` | its only callers; `nm` keeps them |
+| `ds4_gpu_glm_indexer_score_one_tensor` | the V4.1 indexer scorer | called from the `ds41_*` graph and `tests/test_deepseek41_metal.c` |
+| `append_glm_tag_body_text` (`ds4_server.c`, under `DS4_SERVER_TEST`) | test fixture that exercises the live `ds4_tool_text_unescape` and stream-safe length helpers | only the server unit tests call it |
+| `sample_probabilities`, `sample_build_probabilities` (under `DS4_NO_GPU`) | CPU and test-hook sampling; the Metal build samples elsewhere | removing them breaks `make cpu` and the sampling tests |
 | `tests/vision-fixtures/glm53/` | plain PNG/JPEG test data read by four kept tests | see that directory's README |
 | `tests/test-vectors/flash-0731/` | a **prompt index** for `--metal-tensor-equivalence` and `--streaming-decode-prefill-correctness`, which compare two compute paths on *this* model. The expected logprobs inside `official.vec` are DeepSeek V4 Flash's and are never read by those tests | restored verbatim from upstream after deleting the tree broke both tests with `fp != NULL` |
 

@@ -61,17 +61,13 @@ For a nonempty system message, render the matching local chat prompt and use
 
 ## 3. Build The Local Scorer
 
+From the repository root:
+
 ```sh
-make -C gguf-tools quality-score
+make gguf-tools/quality-testing/score_official
 ```
 
 The scorer links against the DS4 runtime, using Metal on macOS.
-
-Build the optional llama.cpp control scorer with:
-
-```sh
-make -C gguf-tools quality-llama-score
-```
 
 ## 4. Score GGUF Variants
 

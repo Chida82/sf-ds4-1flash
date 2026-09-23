@@ -15,7 +15,7 @@ it loads the GGUF files the ds4 project produces, and refuses anything whose
 
 We test things in integration: model loading, prompt rendering,
 tool calls, KV state, and the HTTP server are built and tested together.
-The repository also includes tools and data for GGUF, imatrix, quality, and speed.
+The repository also includes tools and data for quality and speed measurement.
 
 ## Supported hardware
 

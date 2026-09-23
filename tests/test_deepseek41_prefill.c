@@ -84,10 +84,6 @@ static int check_dispatch(void) {
     for (size_t i = 0; i < sizeof(remaining) / sizeof(*remaining); i++)
         CHECK(ds41_prefill_count(&g, remaining[i]) ==
             (remaining[i] >= 8 && remaining[i] < 256 ? remaining[i] : cold[i]));
-    ds4_imatrix_collector imatrix = {0};
-    g.imatrix = &imatrix;
-    CHECK(ds41_prefill_count(&g, 65536) == 1);
-    g.imatrix = NULL;
     g.carry_cap = 0;
     CHECK(ds41_prefill_count(&g, 65536) == 2048);
     g.prefill_cap = 1024;
@@ -97,7 +93,7 @@ static int check_dispatch(void) {
     CHECK(ds41_encoder_chunk_cap(&g, 8192) == 4096);
     CHECK(ds41_encoder_chunk_cap(&g, 16383) == 4096);
     CHECK(ds41_encoder_chunk_cap(&g, 16384) == 8192);
-    puts("V4.1 cold/warm and TP prefill dispatch, tile boundaries and debug/imatrix fallbacks: PASS");
+    puts("V4.1 cold/warm and TP prefill dispatch, tile boundaries and debug fallbacks: PASS");
     rc = 0;
 done:
     ds4_gpu_set_streaming_expert_cache_budget(saved);
@@ -202,6 +198,22 @@ static bool state_equal(ds4_session *a, ds4_session *b) {
     return true;
 }
 
+static bool read_text_file(const char *path, char **out, size_t *len) {
+    FILE *fp = fopen(path, "rb");
+    if (!fp) return false;
+    if (fseek(fp, 0, SEEK_END) != 0) { fclose(fp); return false; }
+    long n = ftell(fp);
+    if (n < 0 || fseek(fp, 0, SEEK_SET) != 0) { fclose(fp); return false; }
+    char *buf = malloc((size_t)n + 1);
+    bool ok = buf && fread(buf, 1, (size_t)n, fp) == (size_t)n;
+    fclose(fp);
+    if (!ok) { free(buf); return false; }
+    buf[n] = '\0';
+    *out = buf;
+    *len = (size_t)n;
+    return true;
+}
+
 static int check_mixed(const char *model, const char *prompt_path,
                        const ds4_tp_options *tp_opt, bool resident) {
     ds4_engine *engine = NULL;
@@ -218,7 +230,7 @@ static int check_mixed(const char *model, const char *prompt_path,
         .ssd_streaming = !tp_opt && !resident,
         .ssd_streaming_cache_bytes = tp_opt || resident ? 0 : UINT64_C(64) << 30};
     if (tp_opt) opt.tp = *tp_opt;
-    CHECK(imatrix_read_text_file(prompt_path, &prompt, &bytes));
+    CHECK(read_text_file(prompt_path, &prompt, &bytes));
     CHECK(ds4_engine_open(&engine, &opt) == 0);
     if (tp_opt) {
         ds4_tp_identity id = {
