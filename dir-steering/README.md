@@ -166,10 +166,3 @@ Style control:
 The method is not a fine-tune. It is a low-rank runtime edit, so it works best
 for coarse behavior, topic, or style directions that are consistently present in
 the activation captures.
-
-Capture uses `--think` / `--nothink`
-(not `--think-high`). Dumps track the prompt phase explicitly, including
-one-token tails, and retain the last prompt token during ordinary and MTP
-decode. `attn_out` captures the output projection of both GDN and full-attention
-layers, giving one row for each of the 48 trunk layers:
-

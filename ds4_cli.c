@@ -518,9 +518,7 @@ static void build_prompt(ds4_engine *engine, const cli_generation_options *gen, 
     }
 }
 
-/* sf-ablate(glm): the GLM-DSA sampling defaults (temperature 1.0, top-p 0.95,
- * min-p 0) applied only to that family, so nothing is overridden here and the
- * engine's own defaults stand. */
+/* sf-ablate(glm): GLM-DSA sampling defaults (temp 1.0, top-p 0.95, min-p 0) applied only to that family; engine defaults stand */
 static void cli_apply_model_sampling_defaults(
         ds4_engine             *engine,
         cli_generation_options *gen) {
@@ -2214,9 +2212,7 @@ int main(int argc, char **argv) {
     cfg.engine.context_size = cfg.gen.ctx_size;
     cfg.engine.placement_ctx_hint = cfg.gen.ctx_size;
     ds4_engine *engine = NULL;
-/* sf-ablate(cuda): --gpu-vram/--gpu-devices selected CUDA devices for
- * multi-GPU placement, and ds4_gpu_args.c parsed them.  This child has one
- * backend and one GPU, so the engine always opens through ds4_engine_open. */
+/* sf-ablate(cuda): --gpu-vram/--gpu-devices (ds4_gpu_args.c) selected CUDA devices; Metal-only, so the engine opens through ds4_engine_open */
     if (ds4_engine_open(&engine, &cfg.engine) != 0) {
         ds4_dist_options_free(cfg.dist);
         free(cfg.prompt_owned);

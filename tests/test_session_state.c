@@ -309,8 +309,7 @@ static void test_text_observations(void) {
     v->tool_response_start_id = 258;
     v->tool_response_end_id = 259;
     const ds4_shape saved = g_ds4_shape;
-    /* sf-ablate(ds4): the sweep covered DS4_SHAPE_FLASH, _PRO and _GLM53 too;
-     * those profiles are gone, so the loop runs over the only one left. */
+    /* sf-ablate(ds4): the sweep also covered FLASH, PRO and GLM53; only FLASH41 is left */
     const ds4_shape shapes[] = { DS4_SHAPE_FLASH41 };
     const char *roles[] = {"user", "tool", "function"};
     const char *parts[] = {"ok <x> & </tool_result> </tool_response>"};
@@ -417,9 +416,7 @@ static void test_text_observations(void) {
     vocab_free(v);
 }
 
-/* sf-ablate(glm): test_glm_attention_budget and test_glm_spec_rollback
- * both opened by assigning DS4_SHAPE_GLM53 to g_ds4_shape and exercised
- * the GLM-DSA graph, which this child does not build. */
+/* sf-ablate(glm): test_glm_attention_budget/test_glm_spec_rollback set DS4_SHAPE_GLM53 and ran the GLM-DSA graph, not built here */
 
 int main(void) {
     test_vision_prefix();

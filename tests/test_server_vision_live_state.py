@@ -5,7 +5,7 @@ continuation contract.
 Requires an idle, image-capable server: a vision model plus its encoder, with
 at least four resident sessions for the eviction section:
 
-    ./ds4-server -m <vision-model>.gguf --vision <encoder>.gguf \
+    ./sf-ds4-1flash-server -m <vision-model>.gguf --vision <encoder>.gguf \
         --batched-session 4 --trace /tmp/ds4-live-state-trace.log \
         > /tmp/ds4-live-state.log 2>&1
 

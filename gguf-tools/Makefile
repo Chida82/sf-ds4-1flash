@@ -47,12 +47,10 @@ CPPFLAGS ?= -D_GNU_SOURCE
 
 .PHONY: all clean quants-shared quality-score quality-llama-score
 
-all: deepseek4-quantize $(QUANTS_SHARED)
+# sf-ablate(ds4): deepseek4-quantize was the V4 Flash/PRO quantizer; this child converts through deepseek41_quantize.py and the library below
+all: $(QUANTS_SHARED)
 
 quants-shared: $(QUANTS_SHARED)
-
-deepseek4-quantize: deepseek4-quantize.c quants.c quants.h
-	$(CC) $(CFLAGS) $(CPPFLAGS) -o $@ deepseek4-quantize.c quants.c -lm -pthread
 
 $(QUANTS_SHARED): quants.c quants.h
 	$(CC) $(CFLAGS) $(CPPFLAGS) $(SHARED_FLAGS) -fPIC -o $@ quants.c -lm -pthread
@@ -65,5 +63,5 @@ quality-llama-score:
 	$(CXX) $(LLAMA_CPP_CXXFLAGS) -o quality-testing/score_llama quality-testing/score_llama.cpp $(LLAMA_CPP_LDLIBS)
 
 clean:
-	rm -f deepseek4-quantize libds4quants.dylib libds4quants.so \
+	rm -f libds4quants.dylib libds4quants.so \
 		quality-testing/score_official quality-testing/score_llama

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""End-to-end serving benchmark for ds4-server under concurrent load.
+"""End-to-end serving benchmark for sf-ds4-1flash-server under concurrent load.
 
 The engine-level harness (speed-bench/session_concurrency_bench.c) measures
 what the graph can do.  This one measures what a client actually gets: queueing
@@ -29,7 +29,7 @@ Only the standard library is used, like the other tools in this directory.
 
 Example:
 
-  ./ds4-server --ctx 32768 --batched-session 8 &
+  ./sf-ds4-1flash-server --ctx 32768 --batched-session 8 &
   python3 speed-bench/serve_concurrency_bench.py \\
       --concurrency 8 --prompt-tokens 4096 --max-tokens 128 --requests 32
 """
@@ -320,9 +320,9 @@ def make_payload(args, prompt):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Concurrent serving benchmark for ds4-server",
+        description="Concurrent serving benchmark for sf-ds4-1flash-server",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    parser.add_argument("--base-url", default="http://127.0.0.1:8000")
+    parser.add_argument("--base-url", default="http://127.0.0.1:8002")
     parser.add_argument("--model", default="qwen3.8-flash-next")
     parser.add_argument("--prompt-file", default="speed-bench/promessi_sposi.txt")
     parser.add_argument("--prompt-tokens", type=int, default=1024,

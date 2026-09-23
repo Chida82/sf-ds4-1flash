@@ -84,7 +84,7 @@ Each process maps only its assigned layers, retaining that slice of the KV
 state. Layer ranges are inclusive. `N:output` includes the final layer and
 output head. Activations travel from one stage to the next over TCP.
 
-For Flash Q4 on two machines, download `ds4f-q4` on both, then start each side.
+For V4.1 Flash on two machines, run `./download.sh q2` on both, then start each side.
 Replace the example address with your coordinator's reachable address:
 
 ```sh
@@ -104,13 +104,6 @@ Long prefill chunks can occupy different stages simultaneously. A single
 generation stream cannot use that overlap: each token must finish the route
 before the next one is sampled. Use pipeline mode primarily for capacity and
 long-prefill throughput, not as a guaranteed decode speedup.
-
-### Full PRO Q4
-
-For two 512 GB Mac Studios, use the split artifacts:
-
-These downloads do not change `deepseek-v4.1-flash.gguf`. Startup is expensive because
-each side must make its model slice resident.
 
 ### Tuning and recovery
 

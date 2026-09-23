@@ -37,7 +37,7 @@ def main():
         return data if body and body.get("stream") else json.loads(data)
 
     with (args.output / "server.log").open("w") as log:
-        proc = subprocess.Popen(["./ds4-server", "-m", args.model,
+        proc = subprocess.Popen(["./sf-ds4-1flash-server", "-m", args.model,
             "--ssd-streaming", "--ssd-streaming-cache-experts", "512",
             "--ctx", "512", "--tokens", "4", "--host", "127.0.0.1",
             "--port", str(args.port), "--trace", str(trace),

@@ -577,9 +577,7 @@ int main(int argc, char **argv) {
     int placement_ctx_hint = cfg.ctx_max;
     if (cfg.ctx_alloc > placement_ctx_hint) placement_ctx_hint = cfg.ctx_alloc;
 
-/* sf-ablate(cuda): --gpu-vram/--gpu-devices selected CUDA devices for
- * multi-GPU placement, and ds4_gpu_args.c parsed them.  This child has one
- * backend and one GPU, so the engine always opens through ds4_engine_open. */
+/* sf-ablate(cuda): --gpu-vram/--gpu-devices (ds4_gpu_args.c) selected CUDA devices; Metal-only, so the engine opens through ds4_engine_open */
 
     ds4_engine_options opt = {
         .model_path = cfg.model_path,
@@ -704,8 +702,7 @@ int main(int argc, char **argv) {
     const bool distributed =
         cfg.dist.role == DS4_DISTRIBUTED_COORDINATOR ||
         cfg.tp.role == DS4_TP_LEADER;
-    /* sf-ablate(specdec): DeepSeek V4.1 Flash has no speculative decoding,
-     * so --dspark and the external support GGUF are gone. */
+    /* sf-ablate(specdec): V4.1 Flash has no speculative decoding; --dspark and the external support GGUF removed */
     const bool speculative = false;
     ds4_session_snapshot snap = {0};
     const uint64_t snapshot_max_bytes = bench_snapshot_max_bytes();

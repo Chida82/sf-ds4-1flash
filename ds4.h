@@ -124,7 +124,6 @@ typedef struct {
     const char *rdma_device;
     int rdma_gid_index;
     bool rdma_gid_index_set;
-    bool glm_token_prefill;
     int debug_hash;             /* cross-check hidden state every N tokens */
 } ds4_tp_options;
 

@@ -771,9 +771,7 @@ int main(int argc, char **argv) {
     }
 
     ds4_engine *engine = NULL;
-/* sf-ablate(cuda): --gpu-vram/--gpu-devices selected CUDA devices for
- * multi-GPU placement, and ds4_gpu_args.c parsed them.  This child has one
- * backend and one GPU, so the engine always opens through ds4_engine_open. */
+/* sf-ablate(cuda): --gpu-vram/--gpu-devices (ds4_gpu_args.c) selected CUDA devices; Metal-only, so the engine opens through ds4_engine_open */
     if (ds4_engine_open(&engine, &opt) != 0) die("failed to open model");
 
     if (tp.role == DS4_TP_LEADER) {

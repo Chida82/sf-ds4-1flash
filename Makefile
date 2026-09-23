@@ -68,12 +68,6 @@ tests/test_metal_session_batch.o: tests/test_metal_session_batch.c ds4.h
 tests/test_metal_session_batch: tests/test_metal_session_batch.o $(CORE_OBJS)
 	$(CC) $(CFLAGS) -o $@ $^ $(METAL_LDLIBS)
 
-tests/test_metal_tp_spec.o: tests/test_metal_tp_spec.c ds4.h ds4_tp.h
-	$(CC) $(CFLAGS) -I. -c -o $@ $<
-
-tests/test_metal_tp_spec: tests/test_metal_tp_spec.o $(CORE_OBJS)
-	$(CC) $(CFLAGS) -o $@ $^ $(METAL_LDLIBS)
-
 tests/test_metal_tp_cancel: tests/test_metal_tp_cancel.c ds4.h ds4_tp.h $(CORE_OBJS)
 	$(CC) $(CFLAGS) -I. -o $@ $< $(CORE_OBJS) $(METAL_LDLIBS)
 
@@ -419,7 +413,7 @@ clean:
 	      tests/test_q4k_dot tests/test_mxfp4_dot tests/test_mxfp4_metal \
 	      tests/test_metal_session_batch tests/test_metal_moe_prefill tests/test_metal_dense_mpp \
 	      tests/test_metal_ssd_experts tests/test_metal_command_memory \
-	      tests/test_metal_tp_spec tests/test_metal_tp_cancel tests/test_metal_tp_bulk \
+	      tests/test_metal_tp_cancel tests/test_metal_tp_bulk \
 	      tests/test_deepseek41_metal tests/test_deepseek41_gguf tests/test_deepseek41_graph \
 	      tests/test_deepseek41_cli tests/test_deepseek41_prefill \
 	      tests/test_deepseek4_vision_image tests/test_image_decode tests/test_prompt_prefix \

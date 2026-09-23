@@ -1218,9 +1218,8 @@ static server_model_syntax server_model_syntax_for_engine(ds4_engine *engine) {
 }
 
 static const char *server_model_id_from_engine(ds4_engine *engine) {
+    (void)engine;
     return "deepseek-v4.1-flash";
-    return ds4_engine_model_id(engine) == 1 ?
-           "deepseek-v4-pro" : "deepseek-v4-flash";
 }
 
 static bool server_model_alias_known(const char *id) {
@@ -15753,9 +15752,7 @@ int main(int argc, char **argv) {
         cfg.batched_sessions > 0 ? cfg.batched_sessions : 1;
     cfg.engine.share_session_prefill_workspace = cfg.batched_sessions > 0;
     ds4_engine *engine = NULL;
-/* sf-ablate(cuda): --gpu-vram/--gpu-devices selected CUDA devices for
- * multi-GPU placement, and ds4_gpu_args.c parsed them.  This child has one
- * backend and one GPU, so the engine always opens through ds4_engine_open. */
+/* sf-ablate(cuda): --gpu-vram/--gpu-devices (ds4_gpu_args.c) selected CUDA devices; Metal-only, so the engine opens through ds4_engine_open */
     if (ds4_engine_open(&engine, &cfg.engine) != 0) return 1;
 
     if (cfg.engine.distributed.role == DS4_DISTRIBUTED_WORKER) {
@@ -18063,11 +18060,7 @@ static void test_reasoning_effort_mapping(void) {
     TEST_ASSERT(think_mode_from_enabled(false, DS4_THINK_LOW) == DS4_THINK_NONE);
     TEST_ASSERT(!strcmp(ds4_glm_reasoning_effort_text(DS4_THINK_LOW), "Reasoning Effort: High"));
     TEST_ASSERT(!strcmp(ds4_glm_reasoning_effort_text(DS4_THINK_MEDIUM), "Reasoning Effort: High"));
-    /* sf-ablate(ds4): upstream downgraded THINK_MAX to THINK_HIGH below the
-     * minimum context, but only for families other than DeepSeek V4.1.  In a
-     * V4.1-only binary that guard is constant-false, so the mode is returned
-     * unchanged at every context size and the old assertion asserted another
-     * model's behaviour (orchestrator AGENTS.md rule 17). */
+    /* sf-ablate(ds4): upstream downgrade THINK_MAX->HIGH excluded V4.1, so it is constant-false here; the old assertion tested another model (AGENTS.md rule 17) */
     TEST_ASSERT(ds4_think_mode_for_context(DS4_THINK_MAX, 32768) == DS4_THINK_MAX);
     TEST_ASSERT(ds4_think_mode_for_context(DS4_THINK_MAX,
                                            (int)ds4_think_max_min_context()) == DS4_THINK_MAX);

@@ -24,8 +24,6 @@ from pathlib import Path
 
 MODEL_PROFILES = {
     "deepseek-v4-flash": (43, 4096),
-    "glm-5.3-flash": (45, 4096),
-    "qwen3.8-flash-next": (48, 2560),
 }
 
 
@@ -116,8 +114,8 @@ def add_rows(total: list[list[float]], rows: list[list[float]], n_layer: int) ->
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--ds4", default="./ds4", help="path to the ds4 CLI")
-    ap.add_argument("--model", default="ds4flash.gguf", help="GGUF model path")
+    ap.add_argument("--ds4", default="./sf-ds4-1flash", help="path to the CLI")
+    ap.add_argument("--model", default="deepseek-v4.1-flash.gguf", help="GGUF model path")
     ap.add_argument("--profile", choices=MODEL_PROFILES,
                     default="deepseek-v4-flash",
                     help="model shape and chat-template profile")

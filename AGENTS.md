@@ -171,6 +171,7 @@ child has established:
 | `glm53_quantize.py`, `glm53_validate_gguf.py`, `glm53_manifest.py`, `deepseek4_vision.py` | dependencies of **this model's** converters | `deepseek41_quantize.py`, `deepseek41_validate_gguf.py` and `deepseek41_vision.py` import them |
 | `metal/deepseek4_vision.metal`, `metal/glm53_bf16.metal`, `metal/glm53_vision.metal` | required by the V4.1 vision encoder | deleting them breaks vision, not GLM |
 | `tests/vision-fixtures/glm53/` | plain PNG/JPEG test data read by four kept tests | see that directory's README |
+| `tests/test-vectors/flash-0731/` | a **prompt index** for `--metal-tensor-equivalence` and `--streaming-decode-prefill-correctness`, which compare two compute paths on *this* model. The expected logprobs inside `official.vec` are DeepSeek V4 Flash's and are never read by those tests | restored verbatim from upstream after deleting the tree broke both tests with `fp != NULL` |
 
 Two oracles that the compiler cannot give you:
 

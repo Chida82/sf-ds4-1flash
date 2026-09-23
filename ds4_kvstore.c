@@ -176,9 +176,7 @@ uint8_t ds4_kvstore_reason_code(const char *reason) {
     if (!strcmp(reason, "continued")) return DS4_KVSTORE_REASON_CONTINUED;
     if (!strcmp(reason, "evict")) return DS4_KVSTORE_REASON_EVICT;
     if (!strcmp(reason, "shutdown")) return DS4_KVSTORE_REASON_SHUTDOWN;
-    /* sf-ablate(agent): the "agent-system" and "agent-session" reasons were
-     * written only by ds4_agent.c.  The enumerators themselves stay: they are
-     * the upper bound of the on-disk reason byte below. */
+    /* sf-ablate(agent): agent-system/agent-session reasons were written only by ds4_agent.c; enumerators kept as the on-disk reason upper bound */
     return DS4_KVSTORE_REASON_UNKNOWN;
 }
 

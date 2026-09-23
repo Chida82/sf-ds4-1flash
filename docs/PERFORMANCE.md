@@ -29,7 +29,7 @@ The prompt is the cleaned public-domain *I Promessi Sposi* text in
 
 ## Recorded baselines
 
-sf-ablate(ds4): none yet. The sweeps that used to fill this section were
+None yet. The sweeps that used to fill this section were
 measured on DeepSeek V4 Flash and V4 PRO, which this fork does not run, and
 were deleted rather than relabelled: a throughput number carried over from
 another model is worse than an empty section. Record a DeepSeek V4.1 Flash

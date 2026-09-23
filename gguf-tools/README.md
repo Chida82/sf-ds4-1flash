@@ -1,7 +1,7 @@
 # DS4 GGUF Tools
 
 This directory contains the offline tools used to build and evaluate DeepSeek
-V4 Flash GGUF files for `ds4`.
+V4.1 Flash GGUF files for this repository.
 
 The important pieces are:
 
@@ -24,14 +24,6 @@ python3 gguf-tools/imatrix/dataset/build_ds4_imatrix_dataset.py
 ```
 
 Then collect activation statistics with the DS4 runtime:
-
-```sh
-./sf-ds4-1flash \
-  -m gguf/DeepSeek-V4-Flash-Q4KExperts-F16HC-F16Compressor-F16Indexer-Q8Attn-Q8Shared-Q8Out-chat-v2.gguf \
-  --imatrix-dataset gguf-tools/imatrix/dataset/rendered_prompts.txt \
-  --imatrix-out gguf/DeepSeek-V4-Flash-chat-v2-routed-moe-ds4.dat \
-  --ctx 32768
-```
 
 The imatrix file is useful immediately with this DS4 quantizer.  Generic GGUF
 tools need DS4-specific tensor-name mapping and per-expert slicing before they
@@ -59,34 +51,9 @@ you really mean to replace an existing GGUF.
 
 Q2 routed experts with imatrix:
 
-```sh
-gguf-tools/deepseek4-quantize \
-  --hf ../deepseek-v4-quants/hf/DeepSeek-V4-Flash \
-  --template gguf/DeepSeek-V4-Flash-IQ2XXS-w2Q2K-AProjQ8-SExpQ8-OutQ8-chat-v2.gguf \
-  --out gguf/DeepSeek-V4-Flash-IQ2XXS-w2Q2K-AProjQ8-SExpQ8-OutQ8-chat-v2-imatrix.gguf \
-  --imatrix gguf/DeepSeek-V4-Flash-chat-v2-routed-moe-ds4.dat
-```
-
 Q4 routed experts with imatrix:
 
-```sh
-gguf-tools/deepseek4-quantize \
-  --hf ../deepseek-v4-quants/hf/DeepSeek-V4-Flash \
-  --template gguf/DeepSeek-V4-Flash-Q4KExperts-F16HC-F16Compressor-F16Indexer-Q8Attn-Q8Shared-Q8Out-chat-v2.gguf \
-  --out gguf/DeepSeek-V4-Flash-Q4KExperts-F16HC-F16Compressor-F16Indexer-Q8Attn-Q8Shared-Q8Out-chat-v2-imatrix.gguf \
-  --imatrix gguf/DeepSeek-V4-Flash-chat-v2-routed-moe-ds4.dat
-```
-
 True Q8_K routed experts:
-
-```sh
-gguf-tools/deepseek4-quantize \
-  --hf ../deepseek-v4-quants/hf/DeepSeek-V4-Flash \
-  --template gguf/DeepSeek-V4-Flash-Q4KExperts-F16HC-F16Compressor-F16Indexer-Q8Attn-Q8Shared-Q8Out-chat-v2-imatrix.gguf \
-  --out gguf/DeepSeek-V4-Flash-Q8KExperts-F16HC-F16Compressor-F16Indexer-Q8Attn-Q8Shared-Q8Out-chat-v2.gguf \
-  --experts q8_K \
-  --threads 8
-```
 
 You can override tensor families:
 
@@ -99,13 +66,6 @@ You can override tensor families:
 ```
 
 Useful checks before writing a full model:
-
-```sh
-gguf-tools/deepseek4-quantize \
-  --hf ../deepseek-v4-quants/hf/DeepSeek-V4-Flash \
-  --template MODEL.gguf \
-  --compare-tensor blk.0.attn_q_a.weight
-```
 
 `--compare-tensor` regenerates a single tensor and byte-compares it against the
 template or `--compare-gguf`.  `--threads N` controls routed-expert workers.
@@ -146,10 +106,6 @@ The audit checks the complete layout, all non-expert tensors, sampled experts
 and native Engram rows. It does not replace [inference quality tests](quality-testing/deepseek-v4.1-flash-20260910/README.md).
 
 ## When No Imatrix Is Given
-
-`iq2_xxs` requires an importance vector.  If `--imatrix` is not provided and
-the target type requires one, `deepseek4-quantize` computes a synthetic fallback
-from the dequantized weight itself:
 
 ```text
 importance[column] = sum(row[column]^2) over all rows

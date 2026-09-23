@@ -61,9 +61,6 @@ machine is acceptable when needed; it is an M3 Max with 128 GB RAM.
 3. Feed a distributed worker a snapshot header whose declared lengths exceed
    the configured and protocol limits. It must reject the header before a
    large allocation or payload read, without growing RSS materially.
-4. Run malformed safetensors and GGUF fixtures through the loader and
-   `gguf-tools/deepseek4-quantize` under ASan and UBSan. Truncated files,
-   impossible dimensions, and overflowing tensor sizes must be rejected.
 6. Exercise unterminated and twice-closed reasoning in streaming and
    non-streaming OpenAI, Responses, and Anthropic requests, with and without
    tools. Reasoning must never leak into answer content.
@@ -89,11 +86,6 @@ top-logprob slices, so do not replace them with one sampled chat answer.
 
 SSD streaming is a capacity path, so test both correctness and user experience.
 
-- Regression test mixed-quant Flash SSD streaming. Use the mixed q2/q4 GGUF
-  with boosted Q4 routed-expert layers and a prompt long enough to exercise the
-  selected-address prefill path; it must not fail with "model range is not
-  covered by mapped model views":
-  `./sf-ds4-1flash -m gguf/DeepSeek-V4-Flash-Layers37-42Q4KExperts-OtherExpertLayersIQ2XXSGateUp-Q2KDown-AProjQ8-SExpQ8-OutQ8-chat-v2-imatrix-fixed-0731.gguf --ssd-streaming --ssd-streaming-cache-experts 16GB --ctx 4096 --tokens 1 --nothink --prompt-file /tmp/ds4_600tok_prompt.txt`.
 - Cold streaming measurement:
   run once with `--ssd-streaming-cold` and verify no deadlock, missing expert,
   or impossible slowdown.
@@ -195,10 +187,9 @@ Disk KV cache bugs are high impact for server users.
 The server must keep compatibility across OpenAI, Responses, and Anthropic
 clients.
 
-- `GET /v1/models/deepseek-v4-flash` and `GET /v1/models/deepseek-v4-pro`
-  should both serve whichever GGUF is loaded.
+- `GET /v1/models/deepseek-v4.1-flash` serves the loaded GGUF.
 - Test OpenAI chat completion, OpenAI Responses, and Anthropic messages.
-- After tool-parser changes, run `make test-frontends` and
+- After tool-parser changes, run `./ds4_test --server` and
   `make test-session-state`. These targets do not load model weights. Repeat
   the frontend suites with ASan/UBSan for parser and buffer changes.
 - Truncate a tool argument using a small output budget and an explicit client
@@ -350,9 +341,6 @@ per-row decode. The synthetic static-shape model uses about 3.2 GiB of memory.
 `DS4_METAL_DISABLE_M5_TP_MXFP4_STATIC=1` disables the static specialization.
 Neither is needed to enable the fast path.
 
-Build `make tests/test_metal_tp_spec`. With the worker connected as usual,
-run the coordinator with:
-
 Repeat the physical TP session oracle with two, four and six sessions. Do not
 set `DS4_TEST_SKIP_MIXED`: ordinary decode and the mixed continued-prefill step
 must both match full serial logits exactly. Check that the final TP residual
@@ -390,13 +378,13 @@ the long sparse-boundary tests; neither substitutes for the other.
   For Q4, pass `--quant q4` to both converter and validator. Convert from the
   original safetensors with the retained imatrix, not from the Q2 GGUF. A valid
   tensor inventory does not replace real-model quality tests for that recipe.
-- Run `make test-engram test-deepseek41-gguf test-quality-api test-frontends`,
+- Run `make test-engram test-deepseek41-gguf test-quality-api` and
+  `./ds4_test --server`,
   the V4.1 manifest tests and the official RoPE/quantization primitive checks.
-  Run `make test-download-model` to check verified downloads, damaged files,
-  partial transfers and the default model link. Check the published artifacts
-  using `ds41f-q2`, `ds41f-q4` and `ds41f-vision` on a runtime host. Q4 comes
-  in two transport parts: check interrupted assembly, insufficient disk space,
-  corrupt parts and the final complete-file checksum before opening the model.
+  Run `make test-download-model` to check that `download.sh` only creates
+  symlinks into the Hugging Face cache and the default model link. Check the
+  published artifacts with `./download.sh q2` and `./download.sh vision` on a
+  runtime host.
 - With real weights, run `tests/test_deepseek41_graph MODEL --session-fixture`
   and `tests/test_deepseek41_graph MODEL --partitions` under Metal API validation.
   Check restored continuation logits, compression carry, sliding-window wrap,

@@ -16,13 +16,15 @@ The same build supports M3 and M5 Macs. Hardware-specific fast paths are
 selected automatically; no environment variable is needed to enable them.
 Leave other GPU and memory-heavy applications idle when comparing performance.
 
-## Choose a model
+## Memory
 
-| Memory | Starting point |
-| --- | --- |
-| 64 GB | Flash Q2 with `--ssd-streaming` |
-| 96 GB | Flash Q2; leave room for the context and other applications |
-| 512 GB | Larger models, including PRO Q2 |
+The Q2 GGUF is 340.6 GiB: about 152 GiB of main weights plus 189 GiB of Engram
+tables, which are always read from the file (`Engram disk-only`). Keep it on a
+fast local SSD.
+
+On a 128 GB Mac, run with `--ssd-streaming`; nothing loads without it. A
+resident run needs the ~152 GiB of main weights plus the context in memory; it
+has not been measured on this tree.
 
 For a model larger than RAM, start with automatic cache sizing:
 

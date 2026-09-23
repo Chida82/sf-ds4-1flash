@@ -1,8 +1,12 @@
 # DS4 Imatrix Pipeline
 
-The current imatrix target is the routed MoE path.  Flash has 43 layers and
-256 routed experts per layer.  Pro has 61 layers and 384 routed experts per
-layer.  Both variants expose three routed expert tensors per layer:
+The current imatrix target is the routed MoE path.  DeepSeek V4.1 Flash has 40
+layers and exposes three routed expert tensors per layer:
+
+sf-keep: the calibration corpora under `dataset/` are large and were built for
+the routed-MoE path generally, not for one model.  This fork's released GGUFs
+are imatrix-calibrated, so the pipeline is kept; whether the recorded prompts
+are the right calibration set for V4.1 has not been established.
 
 - `blk.N.ffn_gate_exps.weight`
 - `blk.N.ffn_up_exps.weight`

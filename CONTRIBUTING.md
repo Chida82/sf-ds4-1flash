@@ -18,32 +18,22 @@ make clean
 make
 ```
 
-The C test runner is `ds4_test`. Running it without arguments is equivalent to
-`--all`:
+The C test runner is `ds4_test`. `make test` builds everything and runs the
+model-free suites (`./ds4_test --server`, session state, TP, sampling, prompt
+prefix, layer pack, vision fixtures, eval case validation).
+
+Model-backed checks load the real GGUF. On a machine that cannot hold the Q2
+weights (340.6 GiB with Engram), set `DS4_TEST_SSD_STREAMING=1`; run one at a
+time, since each load is expensive:
 
 ```sh
-make test
+DS4_TEST_SSD_STREAMING=1 ./ds4_test --long-context
+DS4_TEST_SSD_STREAMING=1 ./ds4_test --tool-call-quality
+DS4_TEST_SSD_STREAMING=1 ./ds4_test --metal-kernels
 ```
 
-Useful narrower checks:
-
-```sh
-./ds4_test --server
-./ds4_test --logprob-vectors
-./ds4_test --long-context
-./ds4_test --tool-call-quality
-./ds4_test --metal-kernels
-```
-
-What they cover:
-
-The runner defaults to `deepseek-v4.1-flash.gguf`. Override paths when needed:
-
-```sh
-DS4_TEST_MODEL=/path/to/model.gguf ./ds4_test --logprob-vectors
-DS4_TEST_VECTOR_FILE=/path/to/official.vec ./ds4_test --logprob-vectors
-DS4_TEST_LONG_PROMPT=/path/to/prompt.txt ./ds4_test --long-context
-```
+The runner defaults to `deepseek-v4.1-flash.gguf`; override it with
+`DS4_TEST_MODEL=/path/to/model.gguf` and see `./ds4_test --help` for the rest.
 
 For CPU portability, at least verify that the CPU target still builds:
 

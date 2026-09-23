@@ -158,11 +158,8 @@ static void print_model_runtime(FILE *fp, const help_colors *c,
     if (tool == DS4_HELP_DS4 || tool == DS4_HELP_SERVER) {
         opt(fp, c, "--vision FILE", "Vision encoder GGUF for the selected model.");
     }
-    opt(fp, c, "--metal | --cuda | --cpu", "Select the backend explicitly.");
-    opt(fp, c, "--backend NAME", "Backend name: metal, cuda, or cpu.");
-    if (tool != DS4_HELP_EVAL) {
-        opt(fp, c, "--cuda-tensor-parallel", "Enable the paired DeepSeek tensor/expert path on an even multi-GPU CUDA placement.");
-    }
+    opt(fp, c, "--metal | --cpu", "Select the backend explicitly.");
+    opt(fp, c, "--backend NAME", "Backend name: metal or cpu.");
     if (tool != DS4_HELP_BENCH) {
         opt(fp, c, "-c, --ctx N", "Allocated context tokens.");
     }
@@ -171,17 +168,14 @@ static void print_model_runtime(FILE *fp, const help_colors *c,
     }
     opt(fp, c, "-t, --threads N", "CPU helper threads for host-side/reference work.");
     opt(fp, c, "--power N", "GPU duty-cycle target, 1..100. Default: 100");
-    opt(fp, c, "--ssd-streaming", "Metal/CUDA/ROCm: opt in to SSD-backed model streaming instead of full residency.");
+    opt(fp, c, "--ssd-streaming", "Metal: stream model weights from SSD instead of full residency. Needed on a 128 GB Mac: the V4.1 Q2 GGUF is 340.6 GiB.");
     opt(fp, c, "--ssd-streaming-cold", "SSD streaming: skip default popularity-based expert-cache preload.");
     opt(fp, c, "--ssd-streaming-cache-experts N|NGB", "SSD streaming cache target. N requests dynamic expert slots; NGB also reserves two full prefill layers. Either may be reduced to fit the model, graph, context, and backend working set.");
-    opt(fp, c, "--ssd-streaming-full-layers N", "GLM Metal streaming: keep the first N routed layers fully resident. Default: auto from NGB expert budget; use 0 to disable.");
-    opt(fp, c, "--ssd-streaming-preload-experts N", "SSD streaming: upfront popularity preload count. DeepSeek auto-seeds by default; GLM demand-fills unless N is explicit.");
+    opt(fp, c, "--ssd-streaming-preload-experts N", "SSD streaming: upfront popularity preload count. Auto-seeded by default.");
     opt(fp, c, "--simulate-used-memory NGB", "Diagnostic: lock N GiB before model load to simulate a smaller-memory machine.");
-    opt(fp, c, "--prefill-chunk N", "Graph prefill chunk size. Default: CUDA TP 2048; PRO long prompts 8192; others 4096.");
+    opt(fp, c, "--prefill-chunk N", "Graph prefill chunk size. Default: 4096.");
     if (full) {
-        /* sf-ablate(specdec): DeepSeek V4.1 Flash has no speculative decoding
-         * (registry entry "none"), so --mtp*, --dspark* and the external
-         * support GGUF are gone from every frontend. */
+        /* sf-ablate(specdec): V4.1 Flash has no speculative decoding (registry: none); --mtp*, --dspark* and support GGUF removed */
         opt(fp, c, "--quality", "Prefer exact kernels where faster approximate paths exist.");
         opt(fp, c, "--warm-weights", "Touch resident weights at startup to reduce first-use stalls.");
         if (tool == DS4_HELP_DS4 || tool == DS4_HELP_BENCH) {
@@ -198,7 +192,6 @@ static void print_sampling(FILE *fp, const help_colors *c, bool full, ds4_help_t
     opt(fp, c, "--top-p F", "Nucleus sampling probability.");
     opt(fp, c, "--min-p F", "Keep tokens scoring at least F times the top token.");
     opt(fp, c, "--seed N", "Sampling seed for reproducible non-greedy runs.");
-    para(fp, c, "GLM CLI and agent runs default to temperature 1.0, top-p 0.95, and min-p 0 unless those options are set explicitly.");
     opt(fp, c, "--think", "Use normal thinking mode (V4.1: effort 75).");
     opt(fp, c, "--think-max", "Use maximum thinking (V4.1: 100; V4: requires ctx >= 393216).");
     if (tool == DS4_HELP_DS4)
@@ -244,7 +237,6 @@ static void print_distributed(FILE *fp, const help_colors *c) {
     opt(fp, c, "--transport auto|rdma|tcp", "Tensor gate transport. Default: auto");
     opt(fp, c, "--rdma-device NAME", "Select a verbs device when auto-detection is ambiguous.");
     opt(fp, c, "--rdma-gid-index N", "Select the local verbs GID index.");
-    opt(fp, c, "--tensor-parallel-token-prefill", "GLM diagnostic: prefill one token at a time for exact arithmetic.");
     opt(fp, c, "--debug-hash N", "Cross-check hidden state every N tokens.");
     fputc('\n', fp);
 }
@@ -298,9 +290,7 @@ static void print_cli_commands(FILE *fp, const help_colors *c) {
     fputc('\n', fp);
 }
 
-/* sf-ablate(agent): print_agent_specific and print_agent_sessions removed with
- * the ds4-agent binary. --chdir survives in ds4_server.c and docs/SERVER.md,
- * but the agent was the only help tool that printed it. */
+/* sf-ablate(agent): agent help removed with ds4-agent; --chdir survives in ds4_server.c and docs/SERVER.md */
 
 static void print_server_api(FILE *fp, const help_colors *c) {
     title(fp, c, "HTTP API");
@@ -309,7 +299,7 @@ static void print_server_api(FILE *fp, const help_colors *c) {
     opt(fp, c, "--cors", "Add Access-Control-Allow-* headers for browser JS clients.");
     opt(fp, c, "--trace FILE", "Write prompts, cache decisions, output, and tool calls.");
     opt(fp, c, "--batched-session N", "Keep N resident sessions and batch decode-ready requests.");
-    opt(fp, c, "--mixed-prefill-quantum N", "Prefill chunk while generations are active. Default: 128; GLM-5.3 minimum: 1024");
+    opt(fp, c, "--mixed-prefill-quantum N", "Prefill chunk while generations are active. Default: 128");
     para(fp, c, "Endpoints: /v1/chat/completions, /v1/responses, /v1/completions, and /v1/messages.");
     para(fp, c, "Model endpoint aliases include deepseek-v4-flash and deepseek-v4-pro; both serve the loaded GGUF.");
     fputc('\n', fp);

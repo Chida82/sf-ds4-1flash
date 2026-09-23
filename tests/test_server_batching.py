@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Concurrent API correctness/load check for ds4-server session batching.
+"""Concurrent API correctness/load check for sf-ds4-1flash-server session batching.
 
 Each case is submitted twice with the same non-zero seed. The pairs run in one
 cold concurrent wave and must return identical output, even though prompt sizes
@@ -169,7 +169,7 @@ def comparable(result):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--url", default="http://127.0.0.1:8000")
+    parser.add_argument("--url", default="http://127.0.0.1:8002")
     parser.add_argument("--model", default="deepseek-chat")
     parser.add_argument("--pairs", type=int, default=4)
     parser.add_argument("--workers", type=int, default=0)
