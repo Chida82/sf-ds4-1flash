@@ -35,10 +35,8 @@
 #include <time.h>
 #include <unistd.h>
 
-#if defined(__APPLE__)
 #include <mach/mach.h>
 #include <mach/mach_host.h>
-#endif
 
 #define BENCH "session-concurrency-bench"
 
@@ -79,7 +77,6 @@ typedef struct {
     double reserve_gib;
     uint64_t budget_bytes;
     bool mixed;
-    bool spec;        /* batched speculative decode (Qwen3.8 MTP, greedy) */
     bool verify;
     bool warm_weights;
     bool force;
@@ -131,7 +128,6 @@ static double bytes_to_gib(uint64_t bytes) {
  * resident.  Sessions are freed between cells, so this stays the budget for
  * every cell of the sweep. */
 static uint64_t available_memory_bytes(void) {
-#if defined(__APPLE__)
     vm_size_t page = 0;
     vm_statistics64_data_t vm;
     mach_msg_type_number_t count = HOST_VM_INFO64_COUNT;
@@ -145,20 +141,6 @@ static uint64_t available_memory_bytes(void) {
                                  (uint64_t)vm.purgeable_count +
                                  (uint64_t)vm.external_page_count;
     return reclaimable * (uint64_t)page;
-#else
-    FILE *fp = fopen("/proc/meminfo", "r");
-    if (!fp) return 0;
-    char line[256];
-    uint64_t kib = 0;
-    while (fgets(line, sizeof(line), fp)) {
-        if (sscanf(line, "MemAvailable: %llu kB",
-                   (unsigned long long *)&kib) == 1) {
-            break;
-        }
-    }
-    fclose(fp);
-    return kib * 1024ull;
-#endif
 }
 
 /* Sampled once, with the weights resident and no session yet alive.  Sampling
@@ -189,7 +171,6 @@ static void usage(FILE *fp, const char *argv0) {
             "  --mixed-steps N       timed mixed steps (default: %d)\n"
             "  --mixed-quantum N     prefill tokens per mixed step (default: %d)\n"
             "  --verify              check batched decode against sequential decode\n"
-            "  --spec                batched speculative decode (Qwen3.8 MTP, greedy acceptance)\n"
             "  --budget-gib X        memory the sessions may use (default: measured)\n"
             "  --reserve-gib X       held back from that budget (default: %.0f)\n"
             "  --force               run every cell, including ones that will not fit\n"
@@ -335,13 +316,12 @@ typedef struct {
     ds4_tokens  *corpus;
     int          eos;
     int          vocab;
-    bool         spec;
 } bench_env;
 
 /* One decode wave: every stream advances by one token per step, which is what
  * the server's decode worker does once its slots are all generating. */
 /* produced_out counts the tokens the streams committed: one per stream and
- * step, plus every accepted draft in speculative mode. */
+ * step. */
 static int measure_decode(const bench_env *env,
                           ds4_session **sessions,
                           int count,
@@ -353,7 +333,6 @@ static int measure_decode(const bench_env *env,
                           int *tokens_out,
                           long *produced_out) {
     ds4_decode_item items[MAX_STREAMS];
-    int accepted[MAX_STREAMS][2], n_accepted[MAX_STREAMS];
     char err[256] = {0};
     double eval_sec = 0.0;
     long produced = 0;
@@ -362,7 +341,7 @@ static int measure_decode(const bench_env *env,
     for (int step = 0; step < steps; step++) {
         for (int i = 0; i < count; i++) {
             ds4_session *s = sessions[i];
-            if (ds4_session_pos(s) + (env->spec ? 2 : 1) >= ds4_session_ctx(s)) {
+            if (ds4_session_pos(s) + 1 >= ds4_session_ctx(s)) {
                 fprintf(stderr, BENCH ": stream %d reached its context limit\n", i);
                 return 1;
             }
@@ -376,20 +355,11 @@ static int measure_decode(const bench_env *env,
             if (tokens_out) tokens_out[step * count + i] = token;
         }
         const double t0 = now_sec();
-        if (env->spec) {
-            if (ds4_sessions_eval_batch_speculative_argmax(items, count, accepted, n_accepted,
-                                                           err, sizeof(err)) != 0) {
-                fprintf(stderr, BENCH ": batched speculative decode failed: %s\n", err);
-                return 1;
-            }
-            for (int i = 0; i < count; i++) produced += n_accepted[i];
-        } else {
-            if (ds4_sessions_eval_batch(items, count, err, sizeof(err)) != 0) {
-                fprintf(stderr, BENCH ": batched decode failed: %s\n", err);
-                return 1;
-            }
-            produced += count;
+        if (ds4_sessions_eval_batch(items, count, err, sizeof(err)) != 0) {
+            fprintf(stderr, BENCH ": batched decode failed: %s\n", err);
+            return 1;
         }
+        produced += count;
         const double elapsed = now_sec() - t0;
         eval_sec += elapsed;
         if (timed && step_ms) step_ms[step] = elapsed * 1e3;
@@ -399,67 +369,6 @@ static int measure_decode(const bench_env *env,
     if (wall_sec_out) *wall_sec_out = now_sec() - wall_t0;
     if (produced_out) *produced_out = produced;
     return 0;
-}
-
-/* Greedy speculation is lossless: the tokens a speculative batch commits
- * must be the ones plain greedy decode picks.  Both sides start from the
- * same prefilled state; the reference advances one token at a time with
- * the batched non-speculative path. */
-static bool verify_spec_matches_plain(const bench_env *env,
-                                      ds4_session **spec,
-                                      ds4_session **reference,
-                                      int count,
-                                      int cycles) {
-    ds4_decode_item items[MAX_STREAMS];
-    int accepted[MAX_STREAMS][2], n_accepted[MAX_STREAMS];
-    char err[256] = {0};
-    int *seq = calloc((size_t)count * (size_t)cycles * 2u, sizeof(int));
-    int len[MAX_STREAMS] = {0};
-    long committed = 0;
-    if (!seq) return false;
-    for (int c = 0; c < cycles; c++) {
-        for (int i = 0; i < count; i++) {
-            items[i].session = spec[i];
-            items[i].token = ds4_session_argmax_excluding(spec[i], env->eos);
-        }
-        if (ds4_sessions_eval_batch_speculative_argmax(items, count, accepted, n_accepted, err, sizeof(err)) != 0) {
-            fprintf(stderr, BENCH ": speculative batch failed: %s\n", err);
-            free(seq);
-            return false;
-        }
-        for (int i = 0; i < count; i++) {
-            for (int k = 0; k < n_accepted[i]; k++) seq[(size_t)i * cycles * 2 + len[i]++] = accepted[i][k];
-            committed += n_accepted[i];
-        }
-    }
-    printf("  spec: %.2f tokens per stream and cycle\n", (double)committed / ((double)count * cycles));
-    /* the reference walks every stream to the same length */
-    int max_len = 0;
-    for (int i = 0; i < count; i++) if (len[i] > max_len) max_len = len[i];
-    bool ok = true;
-    for (int k = 0; k < max_len && ok; k++) {
-        int n = 0;
-        for (int i = 0; i < count; i++) {
-            if (k >= len[i]) continue;
-            const int token = ds4_session_argmax_excluding(reference[i], env->eos);
-            const int want = seq[(size_t)i * cycles * 2 + k];
-            if (token != want) {
-                fprintf(stderr, BENCH ": spec verify failed: stream %d token %d: speculative %d, plain %d\n",
-                        i, k, want, token);
-                ok = false;
-                break;
-            }
-            items[n].session = reference[i];
-            items[n].token = token;
-            n++;
-        }
-        if (ok && n > 0 && ds4_sessions_eval_batch(items, n, err, sizeof(err)) != 0) {
-            fprintf(stderr, BENCH ": reference decode failed: %s\n", err);
-            ok = false;
-        }
-    }
-    free(seq);
-    return ok;
 }
 
 /* Batched decode must pick the same tokens as one-at-a-time decode.  Native
@@ -652,8 +561,7 @@ static void run_cell(const bench_config *cfg,
     const int ab_steps = cfg->candidate_env ? cfg->gen * 2 * cfg->repeat : 0;
     const int decode_budget = cfg->warmup + cfg->gen + ab_steps +
                               (cfg->mixed ? cfg->mixed_steps : 0);
-    /* a speculative cycle can commit two tokens per stream */
-    const int ctx_alloc = prompt_tokens + decode_budget * (cfg->spec ? 2 : 1) + CTX_MARGIN;
+    const int ctx_alloc = prompt_tokens + decode_budget + CTX_MARGIN;
     const int session_count = concurrency + (cfg->mixed ? 1 : 0);
     const int total_sessions = cfg->verify ? session_count * 2 : session_count;
 
@@ -734,11 +642,8 @@ static void run_cell(const bench_config *cfg,
     out->footprint_gib = out->predicted_gib;
 
     if (cfg->verify) {
-        out->verify_ok = cfg->spec
-            ? verify_spec_matches_plain(env, sessions, sessions + session_count, concurrency, cfg->gen)
-            : verify_batch_matches_sequential(env, sessions, sessions + session_count, concurrency, cfg->gen);
-        printf("  verify: %s\n", out->verify_ok ? (cfg->spec ? "speculative == plain greedy" : "batched == sequential")
-                                                : "MISMATCH");
+        out->verify_ok = verify_batch_matches_sequential(env, sessions, sessions + session_count, concurrency, cfg->gen);
+        printf("  verify: %s\n", out->verify_ok ? "batched == sequential" : "MISMATCH");
         out->ran = out->verify_ok;
         free_sessions(sessions, total_sessions);
         return;
@@ -787,10 +692,6 @@ static void run_cell(const bench_config *cfg,
 
     const double produced = (double)produced_tokens;
     out->decode_agg_tps = eval_sec > 0.0 ? produced / eval_sec : 0.0;
-    if (cfg->spec) {
-        printf("  spec: %.2f tokens per stream and cycle\n",
-               produced / ((double)concurrency * (double)cfg->gen));
-    }
     if (cfg->candidate_env) {
         double sec[2] = {0.0, 0.0}, tok[2] = {0.0, 0.0};
         for (int r = 0; r < cfg->repeat; r++) {
@@ -1014,8 +915,6 @@ int main(int argc, char **argv) {
             cfg.mixed_quantum = parse_int_arg(need_arg(&i, argc, argv, arg), arg, 1);
         } else if (!strcmp(arg, "--verify")) {
             cfg.verify = true;
-        } else if (!strcmp(arg, "--spec")) {
-            cfg.spec = true;
         } else if (!strcmp(arg, "--warm-weights")) {
             cfg.warm_weights = true;
         } else if (!strcmp(arg, "--force")) {
@@ -1059,12 +958,12 @@ int main(int argc, char **argv) {
         (cfg.candidate_env ? (int64_t)cfg.gen * 2 * cfg.repeat : 0) +
         (cfg.mixed ? cfg.mixed_steps : 0);
     if (decode_budget > INT_MAX ||
-        decode_budget * (cfg.spec ? 2 : 1) + (max_ctx > 0 ? max_ctx : 1) + CTX_MARGIN > INT_MAX) {
+        decode_budget + (max_ctx > 0 ? max_ctx : 1) + CTX_MARGIN > INT_MAX) {
         fprintf(stderr, BENCH ": requested context and generation budget are too large\n");
         return 2;
     }
     const int max_alloc = (max_ctx > 0 ? max_ctx : 1) +
-                          (int)decode_budget * (cfg.spec ? 2 : 1) + CTX_MARGIN;
+                          (int)decode_budget + CTX_MARGIN;
     ds4_engine_options opt = {
         .model_path = cfg.model_path,
         .backend = DS4_BACKEND_METAL,
@@ -1075,7 +974,6 @@ int main(int argc, char **argv) {
          * shared prefill scratch match what serving actually does. */
         .placement_session_count_hint = max_conc + (cfg.mixed ? 1 : 0),
         .share_session_prefill_workspace = !cfg.private_transients,
-        .glm_mtp = cfg.spec,
     };
     ds4_engine *engine = NULL;
     if (ds4_engine_open(&engine, &opt) != 0) {
@@ -1105,7 +1003,6 @@ int main(int argc, char **argv) {
         .corpus = &corpus,
         .eos = ds4_token_eos(engine),
         .vocab = ds4_engine_vocab_size(engine),
-        .spec = cfg.spec,
     };
 
     cfg.budget_bytes = session_budget_bytes(&cfg);

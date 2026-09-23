@@ -111,13 +111,9 @@ static int check_router(void) {
                         const int id = selected[t * USED + k];
                         CHECK(id >= 0 && id < (int)n);
                         for (unsigned j = 0; j < k; j++) CHECK(id != selected[t * USED + j]);
-#ifdef __APPLE__
                         /* Bitonic selection does not promise CUDA's lower-ID
                          * tie break. Still require the correct top-k scores. */
                         CHECK(fabs((ref[id] + bias[id]) - (ref[best[k]] + bias[best[k]])) < 3e-6);
-#else
-                        CHECK(id == best[k]);
-#endif
                         sum += ref[id];
                     }
                     for (unsigned k = 0; k < USED; k++) {
@@ -134,17 +130,12 @@ static int check_router(void) {
                 CHECK(ds4_gpu_synchronize());
                 const int32_t *scalar_ids = ds4_gpu_tensor_contents(ids);
                 const float *scalar_weights = ds4_gpu_tensor_contents(weights);
-#ifdef __APPLE__
                 for (unsigned k = 0; k < USED; k++) {
                     CHECK(scalar_ids[k] >= 0 && scalar_ids[k] < (int32_t)n);
                     CHECK(probs[first_ids[k]] + bias[first_ids[k]] ==
                           probs[scalar_ids[k]] + bias[scalar_ids[k]]);
                     CHECK(fabsf(first_weights[k] - scalar_weights[k]) < 3e-6f);
                 }
-#else
-                CHECK(!memcmp(first_ids, scalar_ids, sizeof(first_ids)));
-                CHECK(!memcmp(first_weights, scalar_weights, sizeof(first_weights)));
-#endif
             }
         }
     }
@@ -257,7 +248,6 @@ static int check_bf16_linear(void) {
     return 1;
 }
 
-#ifdef __APPLE__
 static int check_hc_scaled(void) {
     enum { WIDTH = 20480, OUT = 24, ROWS = 8192 };
     const size_t weight_bytes = WIDTH * OUT * sizeof(_Float16);
@@ -310,7 +300,6 @@ static int check_hc_scaled(void) {
     return 1;
 }
 
-#endif
 
 static int check_engram(void) {
     enum { D = 5120, ROWS = 5, N = ROWS * 4 * D };
@@ -645,32 +634,9 @@ static int check_attention_output(bool large) {
                         (size_t)col * 2 * low_half / 32 + rank * low_half / 32;
                     double sum = 0;
                     double rounding_bound = 0;
-#ifndef __APPLE__
-                    /* CUDA's established Q8 dot first rounds each activation
-                     * block to signed bytes. TP must keep that same boundary. */
-                    for (uint32_t k = 0; k < low_half; k += 32) {
-                        const float *v = reference_low + (size_t)t * 2 * low_half + rank * low_half + k;
-                        float amax = 0;
-                        for (uint32_t j = 0; j < 32; j++) amax = fmaxf(amax, fabsf(v[j]));
-                        const float scale = amax / 127.0f;
-                        const float inv = scale ? 1.0f / scale : 0;
-                        int dot = 0;
-                        for (uint32_t j = 0; j < 32; j++) {
-                            dot += bw[k / 32].qs[j] * (int)lrintf(v[j] * inv);
-                            /* The fast GPU reciprocal can approach an exact
-                             * half-integer from the other side. Bound only
-                             * those ambiguous bins, not arbitrary dot error. */
-                            const double q = amax ? fabs((double)v[j] * 127.0 / amax) : 0;
-                            if (q - floor(q) == 0.5)
-                                rounding_bound += abs(bw[k / 32].qs[j]) * (double)scale / 128.0;
-                        }
-                        sum += dot * (double)scale / 128.0;
-                    }
-#else
                     for (uint32_t k = 0; k < low_half; k++)
                         sum += bw[k / 32].qs[k % 32] / 128.0 *
                             reference_low[(size_t)t * 2 * low_half + rank * low_half + k];
-#endif
                     if (!isfinite(got[(size_t)t * OUT + col]) ||
                         fabs(got[(size_t)t * OUT + col] - sum) > rounding_bound + 2e-5 * (1 + fabs(sum)))
                         fprintf(stderr, "TP output rank=%u rows=%u row=%u col=%u actual=%.9g oracle=%.9g tie_bound=%.9g\n",
@@ -711,10 +677,6 @@ static int check_indexer_batch(void) {
     const uint64_t packed_bytes = ds4_gpu_dsv41_indexer_packed_bytes(KEYS, ROWS);
     ds4_gpu_tensor *pt = upload(NULL, (size_t)packed_bytes + 4);
     CHECK(qt && kt && wt && st && pt);
-#ifndef __APPLE__
-    ds4_gpu_tensor *reference = upload(NULL, (size_t)KEYS * sizeof(float));
-    CHECK(reference);
-#endif
     float *q = ds4_gpu_tensor_contents(qt), *k = ds4_gpu_tensor_contents(kt);
     float *w = ds4_gpu_tensor_contents(wt), *s = ds4_gpu_tensor_contents(st);
     CHECK(q && k && w && s);
@@ -753,26 +715,6 @@ static int check_indexer_batch(void) {
                         ds4_gpu_tensor_free(qv); ds4_gpu_tensor_free(wv);
                         CHECK(s[(size_t)rows * KEYS] == 12345);
                         CHECK(*packed_guard == 0xabcdef01);
-#ifndef __APPLE__
-                        /* Compare the CUDA warp scorer with the original
-                         * shared-memory reduction, not only a loose oracle. */
-                        ds4_gpu_set_quality(true);
-                        for (uint32_t t = 0; t < rows; t++) {
-                            const uint32_t visible = (start + t + 1u) / ratio;
-                            if (!visible) continue;
-                            ds4_gpu_tensor *qr = ds4_gpu_tensor_view(qt,
-                                (uint64_t)t * HEADS * DIM * 4u, HEADS * DIM * 4u);
-                            ds4_gpu_tensor *wr = ds4_gpu_tensor_view(wt,
-                                (uint64_t)t * HEADS * 4u, HEADS * 4u);
-                            CHECK(qr && wr && ds4_gpu_glm_indexer_score_one_tensor(
-                                reference, qr, wr, kt, visible, HEADS, DIM, 1.0f / 64.0f, false));
-                            CHECK(ds4_gpu_synchronize());
-                            CHECK(!memcmp(s + (size_t)t * KEYS,
-                                ds4_gpu_tensor_contents(reference), visible * sizeof(float)));
-                            ds4_gpu_tensor_free(qr); ds4_gpu_tensor_free(wr);
-                        }
-                        ds4_gpu_set_quality(false);
-#endif
                         double worst = 0;
                         for (uint32_t t = 0; t < rows; t++) {
                             const uint32_t visible = (start + t + 1u) / ratio;
@@ -818,9 +760,6 @@ static int check_indexer_batch(void) {
     CHECK(!ds4_gpu_dsv41_indexer_scores_packed(st, qt, wt, kt, st,
         KEYS, ROWS, 0, 1, ROWS, 0));
     ds4_gpu_tensor_free(pt);
-#ifndef __APPLE__
-    ds4_gpu_tensor_free(reference);
-#endif
     ds4_gpu_tensor_free(st); ds4_gpu_tensor_free(wt);
     ds4_gpu_tensor_free(kt); ds4_gpu_tensor_free(qt);
     fprintf(stderr, "V4.1 causal batched index scores: double-precision oracle PASS\n");
@@ -1001,16 +940,8 @@ static int check_general_topk(void) {
                         const uint32_t id = ids[t * k + i];
                         CHECK(id < width && !seen[id]);
                         seen[id] = true;
-#ifdef __APPLE__
                         /* Metal's bitonic order may permute exactly tied keys. */
                         CHECK(s[t * width + id] == reference[t * width + i].value);
-#else
-                        if (ids[t * k + i] != reference[t * width + i].id) {
-                            fprintf(stderr, "top-k width=%u k=%u pattern=%u row=%u rank=%u: %u vs %u\n",
-                                width, k, pattern, t, i, ids[t * k + i], reference[t * width + i].id);
-                            CHECK(0);
-                        }
-#endif
                     }
                 }
             }
@@ -1172,7 +1103,6 @@ static int check_tp_attention(void) {
             CHECK(ds4_gpu_attention_indexed_mixed_batch_heads_tensor(op, sinks, getpagesize(),
                 rank * H/2 * 4, qp, rt, ct, 0, it, n, start, nr, nr, 0, C, K, 128, ratio, H/2, D));
             CHECK(ds4_gpu_tensor_read(op, 0, part, nq * 2));
-#ifdef __APPLE__
             if (n > 1) {
                 ds4_gpu_set_quality(true); /* Existing eight-head kernel. */
                 CHECK(ds4_gpu_attention_indexed_mixed_batch_heads_tensor(op, sinks, getpagesize(),
@@ -1180,7 +1110,6 @@ static int check_tp_attention(void) {
                 CHECK(!memcmp(part, ds4_gpu_tensor_contents(op), nq * 2));
                 ds4_gpu_set_quality(false);
             }
-#endif
             if (n == 2048 && rank == 0) {
                 const bool controls[] = {true, false, false, true};
                 for (unsigned pass = 0; pass < 4; pass++) {
@@ -1267,13 +1196,11 @@ int main(int argc, char **argv) {
         ds4_gpu_cleanup();
         return ok ? 0 : 1;
     }
-#ifdef __APPLE__
     if (argc == 2 && !strcmp(argv[1], "--hc-scaled")) {
         const int ok = ds4_gpu_init() && check_hc_scaled();
         ds4_gpu_cleanup();
         return ok ? 0 : 1;
     }
-#endif
     if (argc == 2 && !strcmp(argv[1], "--bf16-linear")) {
         const int ok = ds4_gpu_init() && check_bf16_linear();
         ds4_gpu_cleanup();

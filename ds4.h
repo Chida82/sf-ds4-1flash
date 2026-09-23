@@ -129,15 +129,11 @@ typedef struct {
 
 typedef struct {
     const char *model_path;
-    const char *mtp_path;
     const char *vision_path;
     ds4_backend backend;
     int n_threads;
     int context_size;
     uint32_t prefill_chunk;
-    int mtp_draft_tokens;
-    float mtp_margin;
-    float dspark_confidence_threshold;
     const char *directional_steering_file;
     const char *expert_profile_path;
     float directional_steering_attn;
@@ -145,24 +141,14 @@ typedef struct {
     int power_percent;
     uint32_t ssd_streaming_cache_experts;
     uint64_t ssd_streaming_cache_bytes;
-    uint32_t ssd_streaming_full_layers;
     uint32_t ssd_streaming_preload_experts;
     uint64_t simulate_used_memory_bytes;
     bool warm_weights;
     bool quality;
-    bool glm_mtp;
-    bool glm_mtp_timing;
-    bool dspark;
-    bool dspark_strict;
-    bool dspark_exact_sampling;
-    bool dspark_confidence_threshold_set;
-    bool cuda_tensor_parallel;
     bool ssd_streaming;
     bool ssd_streaming_cold;
-    bool ssd_streaming_full_layers_set;
     bool inspect_only;
     /* Multi-GPU placement uses this to price per-layer KV storage. */
-    int placement_ctx_hint;
     /* Number of independently allocated session graphs/caches to reserve. */
     int placement_session_count_hint;
     /* Server batch mode serializes execution and can share prefill scratch. */
@@ -225,8 +211,6 @@ void ds4_engine_close(ds4_engine *e);
 void ds4_engine_summary(ds4_engine *e);
 int ds4_engine_vocab_size(ds4_engine *e);
 uint32_t ds4_engine_prefill_chunk(ds4_engine *e);
-int ds4_engine_power(ds4_engine *e);
-int ds4_engine_set_power(ds4_engine *e, int power_percent);
 const char *ds4_engine_model_name(ds4_engine *e);
 int ds4_engine_layer_count(ds4_engine *e);
 /* Decode gate schedule for the TP transport; see ds4_tp_identity. */
@@ -272,20 +256,11 @@ int ds4_chat_append_multimodal_message(ds4_engine *e,
                                        char *error,
                                        size_t error_cap);
 int ds4_engine_tp_vocab_split(ds4_engine *e);
-bool ds4_engine_glm_layer_payload_bytes(ds4_engine *e,
-                                        uint32_t layer,
-                                        uint32_t full_live,
-                                        uint32_t key_dim,
-                                        uint32_t value_dim,
-                                        uint32_t compact_live,
-                                        uint32_t index_live,
-                                        uint64_t *out);
 /* Stable id for cache compatibility.  0 is the original Flash shape, so old
  * KV files with the previously-zero reserved byte remain Flash-compatible;
  * Pro and later shapes must use nonzero ids. */
 int ds4_engine_model_id(ds4_engine *e);
 /* Qwen3.8 reasoning-effort system instruction for a think mode (NULL when none) */
-const char *ds4_qwen4_reasoning_effort_text(ds4_think_mode mode);
 const char *ds4_backend_name(ds4_backend backend);
 bool ds4_think_mode_enabled(ds4_think_mode mode);
 int ds4_think_mode_level(ds4_think_mode mode);
@@ -346,7 +321,6 @@ void ds4_encode_chat_prompt(
         const char *prompt,
         ds4_think_mode think_mode,
         ds4_tokens *out);
-void ds4_chat_append_max_effort_prefix(ds4_engine *e, ds4_tokens *tokens);
 void ds4_chat_append_think_prefix(ds4_engine *e, ds4_tokens *tokens, ds4_think_mode mode);
 void ds4_chat_append_message(ds4_engine *e, ds4_tokens *tokens, const char *role, const char *content);
 void ds4_chat_append_assistant_prefix(ds4_engine *e, ds4_tokens *tokens, ds4_think_mode think_mode);
@@ -379,7 +353,6 @@ float ds4_session_directional_steering_ffn(ds4_session *s);
 /* Change steering for future evaluation without rebuilding the existing KV
  * state. Live changes are currently limited to non-distributed sessions. */
 int ds4_session_set_directional_steering_ffn(ds4_session *s, float scale);
-bool ds4_session_is_distributed(ds4_session *s);
 void ds4_session_set_progress(ds4_session *s, ds4_session_progress_fn fn, void *ud);
 /* UI-only progress. It may report fine-grained progress inside a prefill chunk;
  * callers must not treat it as a durable KV checkpoint boundary. */
@@ -468,29 +441,8 @@ int ds4_test_sample_logits(const float *logits, uint32_t n_vocab,
 int ds4_test_sampling_probabilities(const float *logits, uint32_t n_vocab,
                                     float temperature, int top_k,
                                     float top_p, float min_p, float *probs);
-int ds4_test_speculative_sample(const float *target_logits,
-                                const float *draft_logits,
-                                uint32_t n_vocab,
-                                float temperature,
-                                int top_k,
-                                float top_p,
-                                float min_p,
-                                uint64_t *rng,
-                                float *target_probs,
-                                float *draft_probs);
-int ds4_test_speculative_delta_sample(const float *target_logits,
-                                      uint32_t n_vocab,
-                                      int draft_token,
-                                      float temperature,
-                                      int top_k,
-                                      float top_p,
-                                      float min_p,
-                                      uint64_t *rng,
-                                      float *target_probs);
 int ds4_test_argmax_excluding_logits(const float *logits, uint32_t n_vocab,
                                      int excluded_id);
-uint64_t ds4_test_mixed_native_count(void);
-uint64_t ds4_test_ds41_batch_count(void);
 #endif
 int ds4_session_top_logprobs(ds4_session *s, ds4_token_score *out, int k);
 int ds4_session_token_logprob(ds4_session *s, int token, ds4_token_score *out);
@@ -511,16 +463,6 @@ typedef struct {
  * sequential fallback. */
 int ds4_sessions_eval_batch(ds4_decode_item *items, int count,
                             char *err, size_t errlen);
-/* One speculative cycle for a batch of sessions (greedy acceptance, Qwen3.8
- * with --mtp): each item feeds its token; a pending draft rides along as a
- * second row and is committed when it is the target's argmax.  accepted[i]
- * lists the tokens committed for item i (the fed token, then the draft) and
- * n_accepted[i] how many; the session's logits then follow its last
- * committed token.  Engines without native batching run one cycle per
- * session in turn. */
-int ds4_sessions_eval_batch_speculative_argmax(ds4_decode_item *items, int count,
-                                               int (*accepted)[2], int *n_accepted,
-                                               char *err, size_t errlen);
 /* Advance one resumed prefill suffix and an independent decode batch as one
  * scheduling step. Unsupported combinations use the ordinary serialized
  * session operations. */
@@ -528,31 +470,6 @@ int ds4_sessions_eval_batch_with_prefill(
         ds4_decode_item *items, int count,
         ds4_session *prefill_session, const ds4_tokens *prefill_prompt,
         char *err, size_t errlen);
-int ds4_session_eval_speculative_argmax(ds4_session *s, int first_token,
-                                        int max_tokens, int eos_token,
-                                        int *accepted, int accepted_cap,
-                                        char *err, size_t errlen);
-int ds4_session_eval_speculative_argmax_ignoring_eos(
-        ds4_session *s, int first_token, int max_tokens, int eos_token,
-        ds4_think_mode think_mode,
-        int *accepted, int accepted_cap, char *err, size_t errlen);
-/* Evaluate one already-sampled target token and speculatively extend it.
- * Positive-temperature DSpark normally commits greedily verified draft
- * tokens; dspark_exact_sampling selects exact stochastic p/q acceptance for
- * DSpark or an internal GLM MTP block. */
-int ds4_session_eval_speculative(ds4_session *s, int first_token,
-                                 int max_tokens, int eos_token,
-                                 float temperature, int top_k,
-                                 float top_p, float min_p, uint64_t *rng,
-                                 int *accepted, int accepted_cap,
-                                 char *err, size_t errlen);
-/* TP worker side of a mirrored speculative-verify block: run its half of the
- * batch verify for KV side effects, then obey the leader's commit frame
- * (keep, or roll back and replay). Only called from ds4_tp_worker_run. */
-int ds4_session_tp_spec_cycle(ds4_session *s, const int *drafts, int draft_n,
-                              char *err, size_t errlen);
-int ds4_session_glm_tp_spec_cycle(ds4_session *s, int token, int limit,
-                                 char *err, size_t errlen);
 void ds4_session_invalidate(ds4_session *s);
 /* Keep the token prefix, restoring recurrent state where possible. Otherwise
  * the checkpoint becomes invalid: sync the retained prefix before eval.
@@ -563,9 +480,6 @@ int ds4_session_ctx(ds4_session *s);
 int ds4_session_prefill_cap(ds4_session *s);
 int ds4_engine_routed_quant_bits(ds4_engine *e);
 bool ds4_engine_has_output_head(ds4_engine *e);
-bool ds4_engine_has_mtp(ds4_engine *e);
-int ds4_engine_mtp_draft_tokens(ds4_engine *e);
-bool ds4_engine_mtp_exact_sampling(ds4_engine *e);
 const ds4_tokens *ds4_session_tokens(ds4_session *s);
 
 /* Low-level graph slice entry points used by distributed inference.  The
@@ -611,9 +525,6 @@ int ds4_session_save_snapshot(ds4_session *s, ds4_session_snapshot *snap, char *
 int ds4_session_load_snapshot(ds4_session *s, const ds4_session_snapshot *snap, char *err, size_t errlen);
 void ds4_session_snapshot_free(ds4_session_snapshot *snap);
 
-uint64_t ds4_session_layer_payload_bytes(ds4_session *s,
-                                         uint32_t layer_start,
-                                         uint32_t layer_end);
 int ds4_session_save_layer_payload(ds4_session *s, FILE *fp,
                                    uint32_t layer_start, uint32_t layer_end,
                                    char *err, size_t errlen);

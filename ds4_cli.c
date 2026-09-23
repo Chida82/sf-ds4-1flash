@@ -185,16 +185,6 @@ static int parse_int(const char *s, const char *opt) {
     return (int)v;
 }
 
-static int parse_nonnegative_int(const char *s, const char *opt) {
-    char *end = NULL;
-    long v = strtol(s, &end, 10);
-    if (s[0] == '\0' || *end != '\0' || v < 0 || v > INT32_MAX) {
-        fprintf(stderr, "ds4: invalid value for %s: %s\n", opt, s);
-        exit(2);
-    }
-    return (int)v;
-}
-
 static uint64_t parse_u64(const char *s, const char *opt) {
     char *end = NULL;
     unsigned long long v = strtoull(s, &end, 10);
@@ -2002,10 +1992,6 @@ static cli_config parse_options(int argc, char **argv) {
             }
             c.engine.ssd_streaming_cache_experts = experts;
             c.engine.ssd_streaming_cache_bytes = bytes;
-        } else if (!strcmp(arg, "--ssd-streaming-full-layers")) {
-            int v = parse_nonnegative_int(need_arg(&i, argc, argv, arg), arg);
-            c.engine.ssd_streaming_full_layers = (uint32_t)v;
-            c.engine.ssd_streaming_full_layers_set = true;
         } else if (!strcmp(arg, "--ssd-streaming-preload-experts")) {
             int v = parse_int(need_arg(&i, argc, argv, arg), arg);
             if (v <= 0) {
@@ -2178,7 +2164,6 @@ int main(int argc, char **argv) {
     cfg.engine.first_token_test = cfg.gen.first_token_test;
     cfg.engine.metal_graph_test = cfg.gen.metal_graph_test;
     cfg.engine.context_size = cfg.gen.ctx_size;
-    cfg.engine.placement_ctx_hint = cfg.gen.ctx_size;
     ds4_engine *engine = NULL;
 /* sf-ablate(cuda): --gpu-vram/--gpu-devices (ds4_gpu_args.c) selected CUDA devices; Metal-only, so the engine opens through ds4_engine_open */
     if (ds4_engine_open(&engine, &cfg.engine) != 0) {

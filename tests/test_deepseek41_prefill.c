@@ -35,20 +35,12 @@ static int check_dispatch(void) {
             g.pos = warm;
             for (size_t i = 0; i < sizeof(remaining) / sizeof(*remaining); i++) {
                 uint32_t expected = cold[i];
-#ifdef __APPLE__
                 if (warm && cache == half && remaining[i] < 1024) expected = 1;
-#endif
                 if (ds41_prefill_count(&g, remaining[i]) != expected)
                     fprintf(stderr, "dispatch cache=%u configured=%u warm=%u remaining=%u expected=%u actual=%u\n",
                         cache, ds4_gpu_stream_expert_cache_configured_count(), warm,
                         remaining[i], expected, ds41_prefill_count(&g, remaining[i]));
                 CHECK(ds41_prefill_count(&g, remaining[i]) == expected);
-                uint32_t small = 0;
-#ifndef __APPLE__
-                if (remaining[i] >= 2 && remaining[i] < 256)
-                    small = remaining[i] < 8 ? remaining[i] : 8;
-#endif
-                CHECK(ds41_short_prefill_count(&g, &weights, remaining[i]) == small);
             }
         }
     }
@@ -56,19 +48,12 @@ static int check_dispatch(void) {
     g.tp_world = 2;
     g.streaming = false;
     for (size_t i = 0; i < sizeof(remaining) / sizeof(*remaining); i++) {
-        uint32_t expected = cold[i], small = 0;
-#ifdef __APPLE__
+        uint32_t expected = cold[i];
         if (remaining[i] >= 32 && remaining[i] < 256) expected = remaining[i];
-#else
-        if (remaining[i] >= 2 && remaining[i] < 256)
-            small = remaining[i] < 8 ? remaining[i] : 8;
-#endif
         CHECK(ds41_prefill_count(&g, remaining[i]) == expected);
-        CHECK(ds41_short_prefill_count(&g, &weights, remaining[i]) == small);
     }
     CHECK(setenv("DS4_METAL_DISABLE_V41_TP_SMALL_PREFILL", "1", 1) == 0);
     CHECK(ds41_prefill_count(&g, 255) == 1);
-    CHECK(ds41_short_prefill_count(&g, &weights, 255) == 0);
     CHECK(unsetenv("DS4_METAL_DISABLE_V41_TP_SMALL_PREFILL") == 0);
     const char *ablations[] = {"DS4_METAL_DISABLE_V41_BATCH_ATTN",
         "DS4_METAL_DISABLE_V41_BATCH_CORE", "DS4_METAL_DISABLE_V41_BATCH_MOE",
@@ -104,7 +89,7 @@ done:
 typedef struct {
     ds4_session *session;
     int target, current, frontier;
-    unsigned callbacks, scalar, batches, short_batches, deferred, displays;
+    unsigned callbacks, scalar, batches, deferred, displays;
     bool partial_checked, final_checked;
     double begin, first_display;
 } prefill_progress;
@@ -131,12 +116,10 @@ static void progress_note(void *ud, const char *event, int current, int total) {
             const int count = current - p->frontier;
             ds41_gpu_graph before = s->ds41_graph;
             before.pos = (uint32_t)p->frontier;
-            const uint32_t small = ds41_short_prefill_count(&before, &s->engine->weights,
-                (uint32_t)(total - p->frontier));
-            assert((uint32_t)count == (small ? small : ds41_prefill_count(&before,
-                (uint32_t)(total - p->frontier))));
+            /* sf-ablate(cuda): the short row-batch prefill was CUDA-only; Metal chunks follow ds41_prefill_count */
+            assert((uint32_t)count == ds41_prefill_count(&before,
+                (uint32_t)(total - p->frontier)));
             if (count == 1) p->scalar++;
-            else if (small) p->short_batches++;
             else p->batches++;
             if (!s->ds41_graph.valid) p->deferred++;
             p->frontier = current;
@@ -274,7 +257,7 @@ static int check_mixed(const char *model, const char *prompt_path,
         const double seconds = now_sec() - p.begin;
         CHECK(p.current == tokens.len && p.final_checked);
         CHECK(!p.batches || (p.displays && p.partial_checked));
-        scalar += p.scalar; batches += p.batches + p.short_batches; deferred += p.deferred;
+        scalar += p.scalar; batches += p.batches; deferred += p.deferred;
         CHECK(state_equal(control, mixed));
         const unsigned callbacks = p.callbacks;
         CHECK(ds4_session_sync(mixed, &tokens, err, sizeof(err)) == 0);
@@ -304,9 +287,9 @@ static int check_mixed(const char *model, const char *prompt_path,
             puts("TP snapshot rebuild, both-rank replay and next decode: PASS");
         }
         ds4_session_snapshot_free(&snap);
-        fprintf(stderr, "mixed start=%d append=%d scalar=%u batches=%u short_batches=%u deferred=%u "
+        fprintf(stderr, "mixed start=%d append=%d scalar=%u batches=%u deferred=%u "
             "display=%u first_display=%.3fs time=%.3fs rate=%.2f: exact state/decode PASS\n",
-            start, appends[i], p.scalar, p.batches, p.short_batches, p.deferred, p.displays,
+            start, appends[i], p.scalar, p.batches, p.deferred, p.displays,
             p.first_display, seconds, appends[i] / seconds);
     }
     CHECK(scalar && batches && deferred);

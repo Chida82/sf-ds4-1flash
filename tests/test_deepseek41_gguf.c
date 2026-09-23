@@ -3,13 +3,10 @@
 #include "../ds4_engram.h"
 #include <assert.h>
 #include <sys/wait.h>
-#ifdef __APPLE__
 #include <mach/mach.h>
 #include <mach/mach_vm.h>
-#endif
 
 static void check_unmapped(const void *ptr, size_t page) {
-#ifdef __APPLE__
     (void)page;
     mach_vm_address_t address = (uintptr_t)ptr;
     mach_vm_size_t size = 0;
@@ -21,11 +18,6 @@ static void check_unmapped(const void *ptr, size_t page) {
     if (object != MACH_PORT_NULL) mach_port_deallocate(mach_task_self(), object);
     assert(result == KERN_INVALID_ADDRESS ||
            (result == KERN_SUCCESS && address > (uintptr_t)ptr));
-#else
-    unsigned char resident;
-    errno = 0;
-    assert(mincore((void *)ptr, page, &resident) == -1 && errno == ENOMEM);
-#endif
 }
 
 static void put32(FILE *fp, uint32_t v) { assert(fwrite(&v, 4, 1, fp) == 1); }

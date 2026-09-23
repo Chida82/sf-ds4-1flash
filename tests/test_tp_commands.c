@@ -199,16 +199,9 @@ int main(void) {
         assert(cmd.type == DS4_TP_FRAME_EVAL && cmd.value == 100+i);
         assert(cmd.limit == 0 && cmd.session_id == 42 && cmd.seq == (uint64_t)2*i);
         ds4_tp_command_free(&cmd);
-        const int limit = 1 + i%2;
-        assert(ds4_tp_send_glm_mtp(&leader, 42, 2*i+1, 200+i, limit));
-        assert(ds4_tp_recv_command(&worker, &cmd, err, sizeof(err)));
-        assert(cmd.type == DS4_TP_FRAME_GLM_MTP && cmd.value == 200+i);
-        assert(cmd.limit == limit && cmd.session_id == 42 && cmd.seq == (uint64_t)2*i+1);
-        ds4_tp_command_free(&cmd);
     }
-    assert(!ds4_tp_send_glm_mtp(&leader, 42, 9, 1, 0));
-    assert(!ds4_tp_send_glm_mtp(&leader, 42, 9, 1, 3));
-    for (uint32_t bad = 0; bad <= 3; bad += 3) {
+    /* sf-ablate(specdec): no drafting leader exists here, so the worker refuses GLM_MTP frames whatever their limit */
+    for (uint32_t bad = 0; bad <= 3; bad++) {
         ds4_tp_eval_command msg = {42, 9, 1, bad};
         assert(tp_send_frame(fd[0], DS4_TP_FRAME_GLM_MTP, &msg, sizeof(msg)));
         assert(!ds4_tp_recv_command(&worker, &cmd, err, sizeof(err)));

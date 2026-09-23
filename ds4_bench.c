@@ -23,14 +23,6 @@
 #include <string.h>
 #include <time.h>
 
-/* CUDA builds resolve these weak symbols through libcudart; other builds
- * remain independent of CUDA headers and libraries. */
-#if defined(__GNUC__) && !defined(__APPLE__)
-#define DS4_BENCH_HAVE_CUDA_PROFILER 1
-extern int cudaProfilerStart(void) __attribute__((weak));
-extern int cudaProfilerStop(void) __attribute__((weak));
-#endif
-
 #define DS4_BENCH_DEFAULT_SNAPSHOT_MAX_BYTES (UINT64_C(1) << 30)
 
 typedef struct {
@@ -51,7 +43,6 @@ typedef struct {
     uint32_t prefill_chunk;
     uint32_t ssd_streaming_cache_experts;
     uint64_t ssd_streaming_cache_bytes;
-    uint32_t ssd_streaming_full_layers;
     uint32_t ssd_streaming_preload_experts;
     uint64_t simulate_used_memory_bytes;
     double step_mul;
@@ -62,8 +53,6 @@ typedef struct {
     bool quality;
     bool ssd_streaming;
     bool ssd_streaming_cold;
-    bool ssd_streaming_full_layers_set;
-    bool cuda_tensor_parallel;
     bool show_output;
     bool teacher_forced_decode;
 } bench_config;
@@ -299,10 +288,6 @@ static bench_config parse_options(int argc, char **argv) {
             }
             c.ssd_streaming_cache_experts = experts;
             c.ssd_streaming_cache_bytes = bytes;
-        } else if (!strcmp(arg, "--ssd-streaming-full-layers")) {
-            int v = parse_nonnegative_int(need_arg(&i, argc, argv, arg), arg);
-            c.ssd_streaming_full_layers = (uint32_t)v;
-            c.ssd_streaming_full_layers_set = true;
         } else if (!strcmp(arg, "--ssd-streaming-preload-experts")) {
             int v = parse_int(need_arg(&i, argc, argv, arg), arg);
             if (v <= 0) {
@@ -571,12 +556,6 @@ static void close_engine(ds4_engine *engine, ds4_tp *tp) {
 int main(int argc, char **argv) {
     bench_config cfg = parse_options(argc, argv);
 
-    /* Hint the packer at the largest ctx this bench run will exercise
-     * so per-layer KV bytes are priced for the real session size, not
-     * a stale 4096 default. Single-tier and CPU paths ignore this. */
-    int placement_ctx_hint = cfg.ctx_max;
-    if (cfg.ctx_alloc > placement_ctx_hint) placement_ctx_hint = cfg.ctx_alloc;
-
 /* sf-ablate(cuda): --gpu-vram/--gpu-devices (ds4_gpu_args.c) selected CUDA devices; Metal-only, so the engine opens through ds4_engine_open */
 
     ds4_engine_options opt = {
@@ -587,16 +566,13 @@ int main(int argc, char **argv) {
         .prefill_chunk = cfg.prefill_chunk,
         .ssd_streaming_cache_experts = cfg.ssd_streaming_cache_experts,
         .ssd_streaming_cache_bytes = cfg.ssd_streaming_cache_bytes,
-        .ssd_streaming_full_layers = cfg.ssd_streaming_full_layers,
         .ssd_streaming_preload_experts = cfg.ssd_streaming_preload_experts,
         .simulate_used_memory_bytes = cfg.simulate_used_memory_bytes,
         .power_percent = cfg.power_percent,
         .warm_weights = cfg.warm_weights,
         .quality = cfg.quality,
-        .cuda_tensor_parallel = cfg.cuda_tensor_parallel,
         .ssd_streaming = cfg.ssd_streaming,
         .ssd_streaming_cold = cfg.ssd_streaming_cold,
-        .ssd_streaming_full_layers_set = cfg.ssd_streaming_full_layers_set,
         .expert_profile_path = cfg.expert_profile_path,
         .distributed = cfg.dist,
         .tp = cfg.tp,
@@ -718,17 +694,8 @@ int main(int argc, char **argv) {
         };
 
         const double prefill_t0 = bench_now_sec();
-#if defined(DS4_BENCH_HAVE_CUDA_PROFILER)
-        const bool cuda_profile_prefill =
-            getenv("DS4_BENCH_CUDA_PROFILE_PREFILL") != NULL &&
-            cudaProfilerStart && cudaProfilerStop;
-        if (cuda_profile_prefill) (void)cudaProfilerStart();
-#endif
         const int prefill_rc =
             ds4_session_sync(session, &prefix, err, sizeof(err));
-#if defined(DS4_BENCH_HAVE_CUDA_PROFILER)
-        if (cuda_profile_prefill) (void)cudaProfilerStop();
-#endif
         if (prefill_rc != 0) {
             fprintf(stderr, "ds4-bench: prefill to %d failed: %s\n", frontier, err);
             rc = 1;
@@ -782,21 +749,6 @@ int main(int argc, char **argv) {
             ? malloc((size_t)cfg.gen_tokens * sizeof(gen_token_buf[0]))
             : NULL;
         int gen_token_count = 0;
-        int cuda_profile_start = -1;
-        int cuda_profile_tokens = 0;
-        const char *cuda_profile_range =
-            getenv("DS4_BENCH_CUDA_PROFILE_RANGE");
-        if (cuda_profile_range &&
-            (sscanf(cuda_profile_range, "%d:%d",
-                    &cuda_profile_start, &cuda_profile_tokens) != 2 ||
-             cuda_profile_start < 0 || cuda_profile_tokens <= 0)) {
-            fprintf(stderr,
-                    "ds4-bench: invalid DS4_BENCH_CUDA_PROFILE_RANGE=%s "
-                    "(expected START_TOKEN:TOKEN_COUNT)\n",
-                    cuda_profile_range);
-            cuda_profile_start = -1;
-            cuda_profile_tokens = 0;
-        }
         bool generation_stop = false;
         while (gen_done < cfg.gen_tokens && !generation_stop) {
             if (ds4_session_pos(session) + 1 >= ds4_session_ctx(session)) {
@@ -813,11 +765,6 @@ int main(int argc, char **argv) {
                 break;
             }
             const double token_t0 = bench_now_sec();
-#if defined(DS4_BENCH_HAVE_CUDA_PROFILER)
-            if (gen_done == cuda_profile_start && cudaProfilerStart) {
-                (void)cudaProfilerStart();
-            }
-#endif
             int toks[17];
             int ntok = 1;
             {
@@ -828,14 +775,6 @@ int main(int argc, char **argv) {
                     break;
                 }
             }
-#if defined(DS4_BENCH_HAVE_CUDA_PROFILER)
-            if (cuda_profile_start >= 0 &&
-                gen_done + ntok >=
-                    cuda_profile_start + cuda_profile_tokens &&
-                cudaProfilerStop) {
-                (void)cudaProfilerStop();
-            }
-#endif
             const double token_t1 = bench_now_sec();
             int cycle_tokens = 0;
             for (int j = 0; j < ntok && gen_done < cfg.gen_tokens; j++) {

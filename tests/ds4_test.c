@@ -309,7 +309,6 @@ static test_float_compare_stats test_compare_float_bits(
     return stats;
 }
 
-#if defined(__APPLE__)
 static const uint32_t test_copy_f32_patterns[] = {
     0x00000000u, 0x80000000u, /* signed zero */
     0x7f800000u, 0xff800000u, /* infinities */
@@ -335,7 +334,6 @@ static void test_fill_copy_f32_patterns(void *dst, uint32_t n, uint32_t salt) {
         memcpy(bytes + (uint64_t)i * sizeof(bits), &bits, sizeof(bits));
     }
 }
-#endif
 
 static uint16_t test_float_to_f16(float f) {
     union {
@@ -951,7 +949,6 @@ static void test_metal_q8_0_decode_pair_exact(void) {
     test_metal_q8_0_decode_pair_exact_case(19, 77, 23, 131);
 }
 
-#if defined(__APPLE__)
 static void test_metal_f16_compressor_pair_state_store_exact_case(
         uint32_t width,
         uint32_t ratio,
@@ -2738,9 +2735,7 @@ static void test_metal_contiguous_f32_f16_roundtrip_exact(void) {
     TEST_ASSERT(roundtrip_mismatch == 0);
     TEST_ASSERT(roundtrip_guard_mismatch == 0);
 }
-#endif
 
-#if defined(__APPLE__)
 static void test_metal_gathered_kv_stage_exact(void) {
     const uint32_t head_dim = 512;
     const uint32_t raw_cap = 7;
@@ -3590,9 +3585,7 @@ static void test_metal_zero_prefix_prefill_mask_cache_exact(void) {
     test_metal_zero_prefix_prefill_mask_cache_exact_kind(
         TEST_METAL_PREFILL_MASK_CACHE_RATIO128, 47);
 }
-#endif
 
-#if defined(__APPLE__)
 static void test_metal_hc_split_weighted_sum_norm_batch_exact(void) {
     /* Compare the batched HC+RMSNorm fusion against the exact two-dispatch
      * sequence used by the reference path at DS4's production dimensions. */
@@ -4671,7 +4664,6 @@ static void test_metal_router_weights_batch_exact(void) {
     ds4_gpu_tensor_free(logits);
     free(model_raw);
 }
-#endif
 
 static void test_metal_kernel_group(void) {
     test_metal_f16_matvec_fast_nr0_4();
@@ -4680,7 +4672,6 @@ static void test_metal_kernel_group(void) {
     test_metal_pack_slot_rows_f32();
     test_metal_store_raw_kv_batch_wrap();
     test_metal_q8_0_decode_pair_exact();
-#if defined(__APPLE__)
     test_metal_f16_compressor_pair_state_store_exact();
     test_metal_compressor_ape_add_exact();
     test_metal_compressor_ratio4_pack_exact();
@@ -4697,7 +4688,6 @@ static void test_metal_kernel_group(void) {
     test_metal_hc_rms_scale_project_f16_exact();
     test_metal_router_simd_finalize_exact();
     test_metal_router_weights_batch_exact();
-#endif
 }
 
 static void test_metal_short_prefill_ratio4(void) {

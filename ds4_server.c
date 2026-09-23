@@ -9034,7 +9034,6 @@ struct server_slot {
     bool decode_in_flight;
     bool decode_done;
     int decode_token;
-    bool decode_speculative;
     int decode_accepted[2];
     int decode_accepted_count;
     int decode_rc;
@@ -12025,7 +12024,7 @@ static bool server_cancel_pending_decode_locked(server *s, server_slot *slot) {
 }
 
 static int server_eval_tokens(server *s, server_slot *slot, int token,
-                              bool speculative, int accepted[2], int *n_accepted,
+                              int accepted[2], int *n_accepted,
                               char *err, size_t errlen) {
     *n_accepted = 0;
     if (!s || !slot) return 1;
@@ -12057,7 +12056,6 @@ static int server_eval_tokens(server *s, server_slot *slot, int token,
         return 1;
     }
     slot->decode_token = token;
-    slot->decode_speculative = speculative;
     slot->decode_accepted_count = 0;
     slot->decode_rc = 1;
     slot->decode_err[0] = '\0';
@@ -12099,7 +12097,7 @@ static int server_eval_tokens(server *s, server_slot *slot, int token,
 static int server_eval_token(server *s, server_slot *slot, int token,
                              char *err, size_t errlen) {
     int accepted[2], count;
-    return server_eval_tokens(s, slot, token, false, accepted, &count, err, errlen);
+    return server_eval_tokens(s, slot, token, accepted, &count, err, errlen);
 }
 
 static long server_decode_coalesce_us(void) {
@@ -12156,21 +12154,18 @@ static void *decode_worker_main(void *arg) {
         }
         if (s->model_stopping && s->decode_pending == 0) break;
 
-        int count = 0, plain_count = 0;
-        /* Keep sampled/exact requests out of the greedy speculative group. */
-        for (int speculative = 0; speculative <= 1; speculative++) {
-            for (int i = 0; i < s->slot_count; i++) {
-                server_slot *slot = &s->slots[i];
-                if (!slot->decode_pending || slot->decode_speculative != (bool)speculative) continue;
-                slot->decode_pending = false;
-                slot->decode_in_flight = true;
-                s->decode_pending--;
-                members[count] = slot;
-                items[count].session = slot->session;
-                items[count].token = slot->decode_token;
-                count++;
-            }
-            if (!speculative) plain_count = count;
+        int count = 0;
+        /* sf-ablate(specdec): no drafter in this child, so every pending decode joins one plain batch */
+        for (int i = 0; i < s->slot_count; i++) {
+            server_slot *slot = &s->slots[i];
+            if (!slot->decode_pending) continue;
+            slot->decode_pending = false;
+            slot->decode_in_flight = true;
+            s->decode_pending--;
+            members[count] = slot;
+            items[count].session = slot->session;
+            items[count].token = slot->decode_token;
+            count++;
         }
         if (count == 0) continue;
         s->model_busy = true;
@@ -12179,15 +12174,11 @@ static void *decode_worker_main(void *arg) {
         char batch_err[160] = {0};
         const double batch_t0 = log_batches ? now_sec() : 0.0;
         pthread_mutex_lock(&s->inference_mu);
-        int rc = plain_count ? ds4_sessions_eval_batch(items, plain_count,
-                                         batch_err, sizeof(batch_err)) : 0;
-        for (int i = 0; i < plain_count; i++) {
+        int rc = ds4_sessions_eval_batch(items, count, batch_err, sizeof(batch_err));
+        for (int i = 0; i < count; i++) {
             accepted[i][0] = items[i].token;
             n_accepted[i] = 1;
         }
-        if (rc == 0 && count > plain_count)
-            rc = ds4_sessions_eval_batch_speculative_argmax(items + plain_count, count - plain_count,
-                    accepted + plain_count, n_accepted + plain_count, batch_err, sizeof(batch_err));
         if (rc != 0)
             for (int i = 0; i < count; i++) ds4_session_invalidate(items[i].session);
         pthread_mutex_unlock(&s->inference_mu);
@@ -12796,7 +12787,6 @@ decode_again:
         }
         const bool greedy_tool_syntax = !thinking.inside && in_tool_call &&
             !dsml_decode_state_uses_payload_sampling(dsml_state);
-        const float payload_temperature = temperature;
         if (greedy_tool_syntax) {
             temperature = 0.0f;
         }
@@ -12836,7 +12826,6 @@ decode_again:
             break;
         }
         bool stop_decode = false;
-        bool resample = false;
         bool text_stop = false;
         int kept = 0;
         for (int ti = 0; ti < ntok && completion < max_tokens; ti++) {
@@ -13044,29 +13033,15 @@ decode_again:
                 stop_decode = true;
                 break;
             }
-            const bool next_greedy = !thinking.inside &&
-                dsml_decode_state_is_tool(dsml_tracker.decode) &&
-                !dsml_decode_state_uses_payload_sampling(dsml_tracker.decode);
-            /* Opportunistic drafts are greedy under both parser modes.
-             * Only exact sampling changes their acceptance distribution. */
-            if (ti + 1 < ntok && ds4_engine_mtp_exact_sampling(s->engine) &&
-                payload_temperature > 0.0f &&
-                next_greedy != greedy_tool_syntax) {
-                resample = true;
-                break;
-            }
         }
         if (kept < ntok && !text_stop && !job_cancelled(j) && strcmp(finish, "error")) {
-            /* Logits after a rewind belong to the discarded suffix. Re-eval
-             * the last kept token before sampling under a different mode. */
-            int pos = block_start + kept - (resample ? 1 : 0);
-            if (server_generation_rewind(s, slot, &j->req, pos, err, sizeof(err)) != 0 ||
-                (resample && server_eval_token(s, slot, toks[kept - 1], err, sizeof(err)) != 0)) {
+            int pos = block_start + kept;
+            if (server_generation_rewind(s, slot, &j->req, pos, err, sizeof(err)) != 0) {
                 finish = "error";
                 stop_decode = true;
             } else {
-                trace_event(s, trace_id, "speculative boundary: kept=%d discarded=%d resample=%d",
-                            kept, ntok - kept, resample);
+                trace_event(s, trace_id, "decode boundary: kept=%d discarded=%d",
+                            kept, ntok - kept);
             }
         }
         if (stop_decode) break;
@@ -14459,10 +14434,6 @@ static server_config parse_options(int argc, char **argv) {
             }
             c.engine.ssd_streaming_cache_experts = experts;
             c.engine.ssd_streaming_cache_bytes = bytes;
-        } else if (!strcmp(arg, "--ssd-streaming-full-layers")) {
-            int v = parse_nonneg_int_arg(need_arg(&i, argc, argv, arg), arg);
-            c.engine.ssd_streaming_full_layers = (uint32_t)v;
-            c.engine.ssd_streaming_full_layers_set = true;
         } else if (!strcmp(arg, "--ssd-streaming-preload-experts")) {
             int v = parse_int_arg(need_arg(&i, argc, argv, arg), arg);
             if (v <= 0) {
@@ -14588,7 +14559,6 @@ int main(int argc, char **argv) {
     }
 
     cfg.engine.context_size = cfg.ctx_size;
-    cfg.engine.placement_ctx_hint = cfg.ctx_size;
     cfg.engine.placement_session_count_hint =
         cfg.batched_sessions > 0 ? cfg.batched_sessions : 1;
     cfg.engine.share_session_prefill_workspace = cfg.batched_sessions > 0;
