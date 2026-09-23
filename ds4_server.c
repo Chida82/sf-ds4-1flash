@@ -669,9 +669,7 @@ typedef enum {
 
 typedef enum {
     SERVER_MODEL_SYNTAX_DEEPSEEK,
-    SERVER_MODEL_SYNTAX_GLM,
     SERVER_MODEL_SYNTAX_DEEPSEEK41,
-    SERVER_MODEL_SYNTAX_QWEN,
 } server_model_syntax;
 
 #define DS41_TOOL_CALLS_START "<｜DSML｜ calls>"

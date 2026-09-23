@@ -2,6 +2,7 @@
  *
  * Run with:
  *   DS4_TEST_MODEL=/path/to/model.gguf make test-metal-session-batch
+ *   (add DS4_TEST_SSD_STREAMING=1 when the model does not fit in memory)
  * Optional steering coverage:
  *   DS4_TEST_DIRECTIONAL_STEERING_FILE=/path/to/direction.f32
  *   DS4_TEST_DIRECTIONAL_STEERING_FFN=1
@@ -444,6 +445,8 @@ int main(void) {
         .context_size = context_size,
         .placement_session_count_hint = session_count,
         .share_session_prefill_workspace = true,
+        /* V4.1 Q2 does not fit a 128 GB Mac resident: DS4_TEST_SSD_STREAMING=1 streams it. */
+        .ssd_streaming = getenv("DS4_TEST_SSD_STREAMING") != NULL,
     };
     const char *steering_file =
         getenv("DS4_TEST_DIRECTIONAL_STEERING_FILE");

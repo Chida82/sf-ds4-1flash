@@ -32584,11 +32584,6 @@ static void ds4_session_dspark_capture_note_checkpoint(ds4_session *s) {
 }
 
 /* sf-ablate(glm): constant-false -- this binary holds DS4_SHAPE_FLASH41 only. */
-static bool ds4_session_is_glm(const ds4_session *s) {
-    (void)s;
-    return false;
-}
-
 #ifndef DS4_NO_GPU
 static void ds4_session_glm_reset_dense_cache(ds4_session *s) {
     if (!s) return;
@@ -36455,16 +36450,6 @@ int ds4_engine_model_id(ds4_engine *e) {
     return (int)DS4_MODEL_VARIANT;
 }
 
-bool ds4_engine_is_glm53(ds4_engine *e) {
-    (void)e;
-    return false;
-}
-
-bool ds4_engine_is_qwen4(ds4_engine *e) {
-    (void)e;
-    return false;
-}
-
 /* The official template's default effort is xhigh; medium adds no text. */
 const char *ds4_qwen4_reasoning_effort_text(ds4_think_mode mode) {
     switch (mode) {
@@ -37077,11 +37062,6 @@ void ds4_engine_tp_unbind(ds4_engine *e) {
 #endif
 }
 
-bool ds4_engine_is_glm_dsa(ds4_engine *e) {
-    (void)e;
-    return false; /* sf-ablate(glm): GLM-DSA is not a shape this binary can hold. */
-}
-
 bool ds4_engine_is_deepseek41(ds4_engine *e) {
     (void)e;
     return true; /* sf: this binary loads DeepSeek V4.1 Flash and nothing else. */
@@ -37408,9 +37388,7 @@ float ds4_session_directional_steering_ffn(ds4_session *s) {
     if (!s || !s->engine) return 0.0f;
 #ifndef DS4_NO_GPU
     if (!ds4_session_is_cpu(s)) {
-        return ds4_session_is_glm(s) ?
-            s->glm_graph.directional_steering_ffn_scale :
-            s->graph.directional_steering_ffn_scale;
+        return s->graph.directional_steering_ffn_scale;
     }
 #endif
     return s->engine->directional_steering_ffn_scale;
