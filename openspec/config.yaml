@@ -1,0 +1,90 @@
+schema: spec-driven
+
+# Project context (optional)
+# This is shown to AI when creating artifacts.
+# Add your tech stack, conventions, style guides, domain knowledge, etc.
+# Example:
+#   context: |
+#     Tech stack: TypeScript, React, Node.js
+#     We use conventional commits
+#     Domain: e-commerce platform
+context: |
+  Analyzed upstream ds4 PRs and the verdict on their commits live in
+  docs/upstream-prs.md. Proposals, designs and tasks consult it; a change that
+  adopts or rejects a commit updates that commit's line in the same branch.
+  Provenance of borrowed code goes in the registry and in commit messages, never
+  in source comments.
+  Change names use <NN>-<kebab-name>, numbered in execution order.
+  Output never changes: greedy tokens stay identical, and bits too where a
+  change claims it. No KV-cache or activation quantization, and no prefill
+  schedule or kernel that alters bits.
+  Speed is measured only on the owner's M5 Max 128 GB, with --ssd-streaming
+  and a fixed 75 GiB dynamic expert cache (--ssd-streaming-cache-experts is a
+  GiB total from which the prefill headroom is taken first). A change with no
+  measurable effect there is recorded in the registry as history, not ported.
+  Quality runs (parity, eval) use --ssd-streaming with the largest admitted
+  cache.
+  The metric is that of the phase a change touches: decode tokens/s, or the
+  time to first token for prefill. The end-to-end time of the typical mix
+  (prompts of 1-10K tokens, answers of 200-2000 tokens), computed from the
+  measured phases, must not get worse; guard scenarios (prompts above 10K,
+  answers above 2000) that get much worse are reviewed case by case.
+  Every performance change ends with
+  SF_PARITY_FLAGS=--ssd-streaming tools/parity-check.sh sf-ds4-1flash passing
+  (from the StarForge checkout) and an A/B run of speed-bench/ab_bench.py
+  against the start commit of the current segment of
+  speed-bench/perf-record.md, and appends the printed row there. If the
+  current segment has no start row yet, the change first writes it with an
+  A/A run on a worktree of the start commit. Steps inside a change are judged
+  with the same harness against the previous step. Under 800 runtime lines
+  (tests and benches do not count), a step is kept when the pooled bootstrap
+  95% CI of its target metric, over all its A/B runs against the previous
+  step, lies above zero, however small the gain, and no other throughput
+  metric's pooled CI lies wholly below zero. Above 800 runtime lines it needs
+  at least +1.5% on the target metric. A neutral step (CI across zero,
+  nothing below) is kept only if it deletes more lines than it adds; no step
+  is kept as neutral because a later step builds on it. A step that adds a
+  tool and claims no speed needs bitwise output and no metric below zero. An
+  inconclusive run is repeated once with a longer budget on the kinds that
+  decide it.
+  A prefill step that changes kernels and whose predicted end-to-end effect
+  is below the harness's resolution is decided on GPU section time instead
+  (DS4_METAL_V41_STAGE_PROFILE): ABBA pairs on the harness's prompts, taking
+  per chunk the time of the sections the step targets divided by the time of
+  the sections it does not touch, pooled with a bootstrap 95% CI. It is kept
+  when that ratio's CI lies below one at a shape the step targets and above
+  one at none; the harness then runs once as the guard. A step that changes
+  scheduling or overlap between kernels stays on the harness. The first
+  change that needs the sections mode adds it to ab_bench.py as its first,
+  tool step.
+  One upstream PR owns each code zone; open PRs are ported as soon as they
+  pass the threshold. Code a change ports or writes gets two reviews: a short
+  one after each step, fixing only what would make the step wrong or break a
+  child rule, and a final pass over the whole region it touched, checked
+  against AGENT.md and the surrounding idiom, deleting what the change made
+  dead and recovering missed speed, with output identical. The refinements
+  are measured like a step. A change lands on main as one signed commit that
+  includes its refinements. Work never happens on main: main is only read,
+  through a worktree.
+
+# Per-artifact rules (optional)
+# Add custom rules for specific artifacts.
+# Example:
+#   rules:
+#     proposal:
+#       - Keep proposals under 500 words
+#       - Always include a "Non-goals" section
+#     tasks:
+#       - Break tasks into chunks of max 2 hours
+
+# Per-operation guidance (optional)
+# Add advisory guidance for how apply and archive work should be conducted.
+# This is separate from artifact rules above.
+# Example:
+#   operations:
+#     apply:
+#       guidance:
+#         - Keep test summaries concise
+#     archive:
+#       guidance:
+#         - Summarize the archive outcome before finishing
