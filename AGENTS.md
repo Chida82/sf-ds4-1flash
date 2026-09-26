@@ -247,6 +247,16 @@ lists dead functions; (2) `make test`; (3) model-backed tests; (4) parity
 oracle. Do not ablate in a first pass: the CPU forward code in `ds4.c`;
 kernels shared with removed models (only clearly-tagged kernels go).
 
+A constant fold inside a mixed `&&`/`||` expression must keep the original
+grouping. The deep prune replaced the CUDA-only `shared_queued` in
+`ds41_moe_partial` with `false` in place and lost the parentheses:
+`shared_here && !shared_queued && (gate || up || ...)` became
+`(shared_here && !false && gate) || up || ...`. One box was unaffected, but
+the TP rank that does not own the shared expert ran four wasted kernels per
+layer, and no test reaches that path. Check each fold site with a diff
+against upstream at the site, not by reading the child alone; fixed in
+`15-shared-expert-guard`.
+
 ## Syncing with upstream
 
 Done from the orchestrator (`SYNC.md` there), summarized:

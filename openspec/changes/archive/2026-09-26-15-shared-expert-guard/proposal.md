@@ -35,12 +35,16 @@ our own prune, and it restores upstream's text.
 - Restore upstream's grouping without the removed flag:
   `if (shared_here && (!gate || !up || !swiglu || !bf16 || !down)) return false;`.
 - Audit of the other constant folds the prune left:
-  - `grep '!false\|false &&\|&& false\|| true'` over the sources finds two more
-    sites, `ds4.c` ~17161 (`fuse_attn_out_hc`) and ~17625
-    (`fuse_shared_down_hc`);
-  - both are plain `&&` chains, where `!false &&` changes nothing;
-  - delete those two `!false &&` lines in the same commit. They are artefacts of
-    our fold, and each site already differs from upstream.
+  - a grep for `true`/`false` operands of `&&`/`||` and for `!false`/`!true`
+    over `ds4*.c` and `ds4_metal.m` finds three more sites, all in the kept
+    `metal_graph_*` layer-slice path:
+    - `ds4.c` ~17161 (`fuse_attn_out_hc`, `!false &&`);
+    - ~17625 (`fuse_shared_down_hc`, `!false &&`);
+    - ~22665 (`split_commands`, `|| false`, where upstream has
+      `|| imatrix != NULL`);
+  - each is a plain `&&` or `||` chain, where the constant changes nothing;
+  - delete the three constants in the same commit. They are artefacts of our
+    fold, and each site already differs from upstream.
 - Record the lesson in the child's `AGENTS.md`, under the prune notes: a
   constant fold inside a mixed `&&`/`||` expression must keep the original
   grouping; check with a diff against upstream at the site.
@@ -55,8 +59,8 @@ None.
 
 ## Impact
 
-- `ds4.c`: `ds41_moe_partial` (one expression), and two lines in the kept
-  `metal_graph_*` layer-slice path.
+- `ds4.c`: `ds41_moe_partial` (one expression), and three constants in the
+  kept `metal_graph_*` layer-slice path.
 - One paragraph in `AGENTS.md`.
 - Gate:
   - `make test` (read the suite names, not the exit code);

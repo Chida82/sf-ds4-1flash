@@ -17158,7 +17158,6 @@ static bool metal_graph_encode_decode_layer_phase(
     ds4_gpu_tensor *tp_attn_a = NULL;   /* rank partials consumed directly */
     ds4_gpu_tensor *tp_attn_b = NULL;   /* by the HC expand */
     const bool fuse_attn_out_hc =
-        !false &&
         g->tp_world < 2 &&
         layer->attn_output_a->type == DS4_TENSOR_Q8_0 &&
         layer->attn_output_b->type == DS4_TENSOR_Q8_0 &&
@@ -17622,7 +17621,6 @@ static bool metal_graph_encode_decode_layer_phase(
     const bool fuse_shared_down_hc =
         g->tp_world < 2 &&
         layer->ffn_down_shexp->type == DS4_TENSOR_Q8_0 &&
-        !false &&
         !keep_ffn_out &&
         !metal_graph_use_reference_shared_down_hc();
     /* Real TP split slices the shared expert by intermediate lanes, which
@@ -22662,7 +22660,7 @@ static bool metal_graph_prefill_layer_major(
     const bool callback_split = display_progress != NULL && n_tokens >= 32;
     const bool split_commands = g->ssd_streaming ||
                                 split_profile || throttle || callback_split ||
-                                n_tokens > 2048 || false;
+                                n_tokens > 2048;
     const bool profile =
         glm_graph_env_present("DS4_ROCM_GRAPH_PREFILL_PROFILE",
                               "DS4_METAL_GRAPH_PREFILL_PROFILE") ||
@@ -24084,8 +24082,14 @@ static bool ds41_moe_partial(ds41_gpu_graph *g, const ds4_model *m,
             DS4_N_EXPERT, DS4_N_EXPERT_USED, DS4_EXPERT_WEIGHT_SCALE, 0, 0, true, false,
             g->route_logits)) return false;
     const bool shared_here = !shared_owner || g->tp_rank == (il & 1u);
-    if ((shared_here && !false && !ds41_matmul(g->shared_gate, m, l->ffn_gate_shexp, g->norm, true)) || !ds41_matmul(g->shared_up, m, l->ffn_up_shexp, g->norm, true) || !ds4_gpu_swiglu_tensor(g->shared_mid, g->shared_gate, g->shared_up,
-                              DS4_N_FF_EXP, DS4_SWIGLU_CLAMP_EXP, 1.0f) || !ds41_bf16(g->shared_mid, DS4_N_FF_EXP) || !ds41_matmul(g->shared, m, l->ffn_down_shexp, g->shared_mid, true)) return false;
+    /* sf-ablate(cuda): shared_queued and ds4_gpu_dsv41_shared_start are CUDA-only; on Metal the shared expert always runs here */
+    if (shared_here &&
+        (!ds41_matmul(g->shared_gate, m, l->ffn_gate_shexp, g->norm, true) ||
+        !ds41_matmul(g->shared_up, m, l->ffn_up_shexp, g->norm, true) ||
+        !ds4_gpu_swiglu_tensor(g->shared_mid, g->shared_gate, g->shared_up,
+                              DS4_N_FF_EXP, DS4_SWIGLU_CLAMP_EXP, 1.0f) ||
+        !ds41_bf16(g->shared_mid, DS4_N_FF_EXP) ||
+        !ds41_matmul(g->shared, m, l->ffn_down_shexp, g->shared_mid, true))) return false;
     bool routed_ok;
     routed_ok = ds4_gpu_routed_moe_one_tensor(routed, g->gate, g->up, g->mid, g->experts,
             m->map, m->size, l->ffn_gate_exps->abs_offset, l->ffn_up_exps->abs_offset,
