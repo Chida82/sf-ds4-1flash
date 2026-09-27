@@ -337,10 +337,12 @@ static void print_bench_specific(FILE *fp, const help_colors *c) {
     opt(fp, c, "--ctx-alloc N", "Allocated context. Default: ctx-max + gen-tokens + 1");
     opt(fp, c, "--step-mul F", "Multiplicative step. Default: 1");
     opt(fp, c, "--step-incr N", "Linear step when --step-mul is 1. Default: 2048");
+    opt(fp, c, "--frontiers N,N,...", "Exact context frontiers, strictly increasing; overrides the range and steps.");
     opt(fp, c, "--gen-tokens N", "Greedy decode tokens per frontier. 0 for pure prefill. Default: 128");
     opt(fp, c, "--teacher-forced-decode", "Decode the following prompt tokens instead of each predicted argmax.");
     opt(fp, c, "--csv FILE", "Write CSV there instead of stdout.");
-    opt(fp, c, "--dump-frontier-logits-dir DIR", "Write one full-logit JSON file per frontier.");
+    opt(fp, c, "--dump-frontier-logits-dir DIR", "Write one full-logit JSON file per frontier, and one after its decode.");
+    opt(fp, c, "--cache-stats", "Metal: print the memory and streaming expert-cache report after each frontier.");
     fputc('\n', fp);
 }
 

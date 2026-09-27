@@ -30364,6 +30364,14 @@ int ds4_engine_layer_count(ds4_engine *e) {
     return (int)DS4_N_LAYER;
 }
 
+void ds4_engine_memory_report(ds4_engine *e, const char *label) {
+#ifndef DS4_NO_GPU
+    if (e && e->backend != DS4_BACKEND_CPU) ds4_gpu_print_memory_report(label);
+#else
+    (void)e; (void)label;
+#endif
+}
+
 uint32_t ds4_engine_layer_compress_ratio(ds4_engine *e, uint32_t layer) {
     (void)e;
     if (layer >= DS4_N_LAYER) return 0;

@@ -55,9 +55,15 @@ Metal SSD static weights locked 9.37 GiB; pageable 0.00 GiB
 V4.1 static context buffers 8073.52 MiB (ctx=32768), Engram disk-only
 ```
 
-and generation lands around 6 t/s. That is the expected shape, not a
-regression: the throughput is bounded by SSD reads, so compare a change against
-a run in the *same* mode, never a resident number against a streaming one.
+and steady decode runs at 17-18 tokens/s (bench `gen_steady_tps`, 2K-32K of
+context, 128 tokens), with the first token after a layer sweep costing about
+2 s and the CLI's `generation:` figure, which includes it, reading 12-17
+tokens/s depending on the prompt. Performance is measured only with a fixed
+expert cache, `--ssd-streaming-cache-experts 82GB` (74.88 GiB dynamic, 8078
+slots on this machine), by `speed-bench/ab_bench.py`; the conditions behind
+each figure are in `speed-bench/perf-record.md`. The throughput is bounded by
+SSD reads, so compare a change against a run in the *same* mode, never a
+resident number against a streaming one.
 
 Pass it everywhere:
 

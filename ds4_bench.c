@@ -24,6 +24,7 @@
 #include <time.h>
 
 #define DS4_BENCH_DEFAULT_SNAPSHOT_MAX_BYTES (UINT64_C(1) << 30)
+#define DS4_BENCH_MAX_FRONTIERS 64
 
 typedef struct {
     const char *model_path;
@@ -38,6 +39,8 @@ typedef struct {
     int ctx_max;
     int ctx_alloc;
     int step_incr;
+    int frontiers[DS4_BENCH_MAX_FRONTIERS];
+    int n_frontiers;
     int gen_tokens;
     int power_percent;
     uint32_t prefill_chunk;
@@ -54,6 +57,7 @@ typedef struct {
     bool ssd_streaming;
     bool ssd_streaming_cold;
     bool show_output;
+    bool cache_stats;
     bool teacher_forced_decode;
 } bench_config;
 
@@ -181,6 +185,30 @@ static char *read_file(const char *path) {
     fclose(fp);
     buf[n] = '\0';
     return buf;
+}
+
+/* --frontiers: a strictly increasing list of positive context frontiers. */
+static void parse_frontiers(const char *s, bench_config *c) {
+    c->n_frontiers = 0;
+    const char *p = s;
+    for (;;) {
+        char *end = NULL;
+        errno = 0;
+        const long v = strtol(p, &end, 10);
+        if (end == p || errno != 0 || v <= 0 || v > INT_MAX ||
+            (c->n_frontiers > 0 && v <= c->frontiers[c->n_frontiers - 1]) ||
+            c->n_frontiers == DS4_BENCH_MAX_FRONTIERS ||
+            (*end != ',' && *end != '\0')) {
+            fprintf(stderr,
+                    "ds4-bench: --frontiers must be at most %d strictly increasing positive "
+                    "token counts, e.g. 2048,8192: %s\n",
+                    DS4_BENCH_MAX_FRONTIERS, s);
+            exit(2);
+        }
+        c->frontiers[c->n_frontiers++] = (int)v;
+        if (*end == '\0') return;
+        p = end + 1;
+    }
 }
 
 static bench_config parse_options(int argc, char **argv) {
@@ -312,8 +340,12 @@ static bench_config parse_options(int argc, char **argv) {
             }
         } else if (!strcmp(arg, "--warm-weights")) {
             c.warm_weights = true;
+        } else if (!strcmp(arg, "--frontiers")) {
+            parse_frontiers(need_arg(&i, argc, argv, arg), &c);
         } else if (!strcmp(arg, "--show-output")) {
             c.show_output = true;
+        } else if (!strcmp(arg, "--cache-stats")) {
+            c.cache_stats = true;
         } else if (!strcmp(arg, "--teacher-forced-decode")) {
             c.teacher_forced_decode = true;
         } else {
@@ -326,6 +358,10 @@ static bench_config parse_options(int argc, char **argv) {
     if (!!c.prompt_path == !!c.chat_prompt_path) {
         fprintf(stderr, "ds4-bench: specify exactly one of --prompt-file or --chat-prompt-file\n");
         exit(2);
+    }
+    if (c.n_frontiers > 0) {
+        c.ctx_start = c.frontiers[0];
+        c.ctx_max = c.frontiers[c.n_frontiers - 1];
     }
     if (c.ctx_start > c.ctx_max) {
         fprintf(stderr, "ds4-bench: --ctx-start must be <= --ctx-max\n");
@@ -395,7 +431,8 @@ static int write_frontier_logits_json(
         ds4_engine         *engine,
         ds4_session        *session,
         int                 frontier,
-        int                 previous) {
+        int                 previous,
+        const char         *suffix) {
     if (!cfg->dump_frontier_logits_dir) return 0;
 
     const int vocab = ds4_engine_vocab_size(engine);
@@ -413,9 +450,10 @@ static int write_frontier_logits_json(
     char path[PATH_MAX];
     const int n = snprintf(path,
                            sizeof(path),
-                           "%s/frontier_%06d.logits.json",
+                           "%s/frontier_%06d%s.logits.json",
                            cfg->dump_frontier_logits_dir,
-                           frontier);
+                           frontier,
+                           suffix);
     if (n <= 0 || (size_t)n >= sizeof(path)) {
         fprintf(stderr, "ds4-bench: frontier logits path is too long\n");
         free(logits);
@@ -466,6 +504,9 @@ static int write_frontier_logits_json(
 
 static int next_frontier(const bench_config *c, int cur) {
     if (cur >= c->ctx_max) return c->ctx_max;
+    for (int i = 0; i < c->n_frontiers; i++) {
+        if (c->frontiers[i] > cur) return c->frontiers[i];
+    }
     int next;
     if (c->step_mul == 1.0) {
         if (cur > INT_MAX - c->step_incr) next = c->ctx_max;
@@ -708,7 +749,7 @@ int main(int argc, char **argv) {
                     prefill_t0 * 1e3, prefill_t1 * 1e3);
         const int prefill_tokens = frontier - previous;
 
-        if (write_frontier_logits_json(&cfg, engine, session, frontier, previous) != 0) {
+        if (write_frontier_logits_json(&cfg, engine, session, frontier, previous, "") != 0) {
             rc = 1;
             break;
         }
@@ -807,8 +848,17 @@ int main(int argc, char **argv) {
             fprintf(stderr, "\"\n");
             fflush(stderr);
         }
+        if (cfg.show_output) {
+            fprintf(stderr, "ds4-bench: gen[ctx=%d] token ids:", frontier);
+            for (int i = 0; i < gen_token_count; i++) fprintf(stderr, " %d", gen_token_buf[i]);
+            fputc('\n', stderr);
+        }
         free(gen_token_buf);
         if (rc != 0) break;
+        if (write_frontier_logits_json(&cfg, engine, session, frontier, previous, ".decode") != 0) {
+            rc = 1;
+            break;
+        }
 
         if (!need_restore_after_generation) {
             /* Nothing later depends on the frontier state. */
@@ -841,6 +891,11 @@ int main(int argc, char **argv) {
                 gen_steady_sec > 0.0 ? (double)gen_steady_tokens / gen_steady_sec : 0.0,
                 (unsigned long long)(have_snapshot ? snap.len : 0));
         fflush(out);
+        if (cfg.cache_stats) {
+            char label[64];
+            snprintf(label, sizeof(label), "after frontier %d", frontier);
+            ds4_engine_memory_report(engine, label);
+        }
 
         previous = frontier;
         if (frontier >= cfg.ctx_max) break;

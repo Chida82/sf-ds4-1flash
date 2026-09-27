@@ -213,6 +213,8 @@ int ds4_engine_vocab_size(ds4_engine *e);
 uint32_t ds4_engine_prefill_chunk(ds4_engine *e);
 const char *ds4_engine_model_name(ds4_engine *e);
 int ds4_engine_layer_count(ds4_engine *e);
+/* GPU memory and streaming expert-cache counters on stderr; nothing on CPU. */
+void ds4_engine_memory_report(ds4_engine *e, const char *label);
 /* Decode gate schedule for the TP transport; see ds4_tp_identity. */
 enum { DS4_TP_GATE_MASK_WORDS = 3 };
 void ds4_engine_tp_gate_schedule(ds4_engine *e,

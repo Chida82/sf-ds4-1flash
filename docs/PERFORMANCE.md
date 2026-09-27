@@ -27,6 +27,17 @@ prefill throughput, generation throughput, and snapshot size when available.
 The prompt is the cleaned public-domain *I Promessi Sposi* text in
 [speed-bench](../speed-bench/README.md).
 
+## Before/after verdicts
+
+A change is judged with `speed-bench/ab_bench.py`, which runs two build trees
+on the same GGUF under SSD streaming with a fixed expert cache, in A B B A
+quads gated on identical tokens, and prints per metric the median gain with a
+bootstrap 95% interval. The kinds, the cache rules, the exit statuses and the
+measured noise floor are in the "A/B harness" section of
+[speed-bench/README.md](../speed-bench/README.md); where the work started and
+where it has got to is in [speed-bench/perf-record.md](../speed-bench/perf-record.md).
+A single sweep with the command above is a picture of one build, not a verdict.
+
 ## Recorded baselines
 
 None yet. The sweeps that used to fill this section were
