@@ -1,4 +1,5 @@
 #include "ds4.h"
+#include "ds4_ssd.h"
 
 #include <errno.h>
 #include <limits.h>
@@ -34,6 +35,9 @@ typedef struct {
     int warmup;
     int measured;
     bool include_selection;
+    bool ssd_streaming;
+    uint32_t ssd_streaming_cache_experts;
+    uint64_t ssd_streaming_cache_bytes;
     decode_schedule control;
     decode_schedule candidate;
 } bench_config;
@@ -53,7 +57,9 @@ static void usage(FILE *fp, const char *argv0) {
             "  --candidate-first N    candidate first split (default: 1; control with --candidate-env)\n"
             "  --candidate-second N   candidate second split (default: 32; control with --candidate-env)\n"
             "  --candidate-env NAME   unset NAME for control, set NAME=1 for candidate\n"
-            "  --include-selection    include one non-EOS argmax in each timed step\n",
+            "  --include-selection    include one non-EOS argmax in each timed step\n"
+            "  --ssd-streaming        stream the weights from SSD (needed on a 128 GB Mac)\n"
+            "  --ssd-streaming-cache-experts N|NGB  SSD streaming expert-cache target\n",
             argv0);
 }
 
@@ -111,6 +117,16 @@ static bench_config parse_options(int argc, char **argv) {
             cfg.candidate_env = need_arg(&i, argc, argv, arg);
         } else if (!strcmp(arg, "--include-selection")) {
             cfg.include_selection = true;
+        } else if (!strcmp(arg, "--ssd-streaming")) {
+            cfg.ssd_streaming = true;
+        } else if (!strcmp(arg, "--ssd-streaming-cache-experts")) {
+            if (!ds4_parse_streaming_cache_experts_arg(need_arg(&i, argc, argv, arg),
+                                                       &cfg.ssd_streaming_cache_experts,
+                                                       &cfg.ssd_streaming_cache_bytes)) {
+                fprintf(stderr,
+                        "metal-decode-schedule-bench: --ssd-streaming-cache-experts must be a positive count or <number>GB\n");
+                exit(2);
+            }
         } else if (!strcmp(arg, "--prefix-tokens")) {
             cfg.prefix_tokens =
                 parse_int_arg(need_arg(&i, argc, argv, arg), arg, 1);
@@ -372,6 +388,9 @@ int main(int argc, char **argv) {
         .backend = DS4_BACKEND_METAL,
         .context_size = cfg.ctx,
         .power_percent = 100,
+        .ssd_streaming = cfg.ssd_streaming,
+        .ssd_streaming_cache_experts = cfg.ssd_streaming_cache_experts,
+        .ssd_streaming_cache_bytes = cfg.ssd_streaming_cache_bytes,
         .warm_weights = true,
     };
     ds4_engine *engine = NULL;

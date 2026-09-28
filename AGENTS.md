@@ -55,8 +55,9 @@ Metal SSD static weights locked 9.37 GiB; pageable 0.00 GiB
 V4.1 static context buffers 8073.52 MiB (ctx=32768), Engram disk-only
 ```
 
-and steady decode runs at 17-18 tokens/s (bench `gen_steady_tps`, 2K-32K of
-context, 128 tokens), with the first token after a layer sweep costing about
+and steady decode runs at about 20 tokens/s (harness `decode 2048` and
+`decode 8192`, 256 tokens; 17-18 before the layer queue of
+`30-decode-layer-queue`), with the first token after a layer sweep costing about
 2 s and the CLI's `generation:` figure, which includes it, reading 12-17
 tokens/s depending on the prompt. Performance is measured only with a fixed
 expert cache, `--ssd-streaming-cache-experts 82GB` (74.88 GiB dynamic, 8078

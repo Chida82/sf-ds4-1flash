@@ -24521,8 +24521,16 @@ static DS4_MAYBE_UNUSED bool ds41_graph_step(ds41_gpu_graph *g, const ds4_model 
      * layer mapped, using the same admitted reserve as layer-major prefill. */
     const bool layer_resident = g->streaming && g->quality;
     if (layer_resident && !ds4_gpu_end_commands()) ok = false;
-    const bool queue_layers = g->tp_world == 2 &&
-        !getenv("DS4_METAL_DISABLE_V41_TP_DECODE_QUEUE");
+    /* The token's command buffers stay queued and drain only where the graph
+     * needs it (layer 13, the last layer); draining after every layer costs 40
+     * CPU<->GPU round trips per token. Unfused quality kernels remap per layer
+     * and keep the drain. DS4_METAL_DISABLE_V41_DECODE_QUEUE restores the
+     * per-layer drain on a single box. */
+    const bool queue_layers = !layer_resident &&
+        !getenv(g->tp_world == 2 ? "DS4_METAL_DISABLE_V41_TP_DECODE_QUEUE"
+                                 : "DS4_METAL_DISABLE_V41_DECODE_QUEUE");
+    const bool flush_layers = queue_layers && g->tp_world == 1 &&
+        !getenv("DS4_METAL_DISABLE_V41_DECODE_FLUSH");
     for (uint32_t il = 0; ok && il < DS4_N_LAYER; il++) {
         const ds4_layer_weights *l = &w->layer[il];
         if (layer_resident)
@@ -24539,6 +24547,9 @@ static DS4_MAYBE_UNUSED bool ds41_graph_step(ds41_gpu_graph *g, const ds4_model 
          * 14, and before publishing the completed token to the CPU. */
         const bool drain = !queue_layers || il == 13 || il + 1u == DS4_N_LAYER;
         if (drain && !ds4_gpu_end_commands()) ok = false;
+        /* Commit the queued layer without waiting, so the GPU starts it while
+         * the CPU encodes the next one. TP keeps its poll-gated packaging. */
+        if (ok && !drain && flush_layers && !ds4_gpu_flush_commands()) ok = false;
         if (g->tp_world == 2 && ds4_gpu_tp_failed()) ok = false;
         if (!ok) fprintf(stderr, "ds4: V4.1 layer %u failed at position %u\n", il, g->pos);
         if (ok && drain && !layer_resident && il + 1u < DS4_N_LAYER)

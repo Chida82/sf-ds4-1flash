@@ -141,3 +141,21 @@ by `30-decode-layer-queue`.
 
 | step | date | B commit | model | valid pairs | correctness | decode 2048 | decode 8192 | ttft 2500 | ttft 3500 | ttft 5000 | ttft 7500 | ttft 10000 | append +300 | append +1500 | guard ttft 16896 | guard decode 2500 | e2e |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| start (A/A) | 2026-09-28 | 7dea5e3 | DeepSeek-V4.1-Flash-Q2.gguf | 6 | PASS | 17.5 (+1.0%) | 18.1 (-1.1%) | 42.5 (+0.9%) |  | 68.7 (-0.5%) |  |  |  |  |  | 18.6 (-1.6%) | 107.9 (+0.1%) |
+| 30 decode layer queue | 2026-09-28 | 7dea5e3 + S1 | DeepSeek-V4.1-Flash-Q2.gguf | 6 | PASS (bitwise) | 20.1 (+13.1%) | 20.0 (+13.3%) | 39.7 (+8.4%) |  | 65.8 (+8.7%) |  |  |  |  |  | 21.1 (+15.1%) | 99.9 (+8.8%) |
+
+`30-decode-layer-queue` keeps one step, #1041's `bd6f912` (queue the decode
+layers on one box, commit each without waiting). Its 95% intervals: decode
+2048 +12.0..+14.2%, decode 8192 +11.9..+14.7%, ttft 2500 +7.7..+9.2%, ttft
+5000 +8.0..+9.4%, all clear of the A/A row. The same-engine schedule bench
+agrees: 19.90 -> 23.06 t/s (+15.9%), 273 logit rows bit-identical. The
+variant from #1073 (`2a281b0` + `29ce271`: flush every second layer, second
+Engram table, no layer-13 drain) measured against it at decode 2048 -3.5%,
+decode 8192 -2.0% (one valid pair), ttft 2500 -0.9%, ttft 5000 -0.6%, guard
+-0.8%, and was reverted.
+
+The first run after a `--quality --ssd-streaming` CLI run took 780-810 s
+instead of about 75 s, twice out of two: that run maps whole layers and
+leaves the page cache full. The warm-up absorbs it, but it spends the budget
+and the invocation ends inconclusive. Keep `--quality` runs out of the chain
+before a harness invocation.

@@ -182,14 +182,35 @@ Build the balanced, same-engine Metal decode comparison with:
 make metal-decode-schedule-bench
 ./speed-bench/metal_decode_schedule_bench \
   -m deepseek-v4.1-flash.gguf \
+  --ssd-streaming --ssd-streaming-cache-experts 82GB \
   --include-selection
 ```
+
+`--ssd-streaming` and `--ssd-streaming-cache-experts N|NGB` mean what they
+mean for the other binaries; on a 128 GB Mac the first is required.
 
 The harness prefills two sessions and alternates both variant order and
 variant-to-session assignment. It aborts unless every full-vocabulary logit
 row is bit-identical and, with `--include-selection`, both variants select the
 same non-EOS token. Use `--candidate-env NAME` to measure a rollback control,
 or `--help` to compare explicit split schedules.
+
+Single-box decode queues its layers and commits each without waiting (the
+token drains at layer 13 and before the logits). Two switches restore the old
+schedule: `DS4_METAL_DISABLE_V41_DECODE_QUEUE=1` drains after every layer,
+`DS4_METAL_DISABLE_V41_DECODE_FLUSH=1` keeps the queue but commits only at the
+drains. To measure the queue against the per-layer drain on the same engine:
+
+```
+./speed-bench/metal_decode_schedule_bench \
+  -m deepseek-v4.1-flash.gguf \
+  --ssd-streaming --ssd-streaming-cache-experts 82GB \
+  --candidate-env DS4_METAL_DISABLE_V41_DECODE_QUEUE \
+  --include-selection --tokens 256
+```
+
+Here the candidate is the rollback: on the M5 Max control 23.06 t/s,
+candidate 19.90 t/s (2026-09-28).
 
 To compare the default pre-M5 ratio-4 compressor pack/transpose fusion with the
 legacy decode path, including token selection, use:
