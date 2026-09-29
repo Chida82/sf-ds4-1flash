@@ -107,11 +107,22 @@ values in the script (the start commit's figures) on both sides, and the
 summary names it.
 
 `--env KEY=VALUE` sets a variable for both builds (inherited `DS4_*` variables
-are dropped). `--bench-arg=ARG` appends ARG to both builds' bench command and
+are dropped); `--b-env KEY=VALUE` sets one for B only, on top of `--env`, so a
+switch is measured on one tree (`--a . --b . --b-env NAME=1`).
+`--bench-arg=ARG` appends ARG to both builds' bench command and
 `--b-bench-arg=ARG` to B's only (repeatable; write the `=` form, since ARG
-starts with `--`). A summary made with bench arguments prints no record row.
-`-m` selects another GGUF; the default is this checkout's
+starts with `--`). A summary made with bench arguments or `--b-env` prints no
+record row. `-m` selects another GGUF; the default is this checkout's
 `deepseek-v4.1-flash.gguf`, resolved to an absolute path for both trees.
+
+The expert read path is diagnosed outside the harness:
+`DS4_METAL_STREAMING_EXPERT_TIMING_SUMMARY=1` with the bench's `--cache-stats`
+prints, with each memory report, the expert timing (`sync` is the wait at the
+per-layer selected-id readback, not the loads) and a `streaming pread pool`
+line: dispatches, tasks and workers per dispatch, `qd_avg` (task time over
+wall time, the concurrency the pool sustains), `pool_gbps` and `task_gbps`.
+Its counters are cumulative, so subtract a short run from a long one at the
+same frontier to isolate decode (`perf-record.md`, Read path).
 
 Exit status: 0 correct, with a verdict; 1 tokens or bits differ, or a run
 failed; 2 refused or aborted (usage, tree, preflight, cache window, the GPU

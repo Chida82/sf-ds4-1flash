@@ -78,7 +78,7 @@ the chunk's wall minus that sum.
 
 | Shape | Wall | Where the time goes |
 |---|---|---|
-| decode token at 8K (hit rate 0.932, 16 misses of 240 lookups) | 56 ms (17.7 t/s) | expert path 44 ms = 78%: waiting for missing experts' loads (`sync`) 38.0, bind 4.3, readahead 1.8, buffer prepare 0.2; the rest 12 ms is attention, Engram rows and host work. GPU busy 62% of the frontier (sweep included) |
+| decode token at 8K (hit rate 0.932, 16 misses of 240 lookups) | 56 ms (17.7 t/s) | expert path 44 ms = 78%: `sync` 38.0 (the GPU finishing the layer up to the router before the selected ids are read back; not the loads, see Read path below), bind 4.3, readahead 1.8, buffer prepare 0.2; the rest 12 ms is attention, Engram rows and host work. GPU busy 62% of the frontier (sweep included) |
 | decode token at 2K (hit rate 0.868, 32 misses) | 58 ms (17.3 t/s) | the same path with twice the misses; the probe run itself read 5.1 t/s because `DS4_METAL_CB_TIMES` waits on every command buffer, so its split is not reported: never combine that probe with a timing |
 | token-major prefill tail (904 tokens of `cold-5000`, hit rate 0.948) | 58 ms per token | expert path 43 ms = 74%: sync 35.1, bind 4.3, buffer prepare 2.2, readahead 1.8. A tail runs at the decode rate |
 | first tokens after a wide sweep (16 tokens of `cold-10000`) | first 2.2 s, then 87 ms | per-layer hit rate 0.33-0.54 (mean 0.51): a wide sweep leaves the decode cache half cold, and the first token pays sync 131 ms and buffer prepare 109 ms per layer sweep-equivalent. After a token-major tail the first token costs 60-85 ms |
@@ -90,9 +90,11 @@ Per-layer hit rate at 8K: 0.897 (layer 39) to 0.957, the last layers lowest;
 at 2K: 0.824 (layer 0) to 0.886, the first layers lowest. Reads are page
 cache warm: a miss's `pread` averages 0.54-0.68 ms for 9.49 MiB.
 
-What the start gates read: `50-ssd-miss-overlap` targets the 38 ms of
-`sync` per decode token, three quarters of the token; `70-decode-glue-fusions`
-targets the remaining 12 ms; `60-prefill-sweeps` the 6-8 s outside the
+What the start gates read (corrected by `40`'s Read path below): the 38 ms of
+`sync` per decode token are GPU work, the domain of `70-decode-glue-fusions`
+and of the per-layer readback round trip; the missing experts' reads and
+buffer preparation are about 4 ms of a token, the most `40` and
+`50-ssd-miss-overlap` can recover; `60-prefill-sweeps` the 6-8 s outside the
 stages of a sweep, the tail policy (a 904-token tail costs 53 s against 20 s
 for one more sweep) and the half-cold cache a wide sweep leaves behind.
 
@@ -103,12 +105,40 @@ token-major plus the 2000 decoded) over 40 MoE layers, 696960 lookups,
 empty cache by `speed-bench/expert_cache_sim.py`: LRU 12869 misses, Belady
 11088 (every distinct pair once: with foresight the working set fits), the
 run itself 15386 (hit rate 0.978). The current policy misses 20% more than
-LRU and 39% more than the optimum: 1.5 misses per token out of 5.3. At about
-2.4 ms of `sync` per miss that is 3.5 ms of a 57 ms token, so a perfect
-policy is worth at most about 6% of decode and an LRU about 4%. Not opened as
+LRU and 39% more than the optimum: 1.5 misses per token out of 5.3. A miss
+costs about 1 ms of host time (pread 0.5, buffer preparation 0.5; `sync` does
+not grow with misses, see Read path), so a perfect policy is worth about
+1.5 ms of a 52 ms token, 3% of decode, and an LRU about 2%. Not opened as
 a change by this one: it is a candidate (`45-expert-cache-policy`, small,
 bitwise by construction) to weigh after `50-ssd-miss-overlap` has changed
 what a miss costs.
+
+## Read path (2026-09-29, `40-ssd-expert-reads` S0)
+
+`main` at `5410123` plus #570's pool counters, bench runs with
+`DS4_METAL_STREAMING_EXPERT_TIMING_SUMMARY=1 --cache-stats`, same streaming
+configuration as the harness. Decode figures are the difference between a
+256-token and a 16-token run at the same frontier, so the prefill, its seed
+misses and the first token drop out.
+
+| Shape | Per token | Where the time goes |
+|---|---|---|
+| decode at 2K (240 tokens, 4.4 misses per token, hit rate 0.982) | 51.8 ms (19.3 t/s) | `sync` 38.9 ms; pread 2.1 ms (4.0 dispatches of 0.51 ms, 41 MiB); buffer preparation 2.0 ms; the rest about 9 ms of encoding and bind |
+| decode at 8K (256 tokens with the first, 2.4 misses per token) | 48.9 ms (20.5 t/s steady) | `sync` about 39 ms once the first token's 2 s is taken out; pread 1.9 ms (4.2 dispatches of 0.46 ms) |
+| token-major tail of `cold-5000` (904 tokens plus 16 decoded, 4.2 misses per token) | about 50 ms | `sync` 42.8 ms; pread 2.2 ms; buffer preparation 2.0 ms |
+
+The pool runs at `qd_avg` 2.2-2.4 with 3.3 tasks per dispatch and
+`workers_avg` 3.3, so the 9-thread limit never binds in decode; it moves
+19-24 GB/s (`pool_gbps`) and 9-10 GB/s per task, page cache included.
+
+`sync` is the wait at the per-layer selected-id readback
+(`ds4_gpu_routed_moe_one_tensor`: `end_commands` or the shared-event wait,
+then `tensor_read` of the ids), timed before any load starts. It is the GPU
+finishing the layer's queued work up to the router, and it does not grow
+with misses: 38.9 ms at 4.4 misses per token, about 39 ms at 2.4. Situation
+0 had called it the wait for the missing experts' loads; the loads are the
+pread and buffer preparation after it, about 4 ms a token (8%). That bounds
+what read-path tuning can recover in decode and in token-major tails.
 
 ## Adding a row
 
@@ -143,6 +173,7 @@ by `30-decode-layer-queue`.
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
 | start (A/A) | 2026-09-28 | 7dea5e3 | DeepSeek-V4.1-Flash-Q2.gguf | 6 | PASS | 17.5 (+1.0%) | 18.1 (-1.1%) | 42.5 (+0.9%) |  | 68.7 (-0.5%) |  |  |  |  |  | 18.6 (-1.6%) | 107.9 (+0.1%) |
 | 30 decode layer queue | 2026-09-28 | 7dea5e3 + S1 | DeepSeek-V4.1-Flash-Q2.gguf | 6 | PASS (bitwise) | 20.1 (+13.1%) | 20.0 (+13.3%) | 39.7 (+8.4%) |  | 65.8 (+8.7%) |  |  |  |  |  | 21.1 (+15.1%) | 99.9 (+8.8%) |
+| 40 SSD expert reads | 2026-09-29 | 5410123 + 40 | DeepSeek-V4.1-Flash-Q2.gguf | 6 | PASS (bitwise) | 21.6 (+30.5%) | 20.2 (+13.4%) | 38.6 (+12.5%) |  | 64.5 (+12.2%) |  |  |  |  |  | 20.6 (+15.9%) | 97.0 (+14.8%) |
 
 `30-decode-layer-queue` keeps one step, #1041's `bd6f912` (queue the decode
 layers on one box, commit each without waiting). Its 95% intervals: decode
@@ -159,3 +190,23 @@ instead of about 75 s, twice out of two: that run maps whole layers and
 leaves the page cache full. The warm-up absorbs it, but it spends the budget
 and the invocation ends inconclusive. Keep `--quality` runs out of the chain
 before a harness invocation.
+
+`40-ssd-expert-reads` (row above, against the same start, so it carries `30`
+too) measured every step and setting with `ab_bench.py`, D3 shape (`decode`,
+`append`, `cold-5000`, guard `guard-decode`, `--bitwise`, 2700 s), sweeps on one
+tree with `--b-env`. Correctness steps: #570's pool counters against `main`,
+and #1125 against them, both bitwise with no headline interval below zero;
+#1125 costs the first token after a sweep about 110 ms (first token 2048
+-5.8%). Settings, pooled over the invocations named:
+
+| Setting (B) against A | Invocations | decode 8192 | append +300 | ttft 5000 | Verdict |
+|---|---|---|---|---|---|
+| read-ahead off | 1 | -0.1% | +0.0% | -0.2% | dropped (all three at or below zero) |
+| pread split 4 against 1 | 2 | -0.5% (-0.80..+1.10) | +0.90% (+0.20..+2.42) | +0.76% (+0.42..+2.24) | kept, default 4 |
+| pread split 8 against 4 | 1 | -1.0% (-1.4..-0.5) | +0.3% | +0.6% | dropped (decode wholly below) |
+| pread threads 18 against 9, at split 4 | 2 | -0.60% (-2.33..+1.02) | +0.35% | +0.66% (+0.44..+1.37) | kept, default 18 (append +1500 +1.27%) |
+| split 4 + threads 18 against the S2 tree | 3 pooled with split 4 | +0.30% | +0.85% (+0.25..+2.42) | +0.54% | the step kept |
+| slab residency set on | 2 | -0.37% (-0.84..-0.10) | -0.12% | +1.87% (+1.21..+4.84) | kept by the owner as an exception: first token 2048 +82.6%, 8192 +34.8%, e2e +0.9% |
+
+Not measured, by design D7 after the Read path: slabs off and slab size (no
+read-time term), `F_NOCACHE` (gives up the page cache the reads use).

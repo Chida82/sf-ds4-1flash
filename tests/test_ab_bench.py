@@ -163,6 +163,14 @@ class Environment(unittest.TestCase):
         with self.assertRaises(ab.Stop):
             ab.child_env(['NOVALUE'])
 
+    def test_b_env_reaches_only_b(self):
+        args = ab.parse_args(['--a', '.', '--b', '.', '--kinds', 'decode', '--env', 'X=1',
+                              '--b-env', 'DS4_METAL_DISABLE_STREAMING_EXPERT_READAHEAD=1'])
+        envs = ab.build_envs(args)
+        self.assertNotIn('DS4_METAL_DISABLE_STREAMING_EXPERT_READAHEAD', envs['A'])
+        self.assertEqual(envs['B']['DS4_METAL_DISABLE_STREAMING_EXPERT_READAHEAD'], '1')
+        self.assertEqual((envs['A']['X'], envs['B']['X']), ('1', '1'))
+
 
 class Mactop(unittest.TestCase):
     SAMPLE = {'timestamp': '2026-09-27T10:00:00+00:00', 'thermal_state': 'Nominal',

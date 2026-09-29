@@ -2,9 +2,12 @@
 
 ## Why
 
-Per the code model, expert miss service is the largest term of a streaming
-decode token, and of every token-major prefill step. [inferred; `20`'s
-baseline decomposition confirms or corrects it]
+`20` read the 38 ms of `sync` in a 56 ms decode token as the wait for
+missing experts' loads. S0 of this change measured it again: `sync` is GPU
+work and does not grow with misses; the reads and buffer preparation are
+about 4 ms of a 52 ms token (`speed-bench/perf-record.md`, Read path). The
+change keeps its correctness fixes and the knobs that can reach those 4 ms
+or the per-submission cost inside `sync` (design D7).
 
 - Each missing expert costs about 9.5 MiB of `pread`, issued by a 9-thread
   pool with one task per expert tensor (`ds4_metal.m` ~12226, ~12493).
@@ -18,10 +21,15 @@ Three things are missing:
   what bandwidth the pool reaches. So it cannot tell a latency-bound read
   path from a bandwidth-bound one, and every later I/O decision depends on
   that.
-- **Robust loading into a full cache.** A fixed cache is always full. #952
-  `a2e2ea53` fixes four failure modes on that path: the service thread
-  waiting on GPU work, allocation past the budget, a non-atomic `done_seq`,
-  and lost slab slots.
+- **Robust loading into a full cache.** A fixed cache is always full. #1125
+  (four commits) returns slab slots on every load error path, marks GPU-copy
+  entries in flight until their blit runs (the V4.1 prefill seed takes that
+  path), keeps the per-layer counts true, and stops `prune_global` spinning
+  on an in-flight entry. #952 `a2e2ea53` overlaps it: its slot return is the
+  same fix in the same function, and the rest (the service thread waiting on
+  GPU work, allocation past the budget from the worker, a non-atomic
+  `done_seq`) serves the `metal_graph` async load worker, which V4.1 never
+  runs.
 - **Read-shape tuning.** #621 `8f5a7458` splits each expert read into 16 KiB-aligned
   pieces on the same pool, to raise the NVMe queue depth. It measured +16%
   decode on an M1 Pro, bit-identical by construction. Several existing
@@ -37,9 +45,10 @@ Three things are missing:
 ## What Changes
 
 - **S0, tool.** #570 `a1afb82`: pool dispatches, average queue depth, pool GB/s
-  and task GB/s in the timing summary.
-- **S1, correctness.** #952 `a2e2ea53`, judged by the tool/correctness rule:
-  bitwise output, no metric below zero.
+  and task GB/s in the timing summary. `ab_bench.py --b-env KEY=VALUE`, so a
+  switch can be measured on one tree.
+- **S1, correctness.** #1125's four commits, judged by the tool/correctness
+  rule: bitwise output, no metric below zero. #952 `a2e2ea53` is not taken.
 - **S2, switch sweeps, no code.**
   - Pread threads at 4, 9 and 18; read-ahead on and off; slabs on and off;
     slab size.
@@ -50,13 +59,12 @@ Three things are missing:
 - **S3.** #621 `8f5a7458` with the measured best split as the default; then
   #621 `f7695ea0` (an `F_NOCACHE` descriptor for expert reads) as its own
   step. Same bytes are read, so both are bitwise by construction.
-- **S4, conditional.** #1033 `66f757b`, which attaches the owned slabs to a
-  Metal residency set (53 runtime lines).
-  - It starts only if `DS4_METAL_CB_TIMES` shows a submission delay per
-    command buffer. With about 81 buffers per token, even a partial cost
-    matters.
-  - It becomes the default only if it wins. Its macOS-version dependence is
-    recorded.
+- **S4.** #1033 `66f757b`, which attaches the owned slabs to a Metal
+  residency set (53 runtime lines), measured directly with `--b-env`.
+  `DS4_METAL_CB_TIMES` cannot gate it: it waits on every command buffer, so
+  it hides the submission cost it would have to show. It becomes the default
+  only if it wins; otherwise it is reverted. Its macOS-version dependence is
+  recorded.
 - **Not taken.**
   - #848: `drop`. Its packer zeroes the GGUF expert space that the prefill
     sweep still maps, and it needs a 142 GiB sidecar.
@@ -83,5 +91,7 @@ None.
 - Every step is judged on the `decode` and `append` kinds (token-major tails),
   with the cold kinds as guard. Expert-cache hit counts must match between A
   and B, since no step here changes the replacement policy.
-- Registry lines: #570, #952 `a2e2ea53`, #621, #1033, #848, #1035, #499, #725,
-  #454, #533, #1117, #647, #739, #738.
+- `speed-bench/ab_bench.py`: `--b-env`.
+- Registry lines: #570, #1125, #952 `a2e2ea53`, #621, #1033, #533 (the lines
+  of #848, #1035, #499, #725, #454, #1117, #647, #739 and #738 already record
+  their verdicts and stay).

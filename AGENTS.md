@@ -57,9 +57,10 @@ V4.1 static context buffers 8073.52 MiB (ctx=32768), Engram disk-only
 
 and steady decode runs at about 20 tokens/s (harness `decode 2048` and
 `decode 8192`, 256 tokens; 17-18 before the layer queue of
-`30-decode-layer-queue`), with the first token after a layer sweep costing about
-2 s and the CLI's `generation:` figure, which includes it, reading 12-17
-tokens/s depending on the prompt. Performance is measured only with a fixed
+`30-decode-layer-queue`), with the first token after a layer sweep costing
+about 1.3 s (2 s before the slab residency set of `40-ssd-expert-reads`) and
+the CLI's `generation:` figure, which includes it, reading 12-17 tokens/s
+depending on the prompt. Performance is measured only with a fixed
 expert cache, `--ssd-streaming-cache-experts 82GB` (74.88 GiB dynamic, 8078
 slots on this machine), by `speed-bench/ab_bench.py`; the conditions behind
 each figure are in `speed-bench/perf-record.md`. The throughput is bounded by
@@ -88,7 +89,12 @@ Without it both binaries fail to load and every prompt is reported as "a binary
 produced no output", which reads like an ablation bug rather than a missing
 flag. The knobs worth knowing: `--ssd-streaming-cache-experts N|NGB` sets the
 expert cache target (auto by default) and `--ssd-streaming-cold` skips the
-popularity preload. `--ssd-streaming-full-layers` is gone: it only ever applied
+popularity preload. Expert reads are split in four 16 KiB-aligned pieces on
+an 18-thread pool (`DS4_METAL_STREAMING_EXPERT_PREAD_SPLIT`, `_PREAD_THREADS`)
+and the owned cache slabs sit in a Metal residency set attached to the queue
+(`DS4_METAL_DISABLE_STREAMING_SLAB_RESIDENCY=1` turns it off; it saves about
+1 s on the first token after a prefill sweep); all three were measured on this
+machine by `40-ssd-expert-reads`. `--ssd-streaming-full-layers` is gone: it only ever applied
 to GLM graph streaming, and V4.1 warned and ignored it.
 
 The alternative to streaming is not more RAM in one box but **two 128 GB Macs

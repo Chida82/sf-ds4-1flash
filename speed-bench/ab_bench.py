@@ -102,6 +102,11 @@ def child_env(pairs, environ=None):
     return env
 
 
+def build_envs(args):
+    """A gets --env, B gets --env then --b-env."""
+    return {'A': child_env(args.env), 'B': child_env(args.env + args.b_env)}
+
+
 def model_label(path):
     """The file name, or the Hub file name for the default link (deepseek-v4.1-flash.gguf -> gguf/<component>)."""
     if path.is_symlink() and os.readlink(path).endswith('.gguf'):
@@ -593,7 +598,8 @@ def summary(ctx, runs, table, status, correctness, e2e):
     for label in 'AB':
         t = ctx[label]
         lines.append(f'{label}  {t["path"]}  {t["commit"]}{" (uncommitted changes)" if t["dirty"] else ""}')
-    lines.append(f'model  {ctx["model_name"]} ({ctx["model"]})   env  {" ".join(ctx["env"]) or "-"}')
+    lines.append(f'model  {ctx["model_name"]} ({ctx["model"]})   env  {" ".join(ctx["env"]) or "-"}'
+                 + (f'   B only  {" ".join(ctx["b_env"])}' if ctx.get('b_env') else ''))
     extra = ctx.get('bench_args', {})
     if any(extra.values()):
         lines.append(f'bench args  A {" ".join(extra["A"]) or "-"}   B {" ".join(extra["B"]) or "-"}')
@@ -630,8 +636,9 @@ def summary(ctx, runs, table, status, correctness, e2e):
     thin = [f'{t["kind"]} {t["metric"]}' for t in table if t['headline'] and not t['guard'] and t['n'] < 2]
     if thin and status == 'PASS':
         lines += ['', f'INCONCLUSIVE: fewer than two valid pairs for {", ".join(thin)}']
-    if any(ctx.get('bench_args', {}).values()):
-        lines += ['', 'record row: none (bench arguments make the figures incomparable with the record)']
+    if any(ctx.get('bench_args', {}).values()) or ctx.get('b_env'):
+        lines += ['', 'record row: none (bench arguments or a B-only environment make the figures '
+                      'incomparable with the record)']
     else:
         lines += ['', 'record row:', record_row(ctx['B']['branch'], ctx['date'][:10], ctx['B']['commit'],
                                                  ctx['model_name'], valid, status, table, e2e)]
@@ -690,6 +697,8 @@ def parse_args(argv):
     p.add_argument('--budget', type=int, default=1800, help=f'wall-clock seconds, at most {MAX_BUDGET}')
     p.add_argument('--bitwise', action='store_true', help='also require bit-identical logits')
     p.add_argument('--env', action='append', default=[], metavar='KEY=VALUE', help='set for both builds')
+    p.add_argument('--b-env', action='append', default=[], metavar='KEY=VALUE',
+                   help='set for B only, on top of --env (repeatable): measures a switch on one tree')
     p.add_argument('--bench-arg', action='append', default=[], metavar='ARG',
                    help='extra bench argument for both builds (repeatable; write --bench-arg=--flag)')
     p.add_argument('--b-bench-arg', action='append', default=[], metavar='ARG',
@@ -720,7 +729,7 @@ def main(argv=None):
     begin = time.time()
     try:
         args = parse_args(argv)
-        env = child_env(args.env)
+        envs = build_envs(args)
         model = Path(os.path.abspath(args.model))
         if not model.is_file():
             raise Stop(2, f'{args.model}: model not found')
@@ -737,14 +746,15 @@ def main(argv=None):
     version = mactop_version()
     ctx = {'date': now.strftime('%Y-%m-%d %H:%M UTC'), 'device': sample.get('system_info', {}).get('name', '?'),
            'mactop': version, 'A': trees['A'], 'B': trees['B'], 'model': str(model),
-           'model_name': model_label(Path(args.model)), 'env': args.env, 'budget': args.budget,
+           'model_name': model_label(Path(args.model)), 'env': args.env, 'b_env': args.b_env,
+           'budget': args.budget,
            'kinds': args.kinds, 'guards': args.guards, 'bench_args': {b: bench_args(args, b) for b in ('A', 'B')}}
     counter = iter(range(1, 10_000))
     refs = {}
     runs = []
 
     def runner(build, kind, phase):
-        run = run_bench(next(counter), build, trees[build]['path'], kind, model, env, out, phase, args.bitwise,
+        run = run_bench(next(counter), build, trees[build]['path'], kind, model, envs[build], out, phase, args.bitwise,
                         bench_args(args, build))
         monitor.check()
         if runs:

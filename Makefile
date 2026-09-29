@@ -119,6 +119,13 @@ tests/test_metal_moe_prefill: tests/test_metal_moe_prefill.o $(CORE_OBJS)
 test-metal-moe-prefill: tests/test_metal_moe_prefill
 	./tests/test_metal_moe_prefill
 
+tests/test_metal_slab_residency: tests/test_metal_slab_residency.m ds4_metal.m ds4_gpu.h ds4_image.o $(METAL_SRCS)
+	$(CC) $(OBJCFLAGS) -I. -o $@ $< ds4_image.o $(METAL_LDLIBS)
+
+.PHONY: test-metal-slab-residency
+test-metal-slab-residency: tests/test_metal_slab_residency
+	MTL_DEBUG_LAYER=1 ./tests/test_metal_slab_residency
+
 tests/test_metal_ssd_experts.o: tests/test_metal_ssd_experts.c ds4_gpu.h
 	$(CC) $(CFLAGS) -fno-fast-math -I. -c -o $@ $<
 
@@ -372,7 +379,8 @@ mxfp4-dot-test: tests/test_mxfp4_dot.c
 # with DS4_TEST_MODEL set.
 test: ds4_test $(BIN)-eval q4k-dot-test mxfp4-dot-test test-session-state test-engram \
 	tests/test_deepseek4_vision_image tests/test_image_decode \
-	tests/test_prompt_prefix $(SAMPLING_TEST) $(BIN) $(BIN)-server $(BIN)-bench
+	tests/test_prompt_prefix $(SAMPLING_TEST) $(BIN) $(BIN)-server $(BIN)-bench \
+	tests/test_metal_slab_residency
 	./$(BIN)-eval --validate-cases
 	./$(BIN)-eval --self-test-extractors
 	./ds4_test --server
@@ -380,6 +388,7 @@ test: ds4_test $(BIN)-eval q4k-dot-test mxfp4-dot-test test-session-state test-e
 	./tests/test_sampling
 	./tests/test_deepseek4_vision_image
 	./tests/test_image_decode
+	MTL_DEBUG_LAYER=1 ./tests/test_metal_slab_residency
 
 .PHONY: test-download-model
 test-download-model:
@@ -405,7 +414,7 @@ clean:
 	      speed-bench/session_concurrency_bench speed-bench/*.o \
 	      tests/test_q4k_dot tests/test_mxfp4_dot tests/test_mxfp4_metal \
 	      tests/test_metal_session_batch tests/test_metal_moe_prefill tests/test_metal_dense_mpp \
-	      tests/test_metal_ssd_experts tests/test_metal_command_memory \
+	      tests/test_metal_ssd_experts tests/test_metal_command_memory tests/test_metal_slab_residency \
 	      tests/test_metal_tp_cancel tests/test_metal_tp_bulk \
 	      tests/test_deepseek41_metal tests/test_deepseek41_gguf tests/test_deepseek41_graph \
 	      tests/test_deepseek41_cli tests/test_deepseek41_prefill \
