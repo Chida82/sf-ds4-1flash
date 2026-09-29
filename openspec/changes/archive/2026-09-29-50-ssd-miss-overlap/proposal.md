@@ -17,8 +17,13 @@ waits for them. Two PRs start those reads earlier:
   has none).
 
 Both pay only if the reads are latency-bound and the SSD sits idle between
-layers. That is a fact `40`'s pool statistics establish on this machine, not
-one that can be assumed.
+layers. `40` measured it (`speed-bench/perf-record.md`, Read path): the pool
+runs at `qd_avg` 2.2, so the queue is shallow, but the reads are small. A
+decode token spends about 2 ms in pread and 2 ms in buffer preparation out of
+52 ms; the 38 ms of `sync` are GPU work and no overlap of reads touches them.
+So this change can recover at most about 4 ms a token (8%), and each PR only a
+part of that: `a3043bb2` hides a layer's pread behind that layer's shared
+expert, `60051d4` at most the 46% of misses its forecast covers.
 
 A related finding in the child: the consumer
 `ds4_gpu_glm_stream_selected_prefetch_take` (`ds4_metal.m:16091`, called at
@@ -29,10 +34,11 @@ lies": #952 `a3043bb2` uses that GLM-named producer for V4.1.
 
 ## What Changes
 
-- **Start gate.** This change starts only if `40` shows a shallow read queue,
-  or an idle SSD between layers, in the decode and `append` kinds. Otherwise
-  it closes with those numbers, and the dead consumer is deleted as an
-  ablation (`sf-ablate(glm)` marker at the call site).
+- **Start gate.** Met: `40` showed a shallow queue (`qd_avg` 2.2).
+- **S0, diagnosis.** The Read path measurement again on `main` after `40`
+  (split 4, 18 threads, slab residency): pread and buffer preparation per
+  decode token and per token-major tail step. It sets the bound of S1 and the
+  gate of S2.
 - **S1.** #952 `a3043bb2`, early-load part only:
   - restore the producer and its prefetch set from main (`ds4_metal.m`
     ~17221-17340), keeping upstream's name;
@@ -42,7 +48,11 @@ lies": #952 `a3043bb2` uses that GLM-named producer for V4.1.
   Its BF16-with-RoPE fusion is **not** taken here: the glue belongs to the
   `70` code zone, and there is one PR per zone. This step comes after `40`
   S1, because early loading changes when cache slots are reserved.
-- **S2, conditional.** Port #849 to V4.1:
+- **S2, conditional.** It opens only if 0.46 of S0's pread per decode token
+  is at least twice 1.5% of the token (the forecast's coverage against the
+  800-line threshold, with a factor two for its wasted reads and its CPU
+  router); at 50 ms that is 3.3 ms of pread a token. Otherwise it closes as
+  history with S0's numbers. Port #849 to V4.1:
   - register the F32 router;
   - drop the hash-layer and GLM hunks;
   - keep the staging buffers and the retain mark.
@@ -51,6 +61,8 @@ lies": #952 `a3043bb2` uses that GLM-named producer for V4.1.
   mark changes hit counts by design, so S2 reports them instead of gating on
   them. The logits must still be bitwise identical.
 - **Not taken:** the rest of #952 `a3043bb2` (rounding fusion, see above).
+- **If S1 is not kept**, the dead consumer is deleted as an ablation
+  (`sf-ablate(glm)` marker at the call site).
 
 ## Capabilities
 

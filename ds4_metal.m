@@ -12168,23 +12168,6 @@ typedef struct {
 static ds4_gpu_stream_expert_pending_load g_stream_expert_pending_load;
 
 typedef struct {
-    int active;
-    const void *model_map;
-    uint64_t model_size;
-    uint32_t layer;
-    uint32_t n_total_expert;
-    uint32_t n_selected;
-    uint64_t gate_offset;
-    uint64_t up_offset;
-    uint64_t down_offset;
-    uint64_t gate_expert_bytes;
-    uint64_t down_expert_bytes;
-    int32_t selected_ids[DS4_METAL_STREAM_EXPERT_CACHE_MAX_SELECTED];
-} ds4_gpu_glm_stream_selected_prefetch;
-
-static ds4_gpu_glm_stream_selected_prefetch g_glm_stream_selected_prefetch;
-
-typedef struct {
     ds4_gpu_stream_expert_pread_task *tasks;
     uint32_t n_tasks;
     uint32_t worker_index;
@@ -16418,39 +16401,6 @@ static int ds4_gpu_stream_expert_cache_load_selected_missing(
             missing_mask,
             0,
             entries);
-}
-
-static int ds4_gpu_glm_stream_selected_prefetch_take(
-        const void *model_map,
-        uint64_t    model_size,
-        uint32_t    layer,
-        uint32_t    n_total_expert,
-        uint32_t    n_selected,
-        uint64_t    gate_offset,
-        uint64_t    up_offset,
-        uint64_t    down_offset,
-        uint64_t    gate_expert_bytes,
-        uint64_t    down_expert_bytes,
-        int32_t    *selected_ids_out) {
-    if (!selected_ids_out || !g_glm_stream_selected_prefetch.active) return 0;
-    ds4_gpu_glm_stream_selected_prefetch *p = &g_glm_stream_selected_prefetch;
-    if (p->model_map != model_map ||
-        p->model_size != model_size ||
-        p->layer != layer ||
-        p->n_total_expert != n_total_expert ||
-        p->n_selected != n_selected ||
-        p->gate_offset != gate_offset ||
-        p->up_offset != up_offset ||
-        p->down_offset != down_offset ||
-        p->gate_expert_bytes != gate_expert_bytes ||
-        p->down_expert_bytes != down_expert_bytes) {
-        return 0;
-    }
-    for (uint32_t i = 0; i < n_selected; i++) {
-        selected_ids_out[i] = p->selected_ids[i];
-    }
-    p->active = 0;
-    return 1;
 }
 
 static void ds4_gpu_stream_expert_cache_clear_layer(uint32_t layer) {
@@ -33831,19 +33781,7 @@ int ds4_gpu_routed_moe_one_tensor(
                     selected_id_source = "override";
                     selected_exec_ids_from_host = true;
                     g_routed_moe_selected_override_n = 0;
-                } else if (use_stream_expert_cache &&
-                           ds4_gpu_glm_stream_selected_prefetch_take(
-                               model_map, model_size, layer_index,
-                               n_total_expert, n_expert,
-                               gate_offset, up_offset, down_offset,
-                               gate_expert_bytes, down_expert_bytes,
-                               selected_ids)) {
-                    /* GLM already read these IDs to start loading experts.
-                     * Submit the shared expert work while the reads finish. */
-                    selected_id_source = "prefetched";
-                    if (g_batch_cb && g_batch_has_work &&
-                        g_stream_expert_pending_load.active &&
-                        !ds4_gpu_flush_commands()) return 0;
+                /* sf-ablate(glm): the "prefetched" ids branch; its producer ran only in the GLM graph, and V4.1's early load was measured neutral (50-ssd-miss-overlap) */
                 } else if (use_stream_hit_validator) {
                     g_routed_moe_selected_override_n = 0;
                     uint32_t validator_all_cached = 0;

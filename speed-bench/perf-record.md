@@ -131,6 +131,21 @@ The pool runs at `qd_avg` 2.2-2.4 with 3.3 tasks per dispatch and
 `workers_avg` 3.3, so the 9-thread limit never binds in decode; it moves
 19-24 GB/s (`pool_gbps`) and 9-10 GB/s per task, page cache included.
 
+After `40` (`main` at `b044217`: split 4, 18 threads, slab residency; same
+method, `50-ssd-miss-overlap` S0):
+
+| Shape | Per token | Where the time goes |
+|---|---|---|
+| decode at 2K (240 tokens, 4.4 misses per token) | 45.6 ms (21.9 t/s) | `sync` 36.3 ms; pread 2.2 ms (4.0 dispatches of 0.55 ms); buffer preparation 1.6 ms |
+| decode at 8K (256 tokens with the first) | 47.1 ms (21.2 t/s steady) | `sync` 41.2 ms with the first token; pread 2.1 ms; buffer preparation 2.5 ms |
+| token-major tail of `cold-5000` (4.2 misses per step) | about 45 ms | `sync` 38.5 ms; pread 2.3 ms; buffer preparation 1.9 ms |
+
+The split raised the pool's `qd_avg` from 2.2 to 6.8 (12.8 tasks, 12.4
+workers per dispatch) without shortening a dispatch (0.51 -> 0.55 ms): the
+pool moves about 20 GB/s either way, the rate of copying from the page cache.
+The token got shorter by the residency set, not by the reads. `50`'s S2 gate
+(`0.46 x pread >= 2 x 1.5% of the token`): 1.03 ms against 1.37 ms, closed.
+
 `sync` is the wait at the per-layer selected-id readback
 (`ds4_gpu_routed_moe_one_tensor`: `end_commands` or the shared-event wait,
 then `tensor_read` of the ids), timed before any load starts. It is the GPU
@@ -210,3 +225,12 @@ and #1125 against them, both bitwise with no headline interval below zero;
 
 Not measured, by design D7 after the Read path: slabs off and slab size (no
 read-time term), `F_NOCACHE` (gives up the page cache the reads use).
+
+`50-ssd-miss-overlap` adds no row: its one code step, #952 `a3043bb`'s early
+load (the selected ids read before the shared expert, so a layer's preads run
+while the GPU computes it), was bitwise and neutral against `main`, two
+invocations pooled: decode 8192 -0.46% (-1.16..+0.25), decode 2048 -1.24%,
+append +300 -0.10% (-0.25..+0.45), ttft 5000 +0.02% (-2.49..+0.70). It was
+reverted, and the dead `prefetched` consumer it would have fed was deleted.
+#849 stayed closed by its gate (Read path, after `40`). The tree that lands
+differs from `40`'s only by that unreachable code, so its row is `40`'s.
