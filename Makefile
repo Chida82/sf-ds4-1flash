@@ -380,7 +380,7 @@ mxfp4-dot-test: tests/test_mxfp4_dot.c
 test: ds4_test $(BIN)-eval q4k-dot-test mxfp4-dot-test test-session-state test-engram \
 	tests/test_deepseek4_vision_image tests/test_image_decode \
 	tests/test_prompt_prefix $(SAMPLING_TEST) $(BIN) $(BIN)-server $(BIN)-bench \
-	tests/test_metal_slab_residency
+	tests/test_metal_slab_residency tests/test_deepseek41_prefill tests/test_deepseek41_graph
 	./$(BIN)-eval --validate-cases
 	./$(BIN)-eval --self-test-extractors
 	./ds4_test --server
@@ -389,6 +389,9 @@ test: ds4_test $(BIN)-eval q4k-dot-test mxfp4-dot-test test-session-state test-e
 	./tests/test_deepseek4_vision_image
 	./tests/test_image_decode
 	MTL_DEBUG_LAYER=1 ./tests/test_metal_slab_residency
+	./tests/test_deepseek41_prefill --dispatch
+	./tests/test_deepseek41_graph --prefill-expert-discard
+	./tests/test_deepseek41_graph --prefill-expert-stream
 
 .PHONY: test-download-model
 test-download-model:

@@ -97,6 +97,26 @@ and the owned cache slabs sit in a Metal residency set attached to the queue
 machine by `40-ssd-expert-reads`. `--ssd-streaming-full-layers` is gone: it only ever applied
 to GLM graph streaming, and V4.1 warned and ignored it.
 
+The time to first token is set by the prefill schedule (`ds41_prefill_count`).
+A prompt runs as SSD layer sweeps, and a remainder under 1024 tokens after the
+first sweep runs token by token at the decode rate. That tail is frozen:
+batched and token-major kernels round differently. Since
+`60-prefill-sweeps`:
+- a 3072-8191-token remainder runs as one wide sweep when its last partial
+  tile is one the plain schedule would batch anyway (0 or at least 1024
+  rows), so 3.5K and 7.5K prompts pay one sweep instead of two;
+- below 8192 rows the decoder layers (20-39) of a wide sweep compute only the
+  rows the last token depends on, from 2048-row tiles;
+- single-chunk sweeps of 32-2048 rows read each layer's experts into two
+  locked Metal buffers inside the 7.12 GiB prefill reserve, reading the next
+  layer while the current one computes (stderr: "V4.1 prefill reads experts
+  into two explicit layer buffers").
+
+`DS4_METAL_DISABLE_V41_SHORT_SWEEP=1` restores the plain schedule and
+`DS4_METAL_DISABLE_V41_DECODER_SUFFIX=1` turns the suffix off. The explicit
+buffers have no switch; they fall back to mmap when the reserve cannot hold
+them. All three keep the output bitwise identical.
+
 The alternative to streaming is not more RAM in one box but **two 128 GB Macs
 with TP/RDMA** (`docs/DISTRIBUTED.md`), which holds about 81 GiB of main weights
 per rank and drops `--ssd-streaming`. A 256 GB or larger machine can hold the

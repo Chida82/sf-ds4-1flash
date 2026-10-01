@@ -6,6 +6,21 @@
     fprintf(stderr, "%s:%d: %s\n", __FILE__, __LINE__, #x); goto done; \
 } } while (0)
 
+/* Sweeps and token-major steps of a prompt of n rows at start. Once a call
+ * goes token-major, every later row does too. */
+static uint32_t schedule(ds41_gpu_graph *g, uint32_t start, uint32_t n,
+                         uint32_t *bounds, uint32_t *n_bounds) {
+    *n_bounds = 0;
+    for (uint32_t done = 0; done < n;) {
+        g->pos = start + done;
+        const uint32_t count = ds41_prefill_count(g, n - done);
+        if (count == 1) return n - done;
+        done += count;
+        bounds[(*n_bounds)++] = done;
+    }
+    return 0;
+}
+
 static int check_dispatch(void) {
     int rc = 1;
     g_ds4_shape = DS4_SHAPE_FLASH41;
@@ -26,7 +41,7 @@ static int check_dispatch(void) {
         16383, 16384, 16385, 32767, 32768, 32769, 65536};
     const uint32_t cold[] = {1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
         1, 1, 1, 256, 257, 511, 512, 513, 1023, 1024,
-        2047, 2048, 2048, 2048, 4096, 4096, 6144, 8192, 8192,
+        2047, 2048, 2048, 4095, 4096, 4096, 8191, 8192, 8192,
         14336, 16384, 16384, 30720, 32768, 32768, 32768};
     _Static_assert(sizeof(remaining) == sizeof(cold), "prefill dispatch table sizes");
     for (uint32_t cache = half - 1; cache <= half; cache++) {
@@ -78,7 +93,29 @@ static int check_dispatch(void) {
     CHECK(ds41_encoder_chunk_cap(&g, 8192) == 4096);
     CHECK(ds41_encoder_chunk_cap(&g, 16383) == 4096);
     CHECK(ds41_encoder_chunk_cap(&g, 16384) == 8192);
-    puts("V4.1 cold/warm and TP prefill dispatch, tile boundaries and debug fallbacks: PASS");
+    /* A short sweep only merges a tail the plain schedule batches too: the
+     * same token-major rows, and every sweep boundary one of its boundaries. */
+    g.carry_cap = 32768;
+    for (uint32_t mode = 0; mode < 3; mode++) {
+        g.streaming = mode < 2;
+        ds4_gpu_set_streaming_expert_cache_budget(mode == 0 ? half : half - 1);
+        for (uint32_t start = 0; start <= 2048; start += 2048) {
+            for (uint32_t n = 1; n <= 16384; n++) {
+                uint32_t plain[64], merged[64], n_plain, n_merged;
+                CHECK(setenv("DS4_METAL_DISABLE_V41_SHORT_SWEEP", "1", 1) == 0);
+                const uint32_t scalar = schedule(&g, start, n, plain, &n_plain);
+                CHECK(unsetenv("DS4_METAL_DISABLE_V41_SHORT_SWEEP") == 0);
+                if (schedule(&g, start, n, merged, &n_merged) != scalar || n_merged > n_plain)
+                    fprintf(stderr, "short sweep mode=%u start=%u n=%u\n", mode, start, n);
+                CHECK(schedule(&g, start, n, merged, &n_merged) == scalar && n_merged <= n_plain);
+                for (uint32_t i = 0, j = 0; i < n_merged; i++) {
+                    while (j < n_plain && plain[j] < merged[i]) j++;
+                    CHECK(j < n_plain && plain[j] == merged[i]);
+                }
+            }
+        }
+    }
+    puts("V4.1 cold/warm and TP prefill dispatch, tile boundaries, short sweeps and debug fallbacks: PASS");
     rc = 0;
 done:
     ds4_gpu_set_streaming_expert_cache_budget(saved);

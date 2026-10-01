@@ -154,6 +154,26 @@ class Parsing(unittest.TestCase):
         self.assertAlmostEqual(ab.gain(66.0, 60.0, 'ttft 5000'), 1.1)   # B faster: positive
         self.assertAlmostEqual(ab.gain(50.0, 55.0, 'decode 2048'), 1.1)
 
+    def test_section_ratios(self):
+        err = COLD_ERR + ''.join(
+            f'ds4: V4.1 stage layer={il} pos=0 rows={rows} {label}={ms:.3f} ms\n'
+            for il in (0, 1) for rows, core, other in ((2048, 2.0, 6.0), (452, 1.0, 1.0))
+            for label, ms in (('attention core/index', core), ('shared/routed ffn', other / 2),
+                              ('hc expand', other / 2)))
+        run = ab.parse_run(COLD_CSV, err, 'cold-2500', ['attention core/index'])
+        self.assertAlmostEqual(run['metrics']['sections 2048 rows'], 4.0 / 12.0)
+        self.assertAlmostEqual(run['metrics']['sections 452 rows'], 1.0)
+        self.assertNotIn('sections 2048 rows', ab.parse_run(COLD_CSV, err, 'cold-2500')['metrics'])
+        self.assertEqual(ab.unit('sections 2048 rows'), 'ratio')
+        self.assertAlmostEqual(ab.gain(0.5, 0.4, 'sections 2048 rows'), 1.25)   # B's share smaller: positive
+
+    def test_sections_flag(self):
+        args = ab.parse_args(['--a', '.', '--b', '.', '--kinds', 'cold', '--sections', 'attention core/index'])
+        self.assertEqual(args.sections, ['attention core/index'])
+        self.assertEqual(ab.build_envs(args)['A']['DS4_METAL_V41_STAGE_PROFILE'], '1')
+        with self.assertRaises(ab.Stop):
+            ab.parse_args(['--a', '.', '--b', '.', '--kinds', 'cold', '--sections', 'attention'])
+
 
 class Environment(unittest.TestCase):
     def test_inherited_stripped(self):

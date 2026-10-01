@@ -115,6 +115,18 @@ starts with `--`). A summary made with bench arguments or `--b-env` prints no
 record row. `-m` selects another GGUF; the default is this checkout's
 `deepseek-v4.1-flash.gguf`, resolved to an absolute path for both trees.
 
+`--sections LABEL[,LABEL]` judges a prefill kernel change that the end-to-end
+metrics cannot resolve. It turns on `DS4_METAL_V41_STAGE_PROFILE` for both
+builds. Each run then gets one `sections <rows> rows` detail metric per chunk
+shape: the named sections' time over the time of the other sections, summed
+over the run's chunks and layers. Its gain is positive when B's share is
+smaller, which is a ratio below one; the pairs, drops and bootstrap interval
+are the harness's own. The labels are those of the stage lines:
+`hc/engram`, `attention projections`, `attention core/index`,
+`attention output`, `hc/ffn norm`, `shared/routed ffn`, `hc expand`. The
+profile ends the command batch at every section, so the time metrics of such
+an invocation are not comparable with a normal one.
+
 The expert read path is diagnosed outside the harness:
 `DS4_METAL_STREAMING_EXPERT_TIMING_SUMMARY=1` with the bench's `--cache-stats`
 prints, with each memory report, the expert timing (`sync` is the wait at the

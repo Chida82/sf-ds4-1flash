@@ -79,6 +79,10 @@ LOADER = re.compile(r'^ds4: \w+ SSD streaming cache target .*\+ ([0-9.]+) GiB dy
                     r'\((\d+) experts, ([0-9.]+) MiB each\)', re.M)
 REPORT = re.compile(r'^ds4: Metal memory after frontier (\d+):', re.M)
 CACHE = re.compile(r'^ds4:\s+streaming expert cache (.*)$', re.M)
+# DS4_METAL_V41_STAGE_PROFILE: one line per prefill chunk, layer and section (--sections).
+STAGE = re.compile(r'^ds4: V4\.1 stage layer=\d+ pos=\d+ rows=(\d+) (.+)=([0-9.]+) ms$', re.M)
+SECTIONS = ('hc/engram', 'attention projections', 'attention core/index', 'attention output',
+            'hc/ffn norm', 'shared/routed ffn', 'hc expand')
 
 
 class Stop(Exception):
@@ -253,6 +257,8 @@ def unit(metric):
     """Every ratio is printed as a gain: A/B for times, B/A for rates (design D9)."""
     if metric.startswith('first token'):
         return 'ms'
+    if metric.startswith('sections'):
+        return 'ratio'
     if metric.split()[0] in ('decode', 'guard') and 'decode' in metric:
         return 't/s'
     return 's'
@@ -320,7 +326,17 @@ def parse_loader(err_text, kind):
     return gib, slots
 
 
-def parse_run(csv_text, err_text, kind):
+def section_ratios(err_text, targets):
+    """Per chunk shape: the named sections' time over the other sections' time, summed over the
+    run's chunks and layers. Lower is faster, so a positive gain is a B/A ratio below one."""
+    hit, rest = {}, {}
+    for rows, label, ms in STAGE.findall(err_text):
+        side = hit if label in targets else rest
+        side[int(rows)] = side.get(int(rows), 0.0) + float(ms)
+    return {f'sections {rows} rows': hit[rows] / rest[rows] for rows in sorted(hit) if rest.get(rows)}
+
+
+def parse_run(csv_text, err_text, kind, sections=()):
     frontiers = list(KINDS[kind]['frontiers'])
     rows = {int(r['ctx_tokens']): r for r in csv.DictReader(io.StringIO(csv_text))}
     tokens = {int(m[1]): [int(t) for t in m[2].split()] for m in IDS.finditer(err_text)}
@@ -330,7 +346,10 @@ def parse_run(csv_text, err_text, kind):
     if missing:
         raise Stop(1, f'{kind}: bench output lacks {", ".join(missing)} for frontiers {frontiers}')
     gib, slots = parse_loader(err_text, kind)
-    return {'rows': rows, 'tokens': tokens, 'cache': cache, 'metrics': metrics(kind, rows),
+    m = metrics(kind, rows)
+    if sections:
+        m.update(section_ratios(err_text, sections))
+    return {'rows': rows, 'tokens': tokens, 'cache': cache, 'metrics': m,
             'cache_gib': gib, 'cache_slots': slots}
 
 
@@ -339,7 +358,7 @@ def bench_args(args, build):
     return list(args.bench_arg) + (list(args.b_bench_arg) if build == 'B' else [])
 
 
-def run_bench(n, build, tree, kind, model, env, out, phase, bitwise, extra=()):
+def run_bench(n, build, tree, kind, model, env, out, phase, bitwise, extra=(), sections=()):
     stem = out / 'logs' / f'{n:02d}-{build}-{kind}'
     logits_dir = out / 'logits' / f'{build}-{kind}' if phase == 'warm-up' and bitwise else None
     if logits_dir:
@@ -351,7 +370,8 @@ def run_bench(n, build, tree, kind, model, env, out, phase, bitwise, extra=()):
     end = time.time()
     if rc != 0:
         raise Stop(1, f'{build} {kind} run failed (exit {rc}); see {stem}.err')
-    run = parse_run(Path(f'{stem}.csv').read_text(), Path(f'{stem}.err').read_text(errors='replace'), kind)
+    run = parse_run(Path(f'{stem}.csv').read_text(), Path(f'{stem}.err').read_text(errors='replace'), kind,
+                    sections)
     run.update(n=n, build=build, kind=kind, phase=phase, warmup=phase in ('warm-up', 'preheat'),
                start=start, end=end, duration=end - start, logits=logits_dir, note='')
     return run
@@ -518,7 +538,7 @@ def drop_cache_drift(timed, kinds, tolerance, policy_change):
 
 
 def gain(a, b, metric):
-    return a / b if unit(metric) in ('s', 'ms') else b / a
+    return a / b if unit(metric) in ('s', 'ms', 'ratio') else b / a
 
 
 def bootstrap_ci(values, resamples=10000, seed=1):
@@ -714,6 +734,10 @@ def parse_args(argv):
                         "frontier's lookups")
     p.add_argument('--cache-policy-change', action='store_true',
                    help='the candidate changes the expert-cache policy: keep pairs whose cache state differs')
+    p.add_argument('--sections', type=lambda text: [x.strip() for x in text.split(',') if x.strip()],
+                   default=[], metavar='LABEL[,LABEL]',
+                   help=f'also judge these GPU sections against the others, per chunk shape, with '
+                        f'DS4_METAL_V41_STAGE_PROFILE on both builds ({", ".join(SECTIONS)})')
     p.add_argument('--out', help='output directory (default $TMPDIR/sf-ds4-1flash-ab/<UTC time>)')
     args = p.parse_args(argv)
     args.kinds = select_kinds(args.kinds, '--kinds')
@@ -722,6 +746,11 @@ def parse_args(argv):
         raise Stop(2, f'select kinds with --kinds or --guards: {", ".join(KINDS)}; groups {", ".join(GROUPS)}')
     if not 0 < args.budget <= MAX_BUDGET:
         raise Stop(2, f'--budget {args.budget}: must be between 1 and {MAX_BUDGET} seconds')
+    unknown = [x for x in args.sections if x not in SECTIONS]
+    if unknown:
+        raise Stop(2, f'--sections {", ".join(unknown)}: choose from {", ".join(SECTIONS)}')
+    if args.sections:
+        args.env = args.env + ['DS4_METAL_V41_STAGE_PROFILE=1']
     return args
 
 
@@ -755,7 +784,7 @@ def main(argv=None):
 
     def runner(build, kind, phase):
         run = run_bench(next(counter), build, trees[build]['path'], kind, model, envs[build], out, phase, args.bitwise,
-                        bench_args(args, build))
+                        bench_args(args, build), args.sections)
         monitor.check()
         if runs:
             check_cache_config(run, runs[0])

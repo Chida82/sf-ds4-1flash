@@ -189,6 +189,7 @@ by `30-decode-layer-queue`.
 | start (A/A) | 2026-09-28 | 7dea5e3 | DeepSeek-V4.1-Flash-Q2.gguf | 6 | PASS | 17.5 (+1.0%) | 18.1 (-1.1%) | 42.5 (+0.9%) |  | 68.7 (-0.5%) |  |  |  |  |  | 18.6 (-1.6%) | 107.9 (+0.1%) |
 | 30 decode layer queue | 2026-09-28 | 7dea5e3 + S1 | DeepSeek-V4.1-Flash-Q2.gguf | 6 | PASS (bitwise) | 20.1 (+13.1%) | 20.0 (+13.3%) | 39.7 (+8.4%) |  | 65.8 (+8.7%) |  |  |  |  |  | 21.1 (+15.1%) | 99.9 (+8.8%) |
 | 40 SSD expert reads | 2026-09-29 | 5410123 + 40 | DeepSeek-V4.1-Flash-Q2.gguf | 6 | PASS (bitwise) | 21.6 (+30.5%) | 20.2 (+13.4%) | 38.6 (+12.5%) |  | 64.5 (+12.2%) |  |  |  |  |  | 20.6 (+15.9%) | 97.0 (+14.8%) |
+| 60 prefill sweeps | 2026-09-30 | 2c733ca + 60 | DeepSeek-V4.1-Flash-Q2.gguf | 19 | PASS (bitwise) |  |  | 33.7 (+26.1%) | 17.2 (+91.0%) | 63.1 (+13.4%) | 23.2 (+85.2%) | 38.3 (+3.2%) | 14.9 (+10.9%) | 11.8 (+44.2%) | 59.1 (+8.6%) | 21.2 (+14.7%) | 99.1 (+10.8%) |
 
 `30-decode-layer-queue` keeps one step, #1041's `bd6f912` (queue the decode
 layers on one box, commit each without waiting). Its 95% intervals: decode
@@ -234,3 +235,30 @@ append +300 -0.10% (-0.25..+0.45), ttft 5000 +0.02% (-2.49..+0.70). It was
 reverted, and the dead `prefetched` consumer it would have fed was deleted.
 #849 stayed closed by its gate (Read path, after `40`). The tree that lands
 differs from `40`'s only by that unreachable code, so its row is `40`'s.
+
+`60-prefill-sweeps` measured each step against the previous one with
+`ab_bench.py`, `--bitwise`, 3600 s; every step was bit-identical. S1a and S1b
+change which sweep seeds the decode cache (hit rate 0.51 -> 0.32 after a
+3.5K or 7.5K prompt), so they run with `--cache-policy-change`: without it the
+first S1a invocation dropped every 3500 and 7500 pair. The S4 kernel steps are
+decided on GPU section time (`--sections`, added as the change's tool step;
+its A/A at 2048 rows read -0.4%, -1.8..+2.1). Pooled 95% intervals:
+
+| Step (B) against the previous | Invocations | Target metrics | Other | Verdict |
+|---|---|---|---|---|
+| S1a one sweep for a batched tail (`798c64f` net, pos > 0 minimum) | 2 | ttft 3500 +79.3% (+70.8..+81.7), ttft 7500 +39.4% (+38.1..+40.2) | ttft 5000 +0.1%, append +0.5% / +0.5%; first token 3500 -1.5%, 7500 -3.9% (colder cache, inside ttft) | kept |
+| S1b decoder suffix from 2541 rows | 1 | ttft 3500 +2.6% (+1.7..+4.1), ttft 5000 +2.2% (+1.6..+3.0), ttft 7500 +30.2% (+29.7..+30.3) | guard 16896 +0.6%, guard decode -0.4% | kept |
+| S2a `1011874` ratio-1 batch publish | 1 | ttft 2500 +0.6% (+0.3..+1.1), 5000 +0.4% (+0.2..+1.0), 7500 +2.3% (+0.1..+5.4) | 3500 +1.0%, 10000 +1.2% | kept (deletes a line) |
+| S2b `ce5a812` batched candidate blocks | 2 | ttft 7500 +1.69% (+0.77..+3.26) | 2500 +0.62%, 3500 +0.09%, 5000 +0.13%, 10000 +0.43%, all across zero | kept |
+| S2c `3b7f8f2` select-all short index rows | 1 | ttft 7500 +4.3% (+3.3..+9.7) | 2500 +1.3%, 3500 +0.9%, 5000 -0.2%, 10000 -0.6%, all across zero | kept |
+| S3 `bac91c2` + `c12d639` explicit expert buffers | 1 | ttft 2500 +14.2% (+13.7..+15.1), append +1500 +42.6% (+36.0..+43.5) | append +300 -0.17% (-0.30..+0.03), guard decode +1.1%, cache counters equal | kept |
+| S4a #758 `heads16_dual_rb16` | 1, sections | `attention core/index` share: 2048 rows (`cold-2500`) -2.0% (-3.6..-0.7), 1452 rows +3.0% (+0.8..+4.5), 2048 rows (`cold-3500`) +1.4% (-5.9..+4.1) | ttft 2500 +1.9% (+0.1..+2.6), ttft 3500 -0.0% | dropped (slower at one shape) |
+| S4b #864 IQ2_XXS half LUT | 1, sections | `shared/routed ffn` share: 2048 rows (`cold-2500`) -3.8% (-4.1..-2.9), 1452 rows -2.4% (-3.1..-1.0), 2048 rows (`cold-3500`) +8.5% (+2.6..+11.6) | ttft 2500 +0.1%, ttft 3500 -1.1% | dropped (slower at two shapes) |
+
+The `60` row is against the segment start, so it carries `30` and `40`; kinds
+`cold` and `append`, guards `guard-decode` and `guard-16896`,
+`--cache-policy-change`, 19 valid pairs. Its 95% intervals: ttft 2500
++25.0..+27.6%, ttft 3500 +89.8..+92.1%, ttft 5000 +12.5..+14.2%, ttft 7500
++79.9..+96.2%, ttft 10000 +1.5..+5.4%, append +300 +10.4..+11.5%, append +1500
++42.6..+45.9%. The decode kinds were not run: no step of `60` touches decode,
+and the guard reads 21.2 t/s (+14.7%), `40`'s +15.9% within the A/A band.
