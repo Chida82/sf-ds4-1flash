@@ -9,6 +9,22 @@ faster for every metric (tokens/s up, seconds down). The gain is the figure to
 read; the absolute numbers depend on the page cache, the room and the
 machine's power mode.
 
+## Rejected ideas
+
+Measured on this machine and dropped. Read this before proposing one of them
+again: a retry needs a reason the measurement below does not cover. The full
+figures are in the named section.
+
+| Idea | Why it does not help here | Section |
+|---|---|---|
+| Decode Q8 matvecs: rows per threadgroup (NR0 1/2/4), output exact | The gap to the vocabulary head's 605 GB/s comes from NSG and dispatch size. Changing NSG changes the summation order. The best row mix predicted 0.16 ms per token and measured decode 2048 -0.57% (CI below zero). | Decode kernels after 70 |
+| Faster decode indexer scorer (#1061 rewrite) | 0.18 ms per token at 2K and 0.45 ms at 8K, under the harness resolution. It matters only past 32K. | Decode kernels after 70 |
+| Faster routed-expert kernels for 2048-row prefill sweeps (prompts up to about 5K) | The sweep waits on SSD reads: about 250-330 ms per layer against about 100 ms of GPU. Any kernel gain becomes read wait. | Prefill routed experts after 80 |
+| Expert-local / Morton threadgroup order in `kernel_mul_mm_id_mpp_packed` | The routed share is 3-5% slower at every chunk shape (CI below zero). The default order already reuses well. | Prefill routed experts after 80 |
+| Cooperative-tensor (register) weight inputs for the packed MPP kernel | Exact, but it needs four per-simdgroup ops: the routed share is 2.3-3x slower and ttft 7500 -26%. | Prefill routed experts after 80 |
+| Paired gate/up MPP with a fused SwiGLU epilogue | Ceiling about 0.2 s of ttft 10000 and nothing at 2048-row sweeps. Register headroom cannot be shown with the installed tools. | Prefill routed experts after 80 |
+| Judging a kernel from back-to-back single timeline runs | Thermal drift is larger than the effect: the same baseline read 29 and 39 ms per dispatch. Use the harness's sections mode. | Prefill routed experts after 80 |
+
 ## Situation 0 (2026-09-27, `main` at `a60b8ee`)
 
 Three readings taken before any measurement, on the M5 Max 128 GB with the
@@ -225,6 +241,64 @@ Runs: `80-s1.1` (`--guards cold,guard-16896,guard-decode`, budget 3000)
 and `80-s1b.2` (decode, append, budget 3600), both with
 `--b-env DS4_METAL_V41_Q8_NR0=42111`. With both gates closed, `80` lands
 no runtime code: this section is its record.
+
+## Prefill routed experts after 80 (2026-10-03, `90-m5-prefill-tensor-locality` S0)
+
+`main` at `cc511df`, harness streaming flags, 16 generated tokens. V4.1
+prefill passes `force_resident` to the routed batch, so every chunk of
+512-8192 rows runs `kernel_mul_mm_id_{iq2_xxs,q2_K}_mpp_packed`; streaming
+chunks stop at 4096 rows, so the `_m32n128` variants are never dispatched
+here. Per-layer read wait (`map`) and GPU drain come from
+`DS4_METAL_GRAPH_PREFILL_PROFILE`, kernel times from
+`DS4_METAL_ENCODER_TIMELINE`, the routed stages from
+`DS4_METAL_MOE_STAGE_PROFILE`, all summed over the 40 layers of a sweep.
+
+| Prompt | Sweeps | Read wait | GPU drain | Routed gate / up / down | ttft (that run) |
+|---|---|---|---|---|---|
+| 2500 | 2048 rows, then 452 tokens at decode rate | 3.29 s | 4.33 s | 0.51 / 0.59 / 0.51 s | 31.1 s |
+| 5000 | 2 x 2048 rows, then 904 tokens | 2.16 s | 6.06 s | 0.89 / 0.82 / 0.82 s | 55.5 s |
+| 10000 | 8192-row wide sweep (4096-row chunks), then 1808 rows | 2.79 s, about 0 in the 4096-row chunks | 26.5 s | packed kernels 5.40 s, RHS packing 0.23 s | 38.7 s |
+| append 5300 -> +1500 | 1500 rows | 3.58 s | 4.12 s | - | - |
+
+The gate (design D1):
+- **2048-row sweeps, closed.** Reading the next layer's experts takes
+  about 250-330 ms against about 100 ms of GPU work plus the cache seed;
+  the read wait is above zero in 33 of 40 layers. A faster routed kernel
+  only lengthens the wait, so ttft 2500, 3500 and 5000 cannot move.
+- **wide sweeps, open.** At 4096-row chunks the GPU is the critical path
+  and the packed kernels are about 14% of ttft 10000; ttft 7500 is one
+  wide sweep of the same kind.
+- Outside `90`'s zone, for `100`: in the serialized section profile of the
+  1808-row sweep that follows the wide one, `attention projections` take
+  9.3 s of 15.8 s (59%), against 6.6% in the 4096-row chunks.
+
+Back-to-back single timeline runs cannot judge a kernel step: two runs of
+the same baseline read 29.0 and 39.2 ms per 4096-row gate dispatch, and a
+first D2 run that looked 24% faster was the machine running cooler. Every
+step below was decided by the sections mode (`--sections "shared/routed
+ffn"`, kinds `cold-2500,cold-7500,cold-10000`, `--bitwise`, 3600 s). A
+negative gain means the routed share of GPU time grew.
+
+| Step (B) against `cc511df` | Invocations | Routed share | Other | Verdict |
+|---|---|---|---|---|
+| S1 expert-local traversal (D2): consecutive threadgroups take every output tile of one work item | 1 (43 pairs) | 2048 rows (`cold-2500`) -5.2% (-8.8..-4.0), 1356 rows -4.0% (-5.2..-1.2), 1808 rows -4.8% (-5.6..-2.9), 4096 rows -3.2% (-4.4..-2.3) | ttft 2500 +1.5% (-0.2..+2.6), ttft 7500 -1.2% (-2.9..+0.4), ttft 10000 +0.4% (-1.8..+0.9); bitwise | dropped |
+| S2 cooperative-input weights (D3): four per-simdgroup 32x16x32 matmuls fed from registers, no threadgroup staging or barrier | 1 (41 pairs) | 2048 rows -69.3% (-71.0..-68.4), 1356 rows -61.1%, 1808 rows -60.9%, 4096 rows -63.7% (-63.8..-62.8) | ttft 2500 -6.1%, ttft 7500 -26.4%, ttft 10000 -20.3%; bitwise | dropped |
+
+S2 was exact. A probe showed the per-simdgroup ops bitwise against the
+`execution_simdgroups<4>` op, and the fixture passed every shape with a
+planted wrong element caught. The right-input layout gives each lane two
+rows (r, r+8) times two runs of four K values (k, k+16), so the weights
+were dequantized by fours with the arithmetic of `dequantize_*`. The
+pipelines report 1024 threads per threadgroup before and after, so the cost
+is instructions, not occupancy. The Metal compiler silently omits a kernel
+instance whose template argument is a `static` function: the library
+builds and the lookup fails at run time.
+
+The paired gate/up epilogue (D4) did not run. Its ceiling is the
+`swiglu_weight_f16` pass (77 ms), the mid packing (29 ms) and the f32
+gate/up stores inside the matmuls: about 0.2 s of ttft 10000 and nothing at
+2048-row sweeps. The register headroom it requires cannot be shown with the
+installed tools. `90` lands no runtime code: this section is its record.
 
 ## Adding a row
 
