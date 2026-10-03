@@ -155,6 +155,77 @@ with misses: 38.9 ms at 4.4 misses per token, about 39 ms at 2.4. Situation
 pread and buffer preparation after it, about 4 ms a token (8%). That bounds
 what read-path tuning can recover in decode and in token-major tails.
 
+## Decode kernels after 70 (2026-10-03, `80-m5-decode-kernels` S0)
+
+`main` at `6da9533`, harness streaming flags. Kernel times come from
+`DS4_METAL_ENCODER_TIMELINE` (one compute pass per dispatch group, so each
+duration is an upper bound), 64 decoded tokens per frontier; the waits and
+reads from an uninstrumented `DS4_METAL_STREAMING_EXPERT_TIMING_SUMMARY=1`
+run, 256 tokens minus 16. Every figure is per token.
+
+| | 2048 | 8192 | 32768 (diagnostic) |
+|---|---|---|---|
+| uninstrumented decode | 40.9 ms (24.5 t/s) | 41.5 ms (24.1 t/s) | 48.4 ms (20.7 t/s, instrumented run) |
+| GPU busy, sum of passes | 32.9 ms | 35.5 ms | 35.5 ms |
+| q_b + RoPE, 1280 -> 32768 (`bf16_rope`) | 3.61 ms, 494 GB/s | 3.88 ms | 3.77 ms |
+| output_b and shared down + HC expand (`bf16io_hc_expand4`, 80 per token) | 4.90 ms, 466 GB/s | 5.10 ms | 5.04 ms |
+| grouped output_a, 8 x 4096 -> 1024 (`attn_out_low`) | 2.74 ms, 520 GB/s | 2.85 ms | 2.83 ms |
+| shared gate/up SwiGLU, 5120 -> 2 x 2304 (`shared_mid_swiglu`) | 2.55 ms, 393 GB/s | 2.61 ms | 2.58 ms |
+| q_a/kv pair, 5120 -> 1280 + 512 (`bf16_pair`) | 0.99 ms, 393 GB/s | 1.05 ms | 1.04 ms |
+| vocabulary head, 5120 -> 129280 (NSG 8) | 1.16 ms, 605 GB/s | 1.21 ms | 1.19 ms |
+| routed experts (IQ2_XXS gate/up + Q2_K down) | 6.71 ms | 8.08 ms | 6.82 ms |
+| indexer scorer (`glm_indexer_score_one_direct`, 8 per token) | 0.18 ms | 0.45 ms | 1.37 ms |
+
+At 2048 the per-layer wait at the selected-id readback (`sync`) is 32.7 ms
+of the 40.9, pread 2.9 ms (968 dispatches of 0.71 ms over 240 tokens) and
+binding 4.2 ms: decode is the GPU running, and kernel time reaches the
+token.
+
+The gate (design D1: an optimistic removal bound above the A/A resolution):
+- **dense rows, open.** The five per-layer Q8 families take 14.8 ms at
+  2048. They read 6.9 GB per token at 390-520 GB/s; the vocabulary head
+  shows the same Q8 walk reaching 605 GB/s. At 600 GB/s they would take
+  11.5 ms, 3.3 ms (about 8%) less.
+- **indexer rows, closed.** The scorer is 0.4% of the token at 2048 and
+  1.1% at 8192; removing a third of it is 0.1-0.4%, under the harness
+  resolution. It only grows past 1 ms at 32K, outside the target mix, so
+  `80`'s indexer step (tasks 3.x) does not run.
+
+Current noise, an uninstrumented A/A on `6da9533` (`--kinds decode,append
+--bitwise --budget 1800`, 10 valid pairs, bitwise, thermal state Heavy,
+GPU median 1242 MHz): decode 2048 -0.9% (-2.6..+0.6), decode 8192 -0.9%
+(-1.6..+0.0), append +300 +0.2% (-0.1..+0.4), append +1500 +0.3%
+(-1.3..+0.7). A step therefore needs about 1-1.5% on decode to show in
+one invocation.
+
+The dense step (design D2) made the five families templates over output
+rows per threadgroup (1, 2, 4; RoPE 2, 4), with the K walk, NSG 4,
+reduction and BF16 stores unchanged. A fixture showed every grouping
+bitwise against the two-row kernels, odd tails and edge values included.
+Kernel time at 2048 (timeline, two runs per grouping, change against 2 rows):
+
+| Family | 1 row | 4 rows |
+|---|---|---|
+| q_b + RoPE | - | -1.4% |
+| output_b / shared down + HC expand | +2.3% | +1.2% |
+| grouped output_a | -1.5% | -0.6% |
+| shared gate/up SwiGLU | -1.2% | +1.5% |
+| q_a/kv pair | -4.0% | -3.0% |
+
+The best mix (RoPE 4, expand 2, the rest 1) predicts about 0.16 ms per
+token. Row grouping does not close the gap to the vocabulary head's rate:
+what separates them is NSG (K partitioning, so the summation order) and
+the size of the dispatch, neither of which an exact change may touch.
+
+| Step (B) against the previous | Invocations | Target metrics | Other | Verdict |
+|---|---|---|---|---|
+| S1 output rows per threadgroup, RoPE 4 / expand 2 / output_a, shared, pair 1, against `6da9533` | 2 (6 + 20 pairs) | decode 2048 -0.57% (-1.00..-0.10), decode 8192 +0.14% (-0.24..+0.51) | append +300 -0.05% (-0.28..+0.07), append +1500 +0.22% (-0.83..+1.94); guards once: ttft 2500 +2.4%, 3500 +2.2%, 5000 +0.6%, 7500 +3.3%, 10000 +2.7%, guard ttft 16896 -2.7%, guard decode +0.8%; bitwise | dropped (decode 2048 below zero) |
+
+Runs: `80-s1.1` (`--guards cold,guard-16896,guard-decode`, budget 3000)
+and `80-s1b.2` (decode, append, budget 3600), both with
+`--b-env DS4_METAL_V41_Q8_NR0=42111`. With both gates closed, `80` lands
+no runtime code: this section is its record.
+
 ## Adding a row
 
 1. `SF_PARITY_FLAGS=--ssd-streaming tools/parity-check.sh sf-ds4-1flash` from
