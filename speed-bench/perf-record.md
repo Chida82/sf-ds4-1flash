@@ -190,6 +190,7 @@ by `30-decode-layer-queue`.
 | 30 decode layer queue | 2026-09-28 | 7dea5e3 + S1 | DeepSeek-V4.1-Flash-Q2.gguf | 6 | PASS (bitwise) | 20.1 (+13.1%) | 20.0 (+13.3%) | 39.7 (+8.4%) |  | 65.8 (+8.7%) |  |  |  |  |  | 21.1 (+15.1%) | 99.9 (+8.8%) |
 | 40 SSD expert reads | 2026-09-29 | 5410123 + 40 | DeepSeek-V4.1-Flash-Q2.gguf | 6 | PASS (bitwise) | 21.6 (+30.5%) | 20.2 (+13.4%) | 38.6 (+12.5%) |  | 64.5 (+12.2%) |  |  |  |  |  | 20.6 (+15.9%) | 97.0 (+14.8%) |
 | 60 prefill sweeps | 2026-09-30 | 2c733ca + 60 | DeepSeek-V4.1-Flash-Q2.gguf | 19 | PASS (bitwise) |  |  | 33.7 (+26.1%) | 17.2 (+91.0%) | 63.1 (+13.4%) | 23.2 (+85.2%) | 38.3 (+3.2%) | 14.9 (+10.9%) | 11.8 (+44.2%) | 59.1 (+8.6%) | 21.2 (+14.7%) | 99.1 (+10.8%) |
+| 70 decode glue fusions | 2026-10-03 | 0d88af9 + 70 | DeepSeek-V4.1-Flash-Q2.gguf | 12 + 33 | PASS (bitwise) | 20.5 (+23.6%) | 20.3 (+19.4%) | 32.4 (+37.5%) | 17.5 (+92.9%) | 62.3 (+21.4%) | 23.7 (+84.9%) | 39.9 (+2.2%) | 14.4 (+21.9%) | 11.9 (+43.7%) | 59.7 (+13.5%) | 21.0 (+22.1%) | 87.4 (+27.4%) |
 
 `30-decode-layer-queue` keeps one step, #1041's `bd6f912` (queue the decode
 layers on one box, commit each without waiting). Its 95% intervals: decode
@@ -262,3 +263,42 @@ The `60` row is against the segment start, so it carries `30` and `40`; kinds
 +79.9..+96.2%, ttft 10000 +1.5..+5.4%, append +300 +10.4..+11.5%, append +1500
 +42.6..+45.9%. The decode kinds were not run: no step of `60` touches decode,
 and the guard reads 21.2 t/s (+14.7%), `40`'s +15.9% within the A/A band.
+
+`70-decode-glue-fusions` measures each step against the previous kept one with
+`ab_bench.py`, using `--bitwise`, 3600 s, kinds `decode,append,cold-2500` and
+guard `guard-decode`. A second invocation runs only on `decode` when the
+first is inconclusive. Pooled 95% intervals:
+
+| Step (B) against the previous | Invocations | Target metrics | Other | Verdict |
+|---|---|---|---|---|
+| S1 `e768396` no candidate selection up to 2048 blocks | 2 | decode 2048 +0.00% (-0.64..+0.57), decode 8192 +0.21% (-0.21..+0.79) | append +300 +0.6%, ttft 2500 +0.2%, guard decode +3.2% | dropped (neutral, adds a line) |
+| S2 `edceb7a` experts selected in one dispatch | 2 | decode 2048 +1.15% (+0.63..+1.50), decode 8192 +1.28% (+0.67..+1.73) | append +300 +2.4% (+1.6..+3.4), ttft 2500 +2.4% (+1.7..+3.0), guard decode +1.8%; `--decode-switch` exact | kept |
+| S3 `d95f8b6` BF16 rounding inside the producing kernels | 2 | decode 2048 +1.14% (+0.79..+1.38), decode 8192 +1.14% (+1.02..+1.42) | append +300 +1.1% (+0.8..+1.5), append +1500 +1.6%, ttft 2500 +2.2% (+2.2..+2.4), guard decode +2.2% | kept |
+| S4a `d8d1523` HC block input in one dispatch | 1 | decode 2048 +1.3% (+0.8..+1.4), decode 8192 +0.9% (+0.3..+1.6) | append +300 +1.4% (+1.4..+1.9), ttft 2500 +1.3% (+0.7..+1.4), guard decode +3.0%; `--decode-switch` exact for both switches | kept (479 lines) |
+| S4b `d8d1523` paired q_a/kv projections, pair norm, q_b with RoPE | 2 | decode 2048 +0.36% (+0.14..+0.63), decode 8192 +0.47% (+0.38..+0.66) | append +300 +0.8% (+0.4..+1.3), ttft 2500 +1.2% (+0.4..+1.6), guard decode +1.3% | kept (447 lines) |
+| S4c `d8d1523` + `1923131` RoPE, quantize and store in one dispatch | 2 | decode 8192 +0.80% (+0.52..+0.94), decode 2048 +0.43% (+0.00..+0.67) | append +300 +0.6% (+0.5..+1.2), ttft 2500 +0.8% (+0.0..+1.4), guard decode +0.0%; rope-quantize test and `--decode-switch` exact | kept (131 lines with the test) |
+| S4d `d8d1523` attention with the selected rows gathered in its staging kernel | 2 | decode 2048 +0.71% (+0.48..+0.85), decode 8192 +0.72% (+0.43..+0.94) | append +300 +0.7%, ttft 2500 +1.2% (+0.2..+2.4), guard decode +2.5%; `--decode-switch` exact | kept (about 110 lines) |
+| S4e `d8d1523` attention output and shared down fused into the HC expand, low projection with the inverse rope folded in | 1 | decode 2048 -1.4% (-1.9..-0.5), decode 8192 -0.9% (-1.1..-0.7) | append +300 -0.6%; with `DS4_METAL_DISABLE_V41_EXPAND_FUSION` on B, decode 2048 -2.1% (-2.6..-1.1), decode 8192 -1.6%: the rope-folded low projection is the slow part | dropped as a whole |
+| S4e' the same without the rope-folded low projection | 2 | decode 2048 +0.66% (+0.49..+1.02), decode 8192 +0.69% (+0.57..+0.91) | append +300 +0.8% (+0.2..+1.2), ttft 2500 +1.1% (+0.5..+2.0), guard decode +1.9%; `--decode-switch` exact | kept (158 lines) |
+| S4f `d8d1523` shared gate/up SwiGLU in one dispatch | 2 | decode 2048 +0.53% (+0.26..+0.68), decode 8192 +0.47% (+0.33..+0.71) | append +300 +1.4% (+0.8..+1.9), append +1500 +0.8%, ttft 2500 +1.6% (+0.4..+2.4), guard decode +1.5% | kept (70 lines) |
+| S4g `d8d1523` Engram rows read on workers while the first layers encode | 2 | decode 8192 +1.20% (+0.82..+1.41), decode 2048 +0.59% (+0.05..+1.24), append +300 +1.30% (+1.14..+1.78) | append +1500 +1.5% (+0.4..+2.3), ttft 2500 +1.6% (+0.6..+2.7), guard decode +2.4%, guard ttft 5000 +0.1% | kept (53 lines) |
+| S4 cumulative: the kept sites S4a-g together against the S3 tree (over 800 lines, needs +1.5%) | 1 | decode 2048 +5.7% (+4.3..+6.8), decode 8192 +6.2% (+5.4..+6.4) | append +300 +6.3% (+5.8..+6.7), append +1500 -0.4% (-0.9..+0.3), ttft 2500 +5.2% (+3.7..+6.0), guard decode +7.8% | passes; no site removed |
+| S5 `4fbbc4a` head half: the vocabulary head encoded before the last drain | 2 | decode 2048 +0.19% (-1.09..+0.43), decode 8192 +0.16% (-0.07..+0.30), append +300 +0.07% (-0.09..+0.18) | ttft 2500 +0.7%, guard decode +2.0%, guard ttft 5000 -0.4%; `--decode-switch` exact | dropped (neutral, adds 11 lines) |
+
+The `70` row is against the segment start (`7dea5e3`), so it carries `30`,
+`40` and `60`. It comes from two invocations, both bitwise:
+- kinds `decode,cold,append` with guard `guard-decode`, 12 valid pairs;
+- `cold-3500,cold-7500` with guard `guard-16896` and `--cache-policy-change`,
+  33 valid pairs.
+
+The first invocation dropped every 3500 and 7500 pair on cache drift. That is
+`60`'s schedule, whose single sweep seeds a colder cache, and it is why `60`
+ran with the flag. The e2e is recomputed with every phase measured.
+
+Its 95% intervals: decode 2048 +18.4..+29.1%, decode 8192 +18.3..+24.2%,
+ttft 2500 +34.0..+41.1%, ttft 3500 +91.6..+95.8%, ttft 5000 +20.1..+22.6%,
+ttft 7500 +82.5..+89.0%, ttft 10000 +1.3..+3.0%, append +300 +21.1..+22.6%,
+append +1500 +42.6..+44.8%. Against the `60` row the decode kinds add about
+20% here. Of that, `70`'s steps measured about 6% from S4 plus 1.15% (S2)
+and 1.14% (S3) step by step; the rest is `30` and `40`, which the `60` row
+did not run.

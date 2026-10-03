@@ -23,27 +23,31 @@ on M5 is unproven.
 
 ## What Changes
 
-- **Start gate.** This change starts only if `20`'s baseline decomposition
-  (`DS4_METAL_GPU_BUSY_PROFILE`), re-read after `30`, shows the per-layer glue
-  as a meaningful share of the token. Otherwise it waits in `history` until
-  upstream merges #1073.
-- **Steps, one commit each, each judged against the previous one:**
-  - S1 `e7683961`: skip candidate selection while every block is kept
+- **Start gate (met, design Context).** The change starts only if `20`'s
+  baseline decomposition, re-read after `30`, shows the per-layer glue as a
+  meaningful share of the token. After `40`, 36-41 ms of a 45-47 ms decode
+  token are GPU work up to the router, issued as about 60 dispatches per
+  layer.
+- **Steps, one commit each, each judged against the previous one** (PR
+  order, which the text requires; design D1):
+  - S0 `a3f6f31`: the `--decode-switch` control test, run with
+    `--ssd-streaming` (tool step).
+  - S1 `e768396`: skip candidate selection while every block is kept
     (exact up to 2048 blocks).
-  - S2 `4fbbc4a4`, head part: encode the vocabulary head before the last
-    drain. It builds on `30`'s queue.
-  - S3 `edceb7ab`: select experts in one dispatch. It must match the bitonic
+  - S2 `edceb7a`: select experts in one dispatch. It must match the bitonic
     order on ties; test with forced ties and an all-equal round.
-  - S4 `d95f8b61` + `1923131d`: BF16 rounding inside the producing kernels;
-    the rope contraction matches the fused store.
-  - S5 `d8d1523b`, without DSpark. More than 800 lines, so it needs at least
-    +1.5% decode.
-    - It covers: HC block input in one dispatch; paired Q8_0 projections and
-      norms; q_b with RoPE; RoPE + quantize + store; staged attention gather;
-      low projection with inverse RoPE; output and shared down fused into the
-      HC expand; shared gate/up SwiGLU; asynchronous Engram start/finish.
-    - It is a manual port. If the fusions cannot be separated cleanly from the
-      DSpark code, S5 is dropped and recorded.
+  - S3 `d95f8b6`: BF16 rounding inside the producing kernels.
+  - S4a-g `d8d1523`, without DSpark, cut by call site, one verdict each:
+    HC block input in one dispatch; paired Q8_0 projections and norms with
+    q_b + RoPE; RoPE + quantize + store (with `1923131`'s rope
+    contraction); staged attention gather; low projection with inverse
+    RoPE and output/shared down fused into the HC expand; shared gate/up
+    SwiGLU; asynchronous Engram start/finish. The kept sites together are
+    over 800 lines, so together they also need at least +1.5% decode. A
+    site that cannot be separated from the DSpark code is dropped and
+    recorded.
+  - S5 `4fbbc4a`, head part: encode the vocabulary head before the last
+    drain. It builds on `30`'s queue and on S4's `ds41_graph_after_moe`.
 - **Bitwise proof on M5 for every step**, before the harness:
   - `make test-deepseek41-metal`;
   - #1073's `--decode-switch` harness (`a3f6f313`), run with `--ssd-streaming`
@@ -66,8 +70,10 @@ None.
 
 ## Impact
 
-- `ds4.c`: the ds41 decode graph. `ds4_metal.m`, `metal/dsv41.metal`,
-  `metal/dsv4_hc.metal`, `ds4_deepseek41_gpu.h`, `tests/test_deepseek41_metal.c`.
+- `ds4.c`: the ds41 decode graph. `ds4_engram.c/.h` (S4g), `ds4_metal.m`, `metal/dsv41.metal`,
+  `metal/dsv4_hc.metal`, `metal/dense.metal`, `metal/norm.metal`,
+  `metal/cpy.metal`, `ds4_deepseek41_gpu.h`, `ds4_gpu.h`,
+  `tests/test_deepseek41_metal.c`, `tests/test_deepseek41_graph.c`, `Makefile`.
 - A large, permanent conflict surface until upstream merges #1073. Accepted
   by the owner's rule: open PRs are ported when they pass the threshold.
 - Judged on `decode` and `append` (the token-major tails); `cold` is a guard.

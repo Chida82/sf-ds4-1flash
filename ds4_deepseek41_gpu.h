@@ -21,6 +21,77 @@ typedef enum {
     DS4_V41_FP4_E8M0 = 2,
     DS4_V41_FP4_E4M3 = 3,
 } ds4_v41_activation_format;
+/* One-token router: probabilities, biased top-k and normalised weights in one dispatch. */
+int ds4_gpu_dsv41_router_one(ds4_gpu_tensor *selected, ds4_gpu_tensor *weights,
+                             ds4_gpu_tensor *probs, const ds4_gpu_tensor *logits,
+                             const void *model_map, uint64_t model_size, uint64_t bias_offset,
+                             uint32_t n_expert, uint32_t top_k, float scale);
+/* The same for a few rows (Metal only). */
+int ds4_gpu_dsv41_router_rows(ds4_gpu_tensor *selected, ds4_gpu_tensor *weights,
+                              ds4_gpu_tensor *probs, const ds4_gpu_tensor *logits,
+                              const void *model_map, uint64_t model_size, uint64_t bias_offset,
+                              uint32_t n_expert, uint32_t top_k, float scale, uint32_t rows);
+/* The HC mixer projection of one row with its norm fused (0: not fused). */
+int ds4_gpu_dsv41_hc_project(ds4_gpu_tensor *mix, const ds4_gpu_tensor *residual,
+                             const void *model_map, uint64_t model_size, uint64_t fn_offset,
+                             uint32_t n, uint32_t mix_dim, float eps);
+/* One block's whole HC input in one dispatch: the mixer projection with its
+ * norm, then split, weighted sum with `pre`'s first n_hc weights and norm
+ * (0: not fused). */
+/* The same for a few rows: `pre` advances pre_stride floats per row. */
+int ds4_gpu_dsv41_hc_block_input_rows(ds4_gpu_tensor *mix, ds4_gpu_tensor *x, ds4_gpu_tensor *norm,
+                                      ds4_gpu_tensor *split, const ds4_gpu_tensor *stream,
+                                      const ds4_gpu_tensor *pre, const void *model_map, uint64_t model_size,
+                                      uint64_t fn_offset, uint64_t scale_offset, uint64_t base_offset,
+                                      uint64_t norm_offset, uint32_t n, uint32_t mix_dim, uint32_t n_embd,
+                                      uint32_t n_hc, uint32_t sinkhorn_iters, float hc_eps, float norm_eps,
+                                      uint32_t rows, uint32_t pre_stride);
+/* One block's input: split, weighted sum with `pre`'s first n_hc weights, norm. */
+int ds4_gpu_dsv41_hc_input(ds4_gpu_tensor *x, ds4_gpu_tensor *norm, ds4_gpu_tensor *split,
+                           const ds4_gpu_tensor *mix, const ds4_gpu_tensor *residual,
+                           const ds4_gpu_tensor *pre, const void *model_map, uint64_t model_size,
+                           uint64_t scale_offset, uint64_t base_offset, uint64_t norm_offset,
+                           uint32_t n_embd, uint32_t n_hc, uint32_t sinkhorn_iters,
+                           float hc_eps, float norm_eps);
+/* Two Q8_0 projections of one row, outputs rounded to bf16 (0: run them apart). */
+int ds4_gpu_dsv41_project_pair_q8(ds4_gpu_tensor *out_a, ds4_gpu_tensor *out_b,
+                                  const void *model_map, uint64_t model_size,
+                                  uint64_t offset_a, uint64_t offset_b, uint32_t in_dim,
+                                  uint32_t out_a_dim, uint32_t out_b_dim, const ds4_gpu_tensor *x);
+/* Decode attention over the raw ring and the compressed rows selected by
+ * ids, staged in one pass (0: not available; `selected` is gather scratch). */
+int ds4_gpu_dsv41_attention_decode(ds4_gpu_tensor *heads, const void *model_map, uint64_t model_size,
+                                   uint64_t sinks_offset, const ds4_gpu_tensor *q,
+                                   const ds4_gpu_tensor *raw_kv, uint32_t n_raw, uint32_t raw_cap,
+                                   uint32_t raw_start, const ds4_gpu_tensor *comp_cache,
+                                   const ds4_gpu_tensor *ids, ds4_gpu_tensor *selected,
+                                   uint32_t n_comp, uint32_t attended, uint32_t n_head, uint32_t head_dim);
+/* The Q8_0 q projection of one row with the layer's rope on its outputs. */
+int ds4_gpu_dsv41_project_q(ds4_gpu_tensor *out, const void *model_map, uint64_t model_size,
+                            uint64_t weight_offset, uint32_t in_dim, uint32_t out_dim,
+                            const ds4_gpu_tensor *x, uint32_t pos, bool compressed);
+/* A bf16 Q8_0 matvec of one row expanded straight into the n_hc residual
+ * streams; `add` (optional) joins the row before the expand. */
+int ds4_gpu_dsv41_matmul_expand_rows(ds4_gpu_tensor *out_hc, const void *model_map, uint64_t model_size,
+                                     uint64_t weight_offset, uint32_t in_dim, uint32_t out_dim,
+                                     const ds4_gpu_tensor *x, const ds4_gpu_tensor *add,
+                                     const ds4_gpu_tensor *residual_hc, const ds4_gpu_tensor *split,
+                                     uint32_t n_hc, uint32_t rows);
+/* The shared expert's SwiGLU input from the Q8_0 gate and up weights, as the
+ * bf16 matvecs and the SwiGLU pass would produce it; gate/up are scratch. */
+int ds4_gpu_dsv41_shared_swiglu(ds4_gpu_tensor *mid, ds4_gpu_tensor *gate, ds4_gpu_tensor *up,
+                                const void *model_map, uint64_t model_size, uint64_t gate_offset,
+                                uint64_t up_offset, uint32_t in_dim, uint32_t out_dim,
+                                const ds4_gpu_tensor *x, float clamp, uint32_t rows);
+/* Two weighted RMS norms rounded to bf16 in one dispatch. */
+int ds4_gpu_dsv41_norm_pair_rows(ds4_gpu_tensor *out0, const ds4_gpu_tensor *x0, uint64_t weight0_offset, uint32_t n0,
+                                 ds4_gpu_tensor *out1, const ds4_gpu_tensor *x1, uint64_t weight1_offset, uint32_t n1,
+                                 const void *model_map, uint64_t model_size, float eps, uint32_t rows);
+/* Rope, quantize and store one row into dst at dst_offset bytes; x may be
+ * left roped and quantized in place. */
+int ds4_gpu_dsv41_rope_quantize(const ds4_gpu_tensor *x, ds4_gpu_tensor *dst, uint64_t dst_offset,
+                                uint32_t width, uint32_t start, bool compressed,
+                                ds4_v41_activation_format format);
 int ds4_gpu_dsv41_quantize(ds4_gpu_tensor *x, uint32_t width, uint32_t rows,
                           ds4_v41_activation_format format);
 /* Full-head prefill, with BF16 rounding between the two Q8 projections. */
@@ -40,6 +111,8 @@ int ds4_gpu_dsv41_attention_output_tp_batch(
 int ds4_gpu_dsv41_rope(ds4_gpu_tensor *x, uint32_t width, uint32_t heads,
                       uint32_t rows, uint32_t start, bool compressed, bool inverse);
 /* Compressed pairs advance two absolute token positions per stored row. */
+int ds4_gpu_dsv41_rope_bf16(ds4_gpu_tensor *x, uint32_t width, uint32_t heads,
+                            uint32_t rows, uint32_t start, bool compressed, bool inverse);
 int ds4_gpu_dsv41_rope_stride(ds4_gpu_tensor *x, uint32_t width, uint32_t heads,
                              uint32_t rows, uint32_t start, uint32_t stride,
                              bool compressed, bool inverse);

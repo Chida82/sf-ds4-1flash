@@ -1591,6 +1591,67 @@ done:
     return rc;
 }
 
+static int check_decode_control(const char *path, const char *prompt_path, const char *disable) {
+    ds4_engine *engine = NULL;
+    ds4_session *control = NULL, *candidate = NULL;
+    ds4_tokens tokens = {0};
+    char *prompt = NULL, err[256] = "";
+    size_t prompt_bytes;
+    int rc = 1;
+    ds4_engine_options opt = {.model_path = path, .backend = DS4_BACKEND_METAL,
+        .context_size = 4096, .power_percent = 100, .ssd_streaming = true,
+        .ssd_streaming_cache_bytes = UINT64_C(64) << 30};
+    REQUIRE(read_text_file(prompt_path, &prompt, &prompt_bytes));
+    REQUIRE(ds4_engine_open(&engine, &opt) == 0);
+    ds4_tokenize_text(engine, prompt, &tokens);
+    REQUIRE(tokens.len > 2112);
+    const int prefixes[] = {511, 2047};
+    for (unsigned pass = 0; pass < sizeof(prefixes) / sizeof(prefixes[0]); pass++) {
+        const int prefix = prefixes[pass];
+        REQUIRE(ds4_session_create(&control, engine, 4096) == 0);
+        REQUIRE(ds4_session_create(&candidate, engine, 4096) == 0);
+        ds4_tokens input = {.v = tokens.v, .len = prefix, .cap = prefix};
+        setenv(disable, "1", 1);
+        REQUIRE(ds4_session_sync(control, &input, err, sizeof(err)) == 0);
+        unsetenv(disable);
+        REQUIRE(ds4_session_sync(candidate, &input, err, sizeof(err)) == 0);
+        for (int step = 0; step <= 64; step++) {
+            ds41_gpu_graph *a = &control->ds41_graph, *b = &candidate->ds41_graph;
+            ds41_state_span sa[64], sb[64];
+            const uint32_t n = ds41_state_spans(a, a->pos, sa);
+            REQUIRE(a->pos == b->pos && n == ds41_state_spans(b, b->pos, sb));
+            REQUIRE(!memcmp(&a->history, &b->history, sizeof(a->history)));
+            REQUIRE(!memcmp(control->logits, candidate->logits, DS4_N_VOCAB * sizeof(float)));
+            for (uint32_t j = 0; j < n; j++) {
+                REQUIRE(sa[j].bytes == sb[j].bytes);
+                if (memcmp(ds4_gpu_tensor_contents(sa[j].tensor),
+                           ds4_gpu_tensor_contents(sb[j].tensor), (size_t)sa[j].bytes)) {
+                    fprintf(stderr, "decode control state mismatch: pos=%u span=%u\n", a->pos, j);
+                    goto done;
+                }
+            }
+            if (step == 64) break;
+            const int token = tokens.v[prefix + step];
+            setenv(disable, "1", 1);
+            REQUIRE(ds4_session_eval(control, token, err, sizeof(err)) == 0);
+            unsetenv(disable);
+            REQUIRE(ds4_session_eval(candidate, token, err, sizeof(err)) == 0);
+        }
+        fprintf(stderr, "V4.1 decode control %s SSD prefix=%d: 65 exact logits/history/KV states PASS\n",
+                disable, prefix);
+        ds4_session_free(candidate); candidate = NULL;
+        ds4_session_free(control); control = NULL;
+    }
+    rc = 0;
+done:
+    if (err[0]) fprintf(stderr, "%s\n", err);
+    unsetenv(disable);
+    if (ds4_gpu_commands_active()) ds4_gpu_end_commands();
+    ds4_session_free(candidate); ds4_session_free(control); ds4_engine_close(engine);
+    ds4_tokens_free(&tokens); free(prompt);
+    return rc;
+}
+
 static int check_decoder_suffix(const char *path, const char *prompt_path) {
     ds4_engine *engine = NULL;
     ds4_session *control = NULL, *candidate = NULL;
@@ -2334,6 +2395,8 @@ int main(int argc, char **argv) {
         return check_prefill_alias_fallback(argv[1], argv[3]);
     if (argc == 4 && !strcmp(argv[2], "--chunk-prefill"))
         return check_wide_prefill(argv[1], argv[3], false, false, "DS4_METAL_DISABLE_V41_WIDE_CHUNK");
+    if (argc == 5 && !strcmp(argv[2], "--decode-switch"))
+        return check_decode_control(argv[1], argv[3], argv[4]);
     if (argc == 4 && !strcmp(argv[2], "--decoder-suffix"))
         return check_decoder_suffix(argv[1], argv[3]);
     if (argc == 4 && !strcmp(argv[2], "--sweep-partitions"))
@@ -2370,7 +2433,7 @@ int main(int argc, char **argv) {
                         "--prefill-alias-fallback PROMPT_FILE | "
                         "--sweep-partitions PROMPT_FILE | "
                         "--deferred-decoder PROMPT_FILE | "
-                        "--decoder-suffix PROMPT_FILE | --session-accounting | --memory-plan | "
+                        "--decoder-suffix PROMPT_FILE | --decode-switch PROMPT_FILE SWITCH | --session-accounting | --memory-plan | "
                         "RENDERED_PROMPT [GENERATE])\n", argv[0]);
         return 2;
     }

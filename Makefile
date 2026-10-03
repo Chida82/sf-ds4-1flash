@@ -44,6 +44,7 @@ help:
 	@echo "  make check-mxfp4-half-lut  Verify the checked-in MXFP4 half LUT matches the generator"
 	@echo "  make test-mxfp4-metal  Check the MXFP4 half LUT, then run Metal MXFP4 exactness tests"
 	@echo "  make test-deepseek41-metal  Run the DeepSeek V4.1 Metal kernel tests"
+	@echo "  make test-deepseek41-decode-switch SWITCH=VAR  Decode bitwise with and without a switch"
 	@echo "  make test-engram         Run the Engram store tests"
 	@echo "  make clean        Remove build outputs"
 
@@ -158,6 +159,13 @@ tests/test_deepseek41_metal: tests/test_deepseek41_metal.o $(CORE_OBJS)
 .PHONY: test-deepseek41-metal
 test-deepseek41-metal: tests/test_deepseek41_metal
 	./tests/test_deepseek41_metal
+
+# Decode with SWITCH set against decode without it: logits, Engram history and
+# KV state bitwise over 65 steps after 511- and 2047-token prefixes.
+SWITCH ?= DS4_METAL_DISABLE_V41_DECODE_FLUSH
+.PHONY: test-deepseek41-decode-switch
+test-deepseek41-decode-switch: tests/test_deepseek41_graph
+	./tests/test_deepseek41_graph deepseek-v4.1-flash.gguf --decode-switch speed-bench/promessi_sposi.txt $(SWITCH)
 
 tests/test_deepseek41_graph.o: tests/test_deepseek41_graph.c ds4.c ds4_gpu.h ds4_engram.h
 	$(CC) $(filter-out -ffast-math,$(CFLAGS)) -Wno-unused-function -I. -c -o $@ $<

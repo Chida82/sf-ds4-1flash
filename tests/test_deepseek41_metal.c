@@ -390,6 +390,38 @@ static int check_rope_stride(void) {
     return 1;
 }
 
+#ifdef __APPLE__
+/* The fused RoPE, quantize and store kernel against the three separate steps. */
+static int check_rope_quantize(void) {
+    enum { WIDTH = 512, TRIALS = 300 };
+    ds4_gpu_tensor *a = upload(NULL, WIDTH * sizeof(float));
+    ds4_gpu_tensor *b = upload(NULL, WIDTH * sizeof(float));
+    ds4_gpu_tensor *c = upload(NULL, (WIDTH + 1u) * sizeof(float));
+    CHECK(a && b && c);
+    float *x = ds4_gpu_tensor_contents(a), *y = ds4_gpu_tensor_contents(b);
+    float *z = ds4_gpu_tensor_contents(c);
+    for (uint32_t t = 0; t < TRIALS; t++) {
+        const ds4_v41_activation_format format = (ds4_v41_activation_format)(1 + t % 3);
+        const uint32_t width = format == DS4_V41_FP4_E8M0 ? 128 : WIDTH;
+        const bool compressed = (t / 3) & 1;
+        const uint32_t pos = (uint32_t)(fabsf(random_value()) * 15000);
+        for (uint32_t i = 0; i < width; i++) x[i] = y[i] = ldexpf(random_value(), (int)(t % 11) - 5);
+        z[width] = 12345;
+        CHECK(ds4_gpu_begin_commands());
+        CHECK(ds4_gpu_dsv41_rope(a, width, 1, 1, pos, compressed, false));
+        CHECK(ds4_gpu_dsv41_quantize(a, width, 1, format));
+        CHECK(ds4_gpu_dsv41_rope_quantize(b, c, 0, width, pos, compressed, format));
+        CHECK(ds4_gpu_end_commands());
+        CHECK(!memcmp(x, z, width * sizeof(float)) && z[width] == 12345);
+    }
+    ds4_gpu_tensor_free(c); ds4_gpu_tensor_free(b); ds4_gpu_tensor_free(a);
+    fprintf(stderr, "V4.1 fused RoPE quantize: bitwise match with the separate steps PASS\n");
+    return 1;
+}
+#else
+static int check_rope_quantize(void) { return 1; }
+#endif
+
 static int check_pool(void) {
     enum { D = 512, ROWS = 257, PAIRS = ROWS / 2 };
     float *kv = malloc(ROWS * D * sizeof(float)), *scores = malloc(ROWS * D * sizeof(float));
@@ -1257,6 +1289,65 @@ static int check_tp_attention(void) {
     return 1;
 }
 
+/* The one-dispatch router against the bitonic chain, bit for bit: ids in
+ * order, probabilities and weights. Ties come from repeated logits over a
+ * bias with repeated values; -120 takes the polynomial softplus branch. */
+static int check_router_one(void) {
+    enum { MAX_EXPERTS = 384, USED = 6, RANDOM = 64, MODES = RANDOM + 5 };
+    const uint32_t saved_seed = seed;   /* leave the later checks' inputs unchanged */
+    const size_t bias_bytes = (size_t)getpagesize();
+    float *bias = NULL, logits[MAX_EXPERTS];
+    CHECK(posix_memalign((void **)&bias, bias_bytes, bias_bytes) == 0);
+    memset(bias, 0, bias_bytes);
+    for (unsigned e = 0; e < MAX_EXPERTS; e++) bias[e] = (e % 7) * 0.125f;
+    CHECK(ds4_gpu_set_model_map(bias, bias_bytes));
+    ds4_gpu_tensor *x = upload(NULL, sizeof(logits));
+    ds4_gpu_tensor *p[2], *ids[2], *w[2];
+    for (unsigned i = 0; i < 2; i++) {
+        p[i] = upload(NULL, sizeof(logits));
+        ids[i] = upload(NULL, USED * sizeof(int32_t));
+        w[i] = upload(NULL, USED * sizeof(float));
+        CHECK(p[i] && ids[i] && w[i]);
+    }
+    CHECK(x);
+    /* V4.1's shape only: 256 experts take V4 Flash's fused fast path instead. */
+    for (unsigned n = MAX_EXPERTS; n <= MAX_EXPERTS; n += 128) {
+        for (unsigned mode = 0; mode < MODES; mode++) {
+            for (unsigned e = 0; e < n; e++) {
+                const float pick[] = {0.0f, -0.0f, 0x1p-140f, -0x1p-140f, 1.0f, -1.0f};
+                const unsigned m = mode < RANDOM ? 0 : mode - RANDOM + 1;
+                logits[e] = m == 0 ? random_value() * 8 :
+                            m == 1 ? 0.0f :                          /* all equal */
+                            m == 2 ? (float)(e % 3) - 1.0f :         /* forced ties */
+                            m == 3 ? -120.0f :                       /* polynomial branch */
+                            m == 4 ? pick[e % 6] :                   /* signed zeros, denormals */
+                            (e % 2 ? -80.0f : 40.0f);
+            }
+            CHECK(ds4_gpu_tensor_write(x, 0, logits, n * sizeof(float)));
+            CHECK(ds4_gpu_router_select_tensor(ids[0], w[0], p[0], bias, bias_bytes, 0, 0, 0, 0,
+                n, USED, 1.5f, 0, 0, true, false, x));
+            CHECK(ds4_gpu_dsv41_router_one(ids[1], w[1], p[1], x, bias, bias_bytes, 0, n, USED, 1.5f));
+            CHECK(ds4_gpu_synchronize());
+            if (memcmp(ds4_gpu_tensor_contents(ids[0]), ds4_gpu_tensor_contents(ids[1]), USED * 4) ||
+                memcmp(ds4_gpu_tensor_contents(w[0]), ds4_gpu_tensor_contents(w[1]), USED * 4) ||
+                memcmp(ds4_gpu_tensor_contents(p[0]), ds4_gpu_tensor_contents(p[1]), n * 4)) {
+                fprintf(stderr, "router one n=%u mode=%u differs from the bitonic chain\n", n, mode);
+                return 0;
+            }
+        }
+    }
+    ds4_gpu_tensor_free(x);
+    for (unsigned i = 0; i < 2; i++) {
+        ds4_gpu_tensor_free(p[i]); ds4_gpu_tensor_free(ids[i]); ds4_gpu_tensor_free(w[i]);
+    }
+    ds4_gpu_cleanup();
+    free(bias);
+    CHECK(ds4_gpu_init());
+    seed = saved_seed;
+    fprintf(stderr, "one-dispatch router: ties, all-equal, -120, signed zeros and denormals bitwise: PASS\n");
+    return 1;
+}
+
 int main(int argc, char **argv) {
     if (argc == 2 && !strcmp(argv[1], "--embedding")) {
         const int ok = ds4_gpu_init() && check_embedding();
@@ -1265,6 +1356,16 @@ int main(int argc, char **argv) {
     }
     if (argc == 2 && !strcmp(argv[1], "--router")) {
         const int ok = ds4_gpu_init() && check_router();
+        ds4_gpu_cleanup();
+        return ok ? 0 : 1;
+    }
+    if (argc == 2 && !strcmp(argv[1], "--rope-quantize")) {
+        const int ok = ds4_gpu_init() && check_rope_quantize();
+        ds4_gpu_cleanup();
+        return ok ? 0 : 1;
+    }
+    if (argc == 2 && !strcmp(argv[1], "--router-one")) {
+        const int ok = ds4_gpu_init() && check_router_one();
         ds4_gpu_cleanup();
         return ok ? 0 : 1;
     }
@@ -1316,7 +1417,7 @@ int main(int argc, char **argv) {
         return ok ? 0 : 1;
     }
     if (argc != 1) return 2;
-    int ok = ds4_gpu_init() && check_router() && check_quantization() && check_engram() && check_rope_stride() && check_pool() &&
+    int ok = ds4_gpu_init() && check_router() && check_router_one() && check_quantization() && check_engram() && check_rope_stride() && check_rope_quantize() && check_pool() &&
              check_candidates() && check_candidates_batch(16449, 17, 16400) &&
              check_candidates_batch(17017, 17, 17000) && check_sparse_gather() && check_indexer_batch() &&
              check_embedding() && check_index_projection() && check_general_topk() && check_causal_topk() && check_indexer_all() && check_compact_carry() && check_attention_output(false) &&

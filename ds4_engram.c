@@ -271,3 +271,39 @@ bool ds4_engram_read_batch(const ds4_engram_table *t, const uint32_t *rows,
     errno = saved;
     return ok;
 }
+
+struct ds4_engram_prefetch {
+    const ds4_engram_table *table;
+    const uint32_t *rows;
+    size_t tokens, stride;
+    float *out;
+    bool ok;
+    int error;
+    dispatch_group_t group;
+};
+
+static void prefetch_run(void *context) {
+    ds4_engram_prefetch *p = context;
+    p->ok = ds4_engram_read_batch(p->table, p->rows, p->tokens, p->stride, p->out);
+    if (!p->ok) p->error = errno ? errno : EIO;
+}
+
+ds4_engram_prefetch *ds4_engram_read_batch_start(const ds4_engram_table *table, const uint32_t *rows,
+                                                 size_t tokens, size_t stride, float *out) {
+    ds4_engram_prefetch *p = calloc(1, sizeof(*p));
+    if (!p) return NULL;
+    *p = (ds4_engram_prefetch){.table = table, .rows = rows, .tokens = tokens, .stride = stride, .out = out};
+    p->group = dispatch_group_create();
+    dispatch_group_async_f(p->group, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), p, prefetch_run);
+    return p;
+}
+
+bool ds4_engram_read_batch_finish(ds4_engram_prefetch *p) {
+    if (!p) return false;
+    dispatch_group_wait(p->group, DISPATCH_TIME_FOREVER);
+    dispatch_release(p->group);
+    const bool ok = p->ok;
+    if (!ok) errno = p->error;
+    free(p);
+    return ok;
+}

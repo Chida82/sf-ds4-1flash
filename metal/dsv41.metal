@@ -39,9 +39,133 @@ kernel void kernel_dsv41_bf16_linear(
     }
 }
 
+struct ds4_metal_args_dsv41_router {
+    uint n_expert, top_k, has_bias;
+    float scale;
+};
+
+// One-token router for up to 1024 experts in one dispatch: the softplus/sqrt
+// probability transform, the biased top-k through the same bitonic network as
+// kernel_argsort_f32_i32_desc (padding indices sort last), and the weights
+// normalised as the generic chain does: gather, SIMD sum over the top_k lanes,
+// clamp, divide, scale. Threadgroup memory holds nth ints and 2 * nth floats.
+kernel void kernel_dsv41_router_one(
+        constant ds4_metal_args_dsv41_router &args,
+        device const float *logits,
+        device const float *bias,
+        device float *probs,
+        device int32_t *selected,
+        device float *weights,
+        threadgroup int32_t *shmem_i32 [[threadgroup(0)]],
+        uint2 tg [[threadgroup_position_in_grid]],
+        uint2 tpos [[thread_position_in_threadgroup]],
+        uint2 tsize [[threads_per_threadgroup]]) {
+    const uint col = tpos.x, ntg = tsize.x;
+    const int width = (int)args.n_expert;
+    logits += tg.y * args.n_expert;   /* one threadgroup per row */
+    probs += tg.y * args.n_expert;
+    selected += tg.y * args.top_k;
+    weights += tg.y * args.top_k;
+    threadgroup float *score = (threadgroup float *)(shmem_i32 + ntg);
+    threadgroup float *prob = score + ntg;
+    shmem_i32[col] = (int)col;
+    if ((int)col < width) {
+        const float x = logits[col];
+        const float ex = exp(x);
+        const float em = min(ex, 0.03125f);
+        const float poly = em*(1.0f - em*(0.5f - em*(1.0f/3.0f - 0.25f*em)));
+        const float sp = select(select(log(1.0f + ex), poly, ex < 0.03125f), x, x > 20.0f);
+        const float p = sqrt(sp);
+        probs[col] = p;
+        prob[col] = p;
+        score[col] = args.has_bias ? p + bias[col] : p;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    for (int k = 2; k <= (int)ntg; k *= 2) {
+        for (int j = k / 2; j > 0; j /= 2) {
+            const int ixj = (int)col ^ j;
+            if (ixj > (int)col) {
+                const int a = shmem_i32[col], b = shmem_i32[ixj];
+                const bool swap = ((int)col & k) == 0 ?
+                    (a >= width || (b < width && score[a] < score[b])) :
+                    (b >= width || (a < width && score[a] > score[b]));
+                if (swap) { shmem_i32[col] = b; shmem_i32[ixj] = a; }
+            }
+            threadgroup_barrier(mem_flags::mem_threadgroup);
+        }
+    }
+    if (col < args.top_k) {
+        const int32_t idx = shmem_i32[col];
+        selected[col] = idx;
+        const float w = prob[idx];
+        const float total = clamp(simd_sum(w), 6.103515625e-5f, INFINITY);
+        // two stores as in the generic chain: the quotient is rounded before the scale
+        threadgroup volatile float *quotient = (threadgroup volatile float *)(prob + ntg) + col;
+        *quotient = w / total;
+        weights[col] = *quotient * args.scale;
+    }
+}
+
+struct ds4_metal_args_dsv41_norm_pair {
+    uint n0, n1, ntg0, ntg1;
+    float eps;
+};
+
+// Two weighted RMS norms in one dispatch, each row on its own thread count
+// (ntg0 threads then ntg1), so every reduction matches the single-row kernel.
+kernel void kernel_dsv41_norm_pair(
+        constant ds4_metal_args_dsv41_norm_pair &args,
+        device const float4 *x0,
+        device const float4 *w0,
+        device float4 *y0,
+        device const float4 *x1,
+        device const float4 *w1,
+        device float4 *y1,
+        threadgroup float *shmem [[threadgroup(0)]],
+        uint2 tg [[threadgroup_position_in_grid]],
+        ushort2 tpos [[thread_position_in_threadgroup]],
+        ushort sgitg [[simdgroup_index_in_threadgroup]],
+        ushort tiisg [[thread_index_in_simdgroup]]) {
+    const ushort tid = tpos.x;
+    const bool second = tid >= args.ntg0;
+    const uint ntg = second ? args.ntg1 : args.ntg0;
+    const uint t = second ? tid - args.ntg0 : tid;
+    const uint sg = second ? sgitg - args.ntg0 / 32u : sgitg;
+    const int n = int(second ? args.n1 : args.n0);
+    const int ne00_t = n / 4;
+    const uint row = tg.y;   /* grid row = activation row */
+    device const float4 *x = (second ? x1 : x0) + (ulong)row * ne00_t;
+    device const float4 *w = second ? w1 : w0;
+    device float4 *y = (second ? y1 : y0) + (ulong)row * ne00_t;
+    threadgroup float *sh = shmem + (second ? 32u : 0u);
+    if (sg == 0) {
+        sh[tiisg] = 0.0f;
+    }
+    float sumf = 0.0f;
+    for (int i = int(t); i < ne00_t; i += int(ntg)) {
+        sumf += dot(x[i], x[i]);
+    }
+    sumf = simd_sum(sumf);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (tiisg == 0) {
+        sh[sg] = sumf;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    sumf = sh[tiisg];
+    sumf = simd_sum(sumf);
+    const float mean  = sumf/n;
+    const float scale = 1.0f/sqrt(mean + args.eps);
+    for (int i = int(t); i < ne00_t; i += int(ntg)) {
+        float4 v = x[i]*scale;
+        v = v*w[i];
+        y[i] = ds4_bf16_round(v);
+    }
+}
+
 struct ds4_metal_args_dsv41_rope {
     uint width, heads, rows, start, inverse, stride;
     float frequencies[32];
+    uint round_all;
 };
 
 kernel void kernel_dsv41_rope(
@@ -52,11 +176,59 @@ kernel void kernel_dsv41_rope(
     const float theta = float(args.start + group.y * args.stride) * args.frequencies[lane];
     const float c = precise::cos(theta);
     const float s = args.inverse ? -precise::sin(theta) : precise::sin(theta);
-    const ulong i = ((ulong)group.y * args.heads + group.x) * args.width +
-                    args.width - 64u + 2u * lane;
-    const float re = x[i], im = x[i + 1u];
+    const ulong head = ((ulong)group.y * args.heads + group.x) * args.width;
+    if (args.round_all) {
+        for (uint k = lane; k + 64u < args.width; k += 32u) x[head + k] = dsv41_bf16(x[head + k]);
+    }
+    const ulong i = head + args.width - 64u + 2u * lane;
+    float re = x[i], im = x[i + 1u];
+    if (args.round_all) { re = dsv41_bf16(re); im = dsv41_bf16(im); }
     x[i] = dsv41_bf16(re * c - im * s);
     x[i + 1u] = dsv41_bf16(re * s + im * c);
+}
+
+struct ds4_metal_args_dsv41_rope_quantize {
+    uint width, start, inverse, mode;
+    float frequencies[32];
+};
+
+// One row's rope, quantization and store into a cache row: the rotation of
+// the last 64 columns as kernel_dsv41_rope applies it, then the block
+// quantization of kernel_dsv41_quantize, written to dst.
+kernel void kernel_dsv41_rope_quantize(
+        constant ds4_metal_args_dsv41_rope_quantize &args,
+        device const float *x,
+        device float *dst,
+        uint group [[threadgroup_position_in_grid]],
+        uint lane [[thread_index_in_simdgroup]]) {
+    const uint block = args.mode == 3u ? 16u : 32u;
+    const uint column = group * block + lane;
+    const bool valid = lane < block && column < args.width;
+    float value = valid ? x[column] : 0.0f;
+    const float other = simd_shuffle_xor(value, 1u);
+    const uint rotary = args.width - 64u;
+    if (valid && column >= rotary) {
+        const float theta = float(args.start) * args.frequencies[(column - rotary) >> 1u];
+        const float c = precise::cos(theta);
+        const float s = args.inverse ? -precise::sin(theta) : precise::sin(theta);
+        const float re = (column & 1u) ? other : value;
+        const float im = (column & 1u) ? value : other;
+        // the contraction kernel_dsv41_rope compiles to
+        value = (column & 1u) ? dsv41_bf16(fma(im, c, re * s)) : dsv41_bf16(fma(re, c, -(im * s)));
+    }
+    value = dsv41_bf16(value);
+    const float amax = simd_max(abs(value));
+    float result = value;
+    if (args.mode == 1u) {
+        const float scale = dsv41_pow2_ceil(max(amax, 1.0e-4f) * (1.0f / 448.0f));
+        result = copysign(dsv4_e4m3fn_dequant(abs(value) / scale), value) * scale;
+    } else if (args.mode == 2u || args.mode == 3u) {
+        const float scale = args.mode == 3u
+            ? dsv4_e4m3fn_dequant(max(amax, 0.01171875f) / 6.0f)
+            : dsv41_pow2_ceil(max(amax, 7.052966104933725e-38f) * (1.0f / 6.0f));
+        result = copysign(dsv4_e2m1fn_dequant(abs(value) / scale), value) * scale;
+    }
+    if (valid) dst[column] = dsv41_bf16(result);
 }
 
 kernel void kernel_dsv41_quantize(

@@ -117,6 +117,28 @@ batched and token-major kernels round differently. Since
 buffers have no switch; they fall back to mmap when the reserve cannot hold
 them. All three keep the output bitwise identical.
 
+Since `70-decode-glue-fusions`, a decode token issues fewer, larger kernels
+per layer, and its Engram rows are read on workers while the first layers
+encode. The fusions are:
+- experts selected in one dispatch;
+- BF16 rounding inside the producing kernels;
+- the HC block input in one dispatch;
+- paired q_a/kv projections and norms, and q_b with RoPE;
+- RoPE + quantize + store;
+- attention staged with its gather;
+- attention output and shared down expanded straight into the HC streams;
+- the shared gate/up SwiGLU in one dispatch.
+
+The token-major prefill tails use the same graph, so they speed up too.
+These switches turn fusions off, and each one keeps the output bitwise
+identical (`make test-deepseek41-decode-switch SWITCH=<env>`):
+- `DS4_METAL_DISABLE_V41_ROUTER_ONE`;
+- `DS4_METAL_DISABLE_V41_HC_BLOCK_INPUT`;
+- `DS4_METAL_DISABLE_M5_HC_NORM_MIX_CLUSTER2`;
+- `DS4_METAL_DISABLE_V41_ROPE_QUANTIZE`;
+- `DS4_METAL_DISABLE_GATHERED_KV_STAGE`;
+- `DS4_METAL_DISABLE_V41_EXPAND_FUSION`.
+
 The alternative to streaming is not more RAM in one box but **two 128 GB Macs
 with TP/RDMA** (`docs/DISTRIBUTED.md`), which holds about 81 GiB of main weights
 per rank and drops `--ssd-streaming`. A 256 GB or larger machine can hold the
@@ -261,6 +283,11 @@ make test            # model-less tests: seconds, run after every change
 make help            # remaining targets (model-backed tests follow gguf/ symlinks)
 ./download.sh        # lists components; ./download.sh <component> fetches/symlinks one
 ```
+
+A runtime switch that claims identical output is checked with
+`make test-deepseek41-decode-switch SWITCH=<env>`. It decodes 65 tokens with
+and without the switch and compares logits, Engram history and KV state
+bitwise.
 
 Model-backed checks before a PR: the kernel tests of this model, `ds4_test`,
 the exact speculative mechanism in Identity (DSpark, MTP, or none),

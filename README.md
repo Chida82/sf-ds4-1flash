@@ -17,6 +17,28 @@ We test things in integration: model loading, prompt rendering,
 tool calls, KV state, and the HTTP server are built and tested together.
 The repository also includes tools and data for quality and speed measurement.
 
+## Why this fork exists
+
+ds4 is built around a few models rather than as a general GGUF runner, and it
+is meant to be read and changed with a coding agent: a working template to
+adapt to your model and hardware, not a product that covers every setup (see
+"How to use this project" below). This fork pushes both ideas to the end: one
+model, one backend, and nothing else in the tree. Code for other models, other
+GPU backends and the bundled agent is deleted, not hidden behind flags. The
+result is a source tree small enough that a person, or an LLM, can load it
+whole and see how DeepSeek V4.1 Flash actually runs, which makes it cheap to
+try an idea, measure it and keep or drop it.
+
+Metal is the only GPU backend because the only hardware this fork is developed
+and tested on is an Apple M5 Max.
+
+The smaller tree is also what makes the rest of this work possible: open pull
+requests on ds4 are analysed against this one model and ported where they hold
+up (`docs/upstream-prs.md` records the verdicts), and further improvements are
+investigated for Apple Silicon. None of it changed what the model writes:
+every speed-up so far keeps the output bit for bit identical (see "Speed
+without changing the output" below).
+
 ## Supported hardware
 
 * **Metal**, the primary target, on Macs with 96 GB or more. Smaller machines
@@ -177,6 +199,17 @@ The default suite is `core`; `--suite all` runs core and hard cases.
 non-interactive output, and `--regrade-trace FILE` scores an existing trace
 without generating again. Sources and licenses are in [EVAL_DATA.md](EVAL_DATA.md).
 For inference correctness and release checks, read [testing](docs/TESTING.md).
+
+## Speed without changing the output
+
+**Every performance change so far has left the model's output bit for bit
+identical.** No precision is traded for speed: no lower-precision KV cache, no
+approximate kernel, no route that changes a single logit.
+
+| Path | Guarantee |
+|---|---|
+| Prefill and decode | logits **bit-identical** to the build before each step (`speed-bench/ab_bench.py --bitwise`); every step in `speed-bench/perf-record.md` passed that bitwise gate |
+| Against upstream ds4 | greedy output **token-identical** to ds4 at the merge-base (StarForge parity oracle, ten prompts) |
 
 ## Speed
 
