@@ -14,7 +14,7 @@ See proposal.md. Engram tables are about 188.83 GiB but each text token requests
 
 ### D1. Independence and start gate
 
-Execute after the `140` decision, but it need not have landed. Measure actual Engram readiness/conversion after `120` alongside expert IO. Compare isolated storage first with dual-SSD up delivery disabled. No exposed contention means a closed gate and no runtime change. A raw-device latency parity result alone does not open it.
+Execute after the `140` decision, but it need not have landed. Start from `120`'s measured exposed Engram cost (its task 1.2, re-read on the post-`120` tree) rather than a new survey; add only the readiness under concurrent expert IO that `120` does not isolate. No exposed Engram time closes both the isolation and the split placement. Compare isolated storage first with dual-SSD up delivery disabled. No exposed contention means a closed gate and no runtime change. A raw-device latency parity result alone does not open it.
 
 ### D2. Explicit source
 
@@ -26,11 +26,11 @@ Validation happens once per engine, not per session, and is logged separately. H
 
 ### D3. Keep the reader and semantics
 
-The existing bounded row reader, conversion, sorting, deduplication, image masking and asynchronous producer remain unchanged except for the admitted fd/offset source. There is no extra reader pool and no whole-table mmap or RAM allocation. Read errors, invalid values and early EOF follow the existing error contract; engine/session teardown joins work before releasing tables. Do not create an unbounded retry or silently substitute a different file after a failure.
+The existing bounded row reader, conversion, sorting, deduplication, image masking and asynchronous producer remain unchanged except for the admitted fd/offset source. There is no extra reader pool and no whole-table mmap or RAM allocation. A split placement assigns a fixed number of the existing readers to the admitted replica and the rest to the canonical fd; rows, sorting and deduplication are unchanged, only the fd a reader uses differs. Read errors, invalid values and early EOF follow the existing error contract; engine/session teardown joins work before releasing tables. Do not create an unbounded retry or silently substitute a different file after a failure.
 
 ### D4. Evaluate placements separately
 
-Measure (A) canonical-only, (B) external Engram with internal experts, and, only if `140` is kept, (C) external up plus Engram against the best accepted placement. Small random IO may reduce external bulk throughput, so C is not assumed superior. A losing combination is documented and not promoted as the recommended setup.
+Measure (A) canonical-only, (B) external Engram with internal experts, (D) Engram split across both devices, and, only if `140` is kept, (C) external up plus Engram against the best accepted placement. B and D are one mechanism: during measurement a diagnostic `DS4_ENGRAM_REPLICA_SHARE` sets the replica's share of readers (all of them is B; the 139k/173k row-IOPS ratio suggests about 45% for D, to be measured, not assumed). The kept placement becomes the fixed behavior of `DS4_ENGRAM_REPLICA` and the diagnostic is removed; no permanent choice between equivalent placements. Small random IO may reduce external bulk throughput, so C is not assumed superior. A losing combination is documented and not promoted as the recommended setup.
 
 Use actual `ds4_engram_read_batch` addresses/workers and conversion when diagnosing latency. Synthetic fixtures cover the same metadata with wrong contents, mismatched token maps, mutation/reopen, EOF, image masks and cancellation. Whole-model bitwise comparisons include session save/restore and prompt continuation, not merely a 24-read microbatch.
 
@@ -45,7 +45,7 @@ A compact Engram file alone does not shrink the canonical internal GGUF. Actual 
 ## Risks / Trade-offs
 
 - External row latency is worse -> require the contention benefit to outweigh it in real requests.
-- Full verification is expensive -> report startup and amortization, no hidden persistent trust cache.
+- Full verification is expensive: both tables are 188.83 GiB, about 30 s per engine open at the external 6.38 GB/s -> report startup and amortization, no hidden persistent trust cache. Acceptable for a long-lived server; a one-shot CLI run likely pays more than it gains.
 - Different inode loses page-cache locality or hides wrong data -> bounded content validation and stable descriptor identity.
 - Combined placement saturates external IO -> independently measure B and C; do not sum their estimated gains.
 

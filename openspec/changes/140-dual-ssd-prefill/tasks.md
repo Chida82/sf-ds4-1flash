@@ -3,7 +3,7 @@
 ## 1. Hardware and exposed-wait gate
 
 - [ ] 1.1 Resolve changes through `130`, verify the kept explicit-buffer support, and prepare `perf/140-dual-ssd-prefill` plus its baseline. Verify named baseline graph tests and fixed cache/reserve; record whether wide/RAM-source/native-IO steps actually landed.
-- [ ] 1.2 Measure internal-only layer-ready stalls and identify an existing user-approved exact replica on the external drive. Verify devices/filesystems and available source identity; if no replica exists, stop and ask before any copy. Record the gate in the performance record; stop if recoverable IO cannot meet the project threshold.
+- [ ] 1.2 Measure internal-only layer-ready stalls and identify an existing user-approved exact replica on the external drive. Verify devices/filesystems and available source identity; if no replica exists, stop and ask before any copy. Record the gate in the performance record; stop if recoverable IO cannot meet the project threshold. From the same internal-only run, record decode expert `pread` ms per token and the first token after a sweep (D5 decode gate): under about 5% of a decode token, add "external SSD for decode misses" to the Rejected ideas with the figure; above it, stop and propose a separate change rather than widening this one.
 
 ## 2. Source admission and content validation
 

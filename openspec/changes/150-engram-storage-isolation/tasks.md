@@ -3,7 +3,7 @@
 ## 1. Isolation gate and baseline
 
 - [ ] 1.1 After the `140` decision, prepare `perf/150-engram-storage-isolation` and the accepted baseline, with dual-SSD up disabled for the first isolation comparison. Verify named baseline Engram/graph tests and which `120`/`140` helpers are actually present.
-- [ ] 1.2 Measure actual Engram readiness under internal bulk IO and identify an approved exact external replica. Verify the report uses production row alignment/workers/conversion and documents exposed contention; stop if the performance gate is shut or if a missing replica would require an unapproved copy.
+- [ ] 1.2 Read `120`'s exposed Engram cost, then measure only the Engram readiness under internal bulk IO that it does not cover, and identify an approved exact external replica. Verify the report uses production row alignment/workers/conversion and documents exposed contention; stop if the performance gate is shut or if a missing replica would require an unapproved copy.
 
 ## 2. Exact secondary-source admission
 
@@ -17,7 +17,7 @@
 
 ## 4. Placement performance
 
-- [ ] 4.1 Review and A/B internal-only versus external Engram with normal `cold,append`, timed decode and both long guards. Verify source/validation logs and the project keep rule; remove an additive neutral feature even if it would support a later capacity project.
+- [ ] 4.1 Review and A/B internal-only versus external Engram (B) and split Engram (D, D4's reader share) with normal `cold,append`, timed decode and both long guards. Verify source/validation logs and the project keep rule; keep at most one placement, fix it as the option's behavior and remove the share diagnostic; remove an additive neutral feature even if it would support a later capacity project.
 - [ ] 4.2 Only if `140` was kept, compare combined external up-plus-Engram against the best accepted placement. Verify contention and row-tail latency are measured rather than gains added; document a losing combination instead of recommending it.
 - [ ] 4.3 Measure engine-open verification and fresh/repeated-request latency, respecting the harness budget and D4's stop rule. Verify the evidence makes initialization cost and break-even explicit, with no cold-start claim based on steady timing alone.
 

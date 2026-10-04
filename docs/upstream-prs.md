@@ -183,7 +183,7 @@ summary's `§n` names the section of those notes.
 | #738 | cuda: overlap streamed expert uploads with compute | open | `e747490` | 2 | 2026-09-25 | not reachable from V4.1 (CUDA): unified memory has no upload step (§7) |
 | #725 | ssd: enforce streaming cache floor at one-prefill minimum | open | `d7716f5` | 1 | 2026-09-25 | `drop`: a 240-slot floor; the cache here holds about 8090 slots (§7) |
 | #647 | cuda: implement real per-(layer,expert) LRU for --ssd-streaming-cache-experts | open | `ab98473` | 4 | 2026-09-25 | not reachable from V4.1 (CUDA) (§7) |
-| #621 | Support AProjQ4 GGUFs: Q4_K dense attention projections; Metal, ROCm and CUDA performance improvements; SSD streaming support for speed-bench; quality-of-life improvements; bugfixes | closed | `6a20b13` | 189 | 2026-09-25 | superseded by #952, except its SSD-read commits: `adopt` `8f5a745` -> `40-ssd-expert-reads` (split 4 by default), `f7695ea` `history` (see Commits); `61e35e2` `open` (see Commits) (§8) |
+| #621 | Support AProjQ4 GGUFs: Q4_K dense attention projections; Metal, ROCm and CUDA performance improvements; SSD streaming support for speed-bench; quality-of-life improvements; bugfixes | closed | `6a20b13` | 189 | 2026-09-25 | superseded by #952, except its SSD-read commits: `adopt` `8f5a745` -> `40-ssd-expert-reads` (split 4 by default), `f7695ea` `history` (see Commits); `61e35e2` `history` (`110`, see Commits) (§8) |
 | #570 | metal: pread pool dispatch stats and IO-tier pinning for streaming experts | open | `66ca6ef` | 2 | 2026-09-25 | `adopt` `a1afb82` -> `40-ssd-expert-reads` (pool queue depth and GB/s in the timing summary; its first reading found decode reads at 4% of a token); `66ca6ef` `drop` (see Commits) (§7) |
 | #559 | Add opt-in fused Q2 down-sum kernel | closed | `3d185ea` | 1 | 2026-09-25 | `drop`: atomic float adds in a nondeterministic order; the simdgroup path it changes is unused on M5 (§8) |
 | #555 | Optimize Metal prefill and decode on all Apple Silicon chips | closed | `97efe60` | 3 | 2026-09-25 | already in main (`427e281`): its M5 part already runs in V4.1 prefill (§8) |
@@ -424,7 +424,7 @@ if #1073's line were dropped.
 |---|---|---|---|
 | `8f5a745` | Metal streaming: split expert slab preads to raise NVMe queue depth | adopt -> `40-ssd-expert-reads` | each expert pread split into up to N 16 KiB-aligned pieces on the same pool; the same bytes. Measured +16% decode on M1 Pro. Here, with `--b-env`: split 4 append +300 +0.9% (pooled CI +0.20..+2.42), ttft 5000 +0.76%, decode flat; split 8 against 4 decode 8192 -1.0% (wholly below). Default 4, and the pread thread limit 9 -> 18 with it (ttft 5000 +0.66%, append +1500 +1.27%, decode flat) |
 | `f7695ea` | Metal streaming: opt-in F_NOCACHE descriptor for expert preads | history | not ported: the reads run at 9-10 GB/s per task because the page cache serves part of them, and a decode token spends about 2 ms in them (`perf-record.md`, Read path); the descriptor gives up the page cache, and its A/B would inherit a colder page cache in A B B A order |
-| `61e35e2` | metal: index live IQ2 SSD cache entries | open | a live-entry index for eviction, sized for V4 Flash; the child scans all 30,720 entries |
+| `61e35e2` | metal: index live IQ2 SSD cache entries | history | a live-entry index for eviction, sized for V4 Flash. Measured by `110-expert-cache-efficiency`: a V4.1 victim scan visits 15360 entries in 0.05 ms, at most 0.7% of a short-answer token, below the harness and far from the +1.5% its 722 lines would need; not ported |
 
 ### #570 (head `66ca6ef`)
 

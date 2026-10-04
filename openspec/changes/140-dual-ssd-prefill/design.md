@@ -38,7 +38,7 @@ An invalid requested source aborts engine creation with a path/reason. An IO fai
 
 ### D5. Gate and measurement
 
-First measure layer-ready waits on the post-130 baseline with internal-only storage. If even eliminating the candidate IO cannot clear the project threshold, stop. Reproduce the concurrent bulk test only with approved inputs; do not use the two unrelated GGUFs from iobench as model replicas.
+First measure layer-ready waits on the post-130 baseline with internal-only storage. If even eliminating the candidate IO cannot clear the project threshold, stop. The same run settles decode: the only figure (2.2 ms of `pread` in a 45.6 ms token, `docs/MacM5.md`) predates `60`/`70`, and at f = 5% an ideal second device gives at most +1.7%. Re-read it on the current tree; it closes the decode question either way without a dedicated run. Reproduce the concurrent bulk test only with approved inputs; do not use the two unrelated GGUFs from iobench as model replicas.
 
 For same-build trials use `--b-env DS4_METAL_PREFILL_REPLICA=...`; such runs legitimately have no canonical record row. Final A/B against the segment start can use explicit shared `--env DS4_METAL_PREFILL_REPLICA=...` only after proving A does not consume it and B does, from source and activation logs; the environment is recorded in the summary. Otherwise retain labeled diagnostic evidence and resolve record formatting rather than silently compare identical modes. Do not patch baseline inference code to fake this condition.
 
@@ -47,6 +47,8 @@ Target normal `cold,append`, with timed decode, both long guards, byte-identical
 ### D6. Alternatives not shipped here
 
 A 43.51 GiB up-only derivative reduces disk space/setup writes but needs a new validated format. Full 67/33 chunk striping has only a small theoretical edge over the family split. 50/50 mandatory striping is limited to about 12.76 GB/s. Whole-layer alternation can create slow critical layers; decode routing is too sparse/warm for a bulk-rate claim. None is automatically added if the chosen split fails.
+
+Considered and not pursued: reading the startup expert-cache preload (about 75 GiB) from both devices saves about 2 s once per process; a pre-processed weight format either reads more bytes (the bottleneck) or changes quantization and output, while expert reads are already contiguous multi-MiB ranges, so a lossless reorder gains nothing. Decode stays canonical-only pending the D5 figure.
 
 ## Risks / Trade-offs
 

@@ -39,6 +39,10 @@ Secondary-source operation SHALL preserve bitwise row values, token outputs, log
 - **WHEN** a session continues after prefill using the secondary source
 - **THEN** its logits and history match canonical-source execution bit-for-bit
 
+#### Scenario: Rows divided between both sources
+- **WHEN** the kept placement reads part of the rows from the admitted secondary source and the rest from the canonical model
+- **THEN** every row, logit and history entry matches canonical-only execution bit-for-bit
+
 #### Scenario: Image-masked tokens and restore
 - **WHEN** a session containing image-masked positions is saved and restored
 - **THEN** secondary-source execution preserves the same Engram masking and continuation state as the canonical source

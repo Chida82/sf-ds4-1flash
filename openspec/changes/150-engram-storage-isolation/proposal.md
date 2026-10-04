@@ -8,7 +8,7 @@ Moving sparse Engram reads to a separate device may reduce contention with inter
 
 - Add opt-in `DS4_ENGRAM_REPLICA=<existing-GGUF>` for a validated secondary Engram source in single-box Metal SSD streaming, leaving the canonical GGUF and expert source unchanged.
 - Preserve exact row bytes, hash/layout metadata, validation, bounded reads and lifecycle semantics; replace the same-inode requirement only for this explicit, content-validated source.
-- Compare internal-only, Engram-isolated and (only if `140` was kept) combined up-plus-Engram placement, with actual reader/conversion behavior and startup verification costs visible.
+- Compare internal-only, Engram-isolated, Engram split across both devices, and (only if `140` was kept) combined up-plus-Engram placement, with actual reader/conversion behavior and startup verification costs visible. Isolation helps only if internal bulk traffic delays rows; splitting helps if row IOPS themselves are exposed (measured concurrently on 4 KiB reads: 314k aggregate versus 249k internal).
 - Start with a complete replica. Compact Engram files and removal of internal Engram storage are separate format/capacity work and are not implemented here. A replica alone frees no internal space.
 - Stop without runtime changes if isolation cannot improve an exposed target under the performance gate. Capacity-only motivation requires a separate user decision, not an exception invented by this change.
 

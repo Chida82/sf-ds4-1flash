@@ -23,6 +23,8 @@ figures are in the named section.
 | Expert-local / Morton threadgroup order in `kernel_mul_mm_id_mpp_packed` | The routed share is 3-5% slower at every chunk shape (CI below zero). The default order already reuses well. | Prefill routed experts after 80 |
 | Cooperative-tensor (register) weight inputs for the packed MPP kernel | Exact, but it needs four per-simdgroup ops: the routed share is 2.3-3x slower and ttft 7500 -26%. | Prefill routed experts after 80 |
 | Paired gate/up MPP with a fused SwiGLU epilogue | Ceiling about 0.2 s of ttft 10000 and nothing at 2048-row sweeps. Register headroom cannot be shown with the installed tools. | Prefill routed experts after 80 |
+| Live-entry index for expert-cache victim scans (#621 `61e35e2`) | A scan of 15360 entries costs 0.05 ms, at most 0.7% of a short-answer token and 0.1% of a long one; the upstream index is 722 lines. | Expert cache after 100 |
+| Global LRU instead of decayed hotness for expert-cache victims | Never fewer misses (decode +0.6%, append +0.2%, long answer equal). The avoidable misses come from seeds and decode replacing each other, which only route foresight could prevent. | Expert cache after 100 |
 | Judging a kernel from back-to-back single timeline runs | Thermal drift is larger than the effect: the same baseline read 29 and 39 ms per dispatch. Use the harness's sections mode. | Prefill routed experts after 80 |
 
 ## Situation 0 (2026-09-27, `main` at `a60b8ee`)
@@ -363,6 +365,41 @@ for a bare `F_NOCACHE` pread of the same 3.82 GB with 8, 18 or 32 threads
 (15-16.6 GB/s). The reads already run at the drive's rate; an I/O queue
 could remove only host scheduling, which is not there. What remains of the
 wait is bandwidth: a cold 2048-row sweep needs 40 x 3.82 GB from disk.
+
+## Expert cache after 100 (2026-10-04, `110-expert-cache-efficiency` S0)
+
+`main` at `896785c`, harness streaming flags, one run per shape with
+`DS4_METAL_STREAMING_EXPERT_TIMING_SUMMARY`, `DS4_MOE_RECORD_SELECTED_IDS`
+and a temporary probe that marked every evicted (layer, expert) and counted
+the later misses on a marked one ("re-misses"). Misses are deterministic:
+two runs of a shape read the same counts. The cache report's misses include
+the prefill seeds' installs; the decode misses below exclude them.
+
+| Shape | Victim scans | Scan time | Decode misses | Re-misses | Replay from empty: distinct pairs / LRU / Belady |
+|---|---|---|---|---|---|
+| decode 2048 + 8192, 256 tokens each | 3135 x 15360 entries | 162 ms (0.05 ms each) | 2197 | 943 (705 after the 8192 sweep) | 7852 / 7852 / 7852 |
+| append 5000 -> 5300 -> 6800 | 5878 | 255 ms | 5500 | 2707 | 10088 / 11054 / 10088 |
+| decode 8192, 2500 tokens | 1817 | 80 ms | 2499 | 285 | 7556 / 7556 / 7556 |
+
+The gates (design D1):
+- **D2, live-entry index, closed.** A scan costs 0.044-0.052 ms; at most
+  0.3 ms of a 42 ms token in short answers (0.7%) and 0.03 ms in the long
+  one. An index halves the entries a scan visits but cannot reach the
+  harness's resolution, and #621 `61e35e2` changes 722 lines of
+  `ds4_metal.m`, so it would need +1.5%. Not implemented.
+- **D3, global LRU, tried and closed.** The re-misses bound what any
+  eviction policy could save: about 1.8 per token after a sweep in short
+  answers and 3.1 in the 300-token append (a few percent at about 0.7 ms a
+  miss), 0.1 in the long answer. They come from the prefill seeds replacing
+  decode-hot experts and back. The simulator starts empty and sees no seeds,
+  so its bounds do not apply: production misses fewer than its compulsory
+  count. LRU (hotness held at zero, so every victim comparison falls to
+  `last_used`) missed 13977 against 13892 in decode, 16016 against 15979 in
+  append and the same 9985 in the long answer: never fewer, so it cannot be
+  faster, and no harness run was spent on it. Avoiding the re-misses needs
+  to know the future routing, which the design excludes.
+
+`110` lands no runtime code: this section is its record.
 
 ## Adding a row
 
