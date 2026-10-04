@@ -215,6 +215,15 @@ int ds4_gpu_stream_prefill_bind_layer(
         const ds4_gpu_stream_expert_table *table,
         const ds4_gpu_tensor *gate, const ds4_gpu_tensor *up,
         const ds4_gpu_tensor *down);
+/* Queue GPU copies of the layer's ready cache entries into explicit layer
+ * buffers, without counting a hit or touching recency. ready[e] marks each
+ * copied expert. Before a source entry can be recycled, and before the
+ * buffers are bound or freed, ds4_gpu_stream_prefill_copy_wait must return. */
+int ds4_gpu_stream_prefill_copy_cached(
+        const ds4_gpu_stream_expert_table *table,
+        ds4_gpu_tensor *gate, ds4_gpu_tensor *up, ds4_gpu_tensor *down,
+        uint8_t *ready, uint64_t *bytes);
+int ds4_gpu_stream_prefill_copy_wait(void);
 /* Reset only the prompt-local eviction heuristic.  The resident SSD expert
  * cache itself is intentionally kept warm across sessions. */
 void ds4_gpu_stream_expert_cache_reset_route_hotness(void);

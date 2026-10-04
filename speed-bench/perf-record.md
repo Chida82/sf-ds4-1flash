@@ -300,6 +300,70 @@ gate/up stores inside the matmuls: about 0.2 s of ttft 10000 and nothing at
 2048-row sweeps. The register headroom it requires cannot be shown with the
 installed tools. `90` lands no runtime code: this section is its record.
 
+## Prefill weight delivery after 90 (2026-10-03, `100-prefill-weight-delivery` S0)
+
+`main` at `86bac78`, harness streaming flags, 16 generated tokens, one run
+per shape with `DS4_METAL_GRAPH_PREFILL_PROFILE` and a temporary probe that
+counted, when each layer's read starts, how many of the next layer's 384
+experts are ready in the decode cache (valid, not in flight). A layer's
+routed experts are 3.56 GiB (384 x 9.49 MiB). All times are summed over the
+40 layers of a sweep; `map` is the exposed wait for the layer's weights.
+
+| Sweep | Weights | map | GPU drain | seed | next layer in RAM |
+|---|---|---|---|---|---|
+| 2500: 2048 rows | explicit buffers | 3.75 s | 4.36 s | 3.65 s | 0 of 384 |
+| 3500: one wide sweep, 2048-row tiles | mmap page-in | 2.34 s | 8.35 s | 4.19 s | 0 |
+| 5000: 4096-row wide sweep | mmap page-in | 2.70 s | 8.66 s | 4.24 s | 0 |
+| 7500: one wide sweep, 2048-row tiles | mmap page-in | 1.86 s | 12.8 s | 4.10 s | 0 |
+| 10000: 8192-row wide sweep | mmap page-in | 2.65 s | 13.7 s | 3.41 s | 0 |
+| 10000: then 1808 rows | explicit buffers | 0.33 s | 14.7 s | 0.33 s | 201 |
+| append 5300 -> +1500: 1500 rows | explicit buffers | 4.51 s | 6.23 s | 0.18 s | 102-161, about 135 |
+
+Two facts set the stages:
+- **The decode cache starts empty.** V4.1 has no popularity preload (the
+  hotlist belongs to the old `ds4_gpu_graph`), so in a fresh process the
+  only entries are those the current sweep's seeds wrote, all for layers
+  already passed. The first sweep of every `cold` kind finds none of the next
+  layer in RAM. A later sweep finds the 201 experts per layer the previous
+  seed kept (52%), fewer after decode has replaced some (about 35% after
+  the 300-token append and 16 generated tokens).
+- **Reads still bound the explicit sweeps.** At 1500-2048 rows a layer
+  read takes about 280 ms (13.6 GB/s) against 170-300 ms of engram, GPU and
+  seed; the wait is above 5 ms in 32 of 40 layers.
+
+Recoverable cost per stage:
+- **D2, wide-sweep lifetime:** the mmap page-in sweeps of 3500, 5000, 7500
+  and the first 10000 sweep wait 1.9-2.7 s for weights, mostly in the
+  decoder layers where few suffix rows leave little GPU work to hide the read,
+  and their seed reads mapped pages. At 2048 rows the explicit buffers
+  gained 14.2% ttft 2500 over the same page-in (`60` S3). Open.
+- **D3, RAM before disk:** zero for every `cold` kind (nothing of the next
+  layer is cached), about a third of each layer's bytes for append +1500
+  (4.51 s of waiting at about 280 ms per read), and about half for the
+  second 10000 sweep, whose 0.33 s wait leaves little. Open for append only.
+- **D4, native I/O:** decided after D2 and D3, on the wait that remains
+  (closed, below).
+
+Each step against the previous kept state, `ab_bench.py`, `--bitwise`, 3600 s:
+
+| Step (B) against the previous | Invocations | Target metrics | Other | Verdict |
+|---|---|---|---|---|
+| S1 explicit buffers for wide sweeps (D2): admission drops the 2048-row and non-wide limits, a slot stays bound through every tile of its layer | 1 (34 pairs) | ttft 3500 +23.3% (+22.0..+25.0), ttft 5000 +8.5% (+7.9..+9.7), ttft 7500 +19.0% (+17.5..+20.8), ttft 10000 +23.9% (+21.9..+25.7) | first token after the sweep 3500 1373 -> 258 ms, 7500 1372 -> 297 ms, 10000 164 -> 125 ms; guards once: decode 2500 +1.3%, append +300 -1.6%, append +1500 +1.7% (unchanged paths), 16896 pair dropped (GPU clock); hit rates equal | kept |
+| S2 RAM before disk (D3): ready, not in-flight cache entries of the next layer are blitted into its slot without a hit, recency or hotness update; the workers read only the remaining experts, adjacent ones merged; the seed and every join wait for the copy | 1 (28 pairs) | append +1500 +34.8% (+25.6..+37.2) | append +300 -0.1% (-0.5..+0.3), prefill 5000 +0.3%, ttft 2500 +0.2% (-0.1..+0.5), ttft 7500 +0.5% (+0.2..+1.6); guards once: decode 2500 +0.5%, 16896 -0.7%; hit rates and the `--cache-stats` counters equal | kept |
+
+In the append +1500 sweep S2 copied 63.3 GiB from RAM and read the other
+79.1 GiB of its 40 layers from disk (44% and 56%); the exposed wait fell
+from 4.51 s to 0.87 s in a profiled run. The `cold` sweeps copy nothing (the
+cache holds no later layer), and their unchanged ttft shows the reworked
+worker split costs nothing.
+
+D4 (native Metal I/O) closed at its gate. A timer in the readers of a
+`cold-2500` sweep measured 245.7 ms per layer (175-274), against 230-257 ms
+for a bare `F_NOCACHE` pread of the same 3.82 GB with 8, 18 or 32 threads
+(15-16.6 GB/s). The reads already run at the drive's rate; an I/O queue
+could remove only host scheduling, which is not there. What remains of the
+wait is bandwidth: a cold 2048-row sweep needs 40 x 3.82 GB from disk.
+
 ## Adding a row
 
 1. `SF_PARITY_FLAGS=--ssd-streaming tools/parity-check.sh sf-ds4-1flash` from
@@ -336,6 +400,16 @@ by `30-decode-layer-queue`.
 | 40 SSD expert reads | 2026-09-29 | 5410123 + 40 | DeepSeek-V4.1-Flash-Q2.gguf | 6 | PASS (bitwise) | 21.6 (+30.5%) | 20.2 (+13.4%) | 38.6 (+12.5%) |  | 64.5 (+12.2%) |  |  |  |  |  | 20.6 (+15.9%) | 97.0 (+14.8%) |
 | 60 prefill sweeps | 2026-09-30 | 2c733ca + 60 | DeepSeek-V4.1-Flash-Q2.gguf | 19 | PASS (bitwise) |  |  | 33.7 (+26.1%) | 17.2 (+91.0%) | 63.1 (+13.4%) | 23.2 (+85.2%) | 38.3 (+3.2%) | 14.9 (+10.9%) | 11.8 (+44.2%) | 59.1 (+8.6%) | 21.2 (+14.7%) | 99.1 (+10.8%) |
 | 70 decode glue fusions | 2026-10-03 | 0d88af9 + 70 | DeepSeek-V4.1-Flash-Q2.gguf | 12 + 33 | PASS (bitwise) | 20.5 (+23.6%) | 20.3 (+19.4%) | 32.4 (+37.5%) | 17.5 (+92.9%) | 62.3 (+21.4%) | 23.7 (+84.9%) | 39.9 (+2.2%) | 14.4 (+21.9%) | 11.9 (+43.7%) | 59.7 (+13.5%) | 21.0 (+22.1%) | 87.4 (+27.4%) |
+| 100 prefill weight delivery | 2026-10-04 | 86bac78 + 100 | DeepSeek-V4.1-Flash-Q2.gguf | 13 + 41 | PASS (bitwise) |  |  | 32.0 (+34.4%) | 13.1 (+155.7%) | 55.4 (+32.2%) | 18.6 (+126.4%) | 27.8 (+46.7%) | 14.0 (+24.1%) | 8.14 (+106.7%) | 54.5 (+21.3%) | 22.3 (+27.6%) | 103.9 (+8.0%) |
+
+`100-prefill-weight-delivery` (row above, `80` and `90` landed no runtime
+code) is two invocations against the start: `cold,append` with the guards
+(13 pairs; 3500 and 7500 dropped every pair because `60`'s single sweep seeds
+the cache differently, hit rate 0.51 -> 0.32), then `cold-3500,cold-7500`
+with `--cache-policy-change` (41 pairs). Its e2e holds decode at the
+reference, which `100` does not touch. Parity passed on the candidate tree
+(10 prompts, token-identical). The steps are in the "Prefill weight delivery
+after 90" section.
 
 `30-decode-layer-queue` keeps one step, #1041's `bd6f912` (queue the decode
 layers on one box, commit each without waiting). Its 95% intervals: decode

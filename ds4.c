@@ -24754,6 +24754,8 @@ static DS4_MAYBE_UNUSED bool ds41_graph_step(ds41_gpu_graph *g, const ds4_model 
 static bool ds41_prefill_seed(ds41_gpu_graph *g, const ds4_model *m,
                              const ds4_layer_weights *l, uint32_t il, uint32_t count) {
 #ifndef DS4_NO_GPU
+    /* A queued RAM copy into the next layer reads entries this seed may recycle. */
+    if (!ds4_gpu_stream_prefill_copy_wait()) return false;
     if (!g->streaming || getenv("DS4_METAL_DISABLE_STREAMING_PREFILL_CACHE_SEED")) return true;
     uint32_t target = ds4_gpu_stream_expert_cache_configured_count() / DS4_N_LAYER;
     if (target > DS4_N_EXPERT) target = DS4_N_EXPERT;
@@ -25083,6 +25085,8 @@ struct ds41_prefill_expert_slot {
     ds41_prefill_expert_worker workers[16];
     bool ok[16];
     uint32_t n_threads, started;
+    uint8_t ready[DS4_MAX_EXPERT];
+    uint64_t ram_bytes;
 };
 
 /* A separate open keeps prefill's uncached reads from changing the model fd
@@ -25110,38 +25114,59 @@ static int ds41_prefill_expert_open_nocache_fd(int source_fd) {
 #endif
 }
 
+static bool ds41_prefill_expert_pread(int fd, uint8_t *dst, uint64_t offset, uint64_t len) {
+    while (len) {
+        const size_t bytes = len < (UINT64_C(16) << 20) ? (size_t)len : (size_t)(UINT64_C(16) << 20);
+        ssize_t n;
+        do { n = pread(fd, dst, bytes, (off_t)offset); } while (n < 0 && errno == EINTR);
+        if (n <= 0) return false;
+        dst += n; offset += (uint64_t)n; len -= (uint64_t)n;
+    }
+    return true;
+}
+
+/* Each worker reads an equal share of the experts the RAM copy did not
+ * cover, in file order, merging adjacent experts into one request. */
 static void *ds41_prefill_expert_read(void *arg) {
     ds41_prefill_expert_worker *worker = arg;
     ds41_prefill_expert_slot *slot = worker->slot;
     const uint64_t offsets[] = {slot->table.gate_offset, slot->table.up_offset,
                                 slot->table.down_offset};
-    const uint64_t lengths[] = {
-        slot->table.gate_expert_bytes * slot->table.n_total_expert,
-        slot->table.gate_expert_bytes * slot->table.n_total_expert,
-        slot->table.down_expert_bytes * slot->table.n_total_expert};
-    for (unsigned j = 0; j < 3; j++) {
-        const uint64_t part = lengths[j] / slot->n_threads;
-        const uint64_t extra = lengths[j] % slot->n_threads;
-        const uint64_t index = worker->index;
-        uint64_t pos = part * index + (index < extra ? index : extra);
-        const uint64_t end = pos + part + (index < extra);
-        uint8_t *dst = slot->dst[j];
-        while (pos < end) {
-            const size_t bytes = end - pos < (UINT64_C(16) << 20) ?
-                (size_t)(end - pos) : (size_t)(UINT64_C(16) << 20);
-            ssize_t n;
-            do { n = pread(slot->read_fd, dst + pos, bytes, (off_t)(offsets[j] + pos)); }
-            while (n < 0 && errno == EINTR);
-            if (n <= 0) return NULL;
-            pos += (uint64_t)n;
+    const uint64_t per[] = {slot->table.gate_expert_bytes, slot->table.gate_expert_bytes,
+                            slot->table.down_expert_bytes};
+    uint64_t total = 0;
+    for (uint32_t e = 0; e < slot->table.n_total_expert; e++)
+        if (!slot->ready[e]) total += per[0] + per[1] + per[2];
+    const uint64_t part = total / slot->n_threads, extra = total % slot->n_threads;
+    const uint64_t index = worker->index;
+    const uint64_t lo = part * index + (index < extra ? index : extra);
+    const uint64_t hi = lo + part + (index < extra);
+    uint64_t v = 0, run_offset = 0, run_len = 0;
+    uint8_t *run_dst = NULL;
+    for (unsigned j = 0; j < 3; j++) for (uint32_t e = 0; e < slot->table.n_total_expert; e++) {
+        if (slot->ready[e]) continue;
+        const uint64_t a = v > lo ? v : lo, b = v + per[j] < hi ? v + per[j] : hi;
+        if (a < b) {
+            const uint64_t at = e * per[j] + (a - v);
+            if (run_len && run_offset + run_len == offsets[j] + at &&
+                run_dst + run_len == slot->dst[j] + at) {
+                run_len += b - a;
+            } else {
+                if (run_len && !ds41_prefill_expert_pread(slot->read_fd, run_dst, run_offset, run_len))
+                    return NULL;
+                run_offset = offsets[j] + at; run_dst = slot->dst[j] + at; run_len = b - a;
+            }
         }
+        v += per[j];
     }
+    if (run_len && !ds41_prefill_expert_pread(slot->read_fd, run_dst, run_offset, run_len))
+        return NULL;
     slot->ok[worker->index] = true;
     return NULL;
 }
 
 static bool ds41_prefill_expert_read_join(ds41_prefill_expert_slot *slot) {
-    bool ok = true;
+    bool ok = ds4_gpu_stream_prefill_copy_wait() != 0;
     for (uint32_t i = 0; i < slot->started; i++) {
         if (pthread_join(slot->threads[i], NULL))
             ds4_die("cannot join V4.1 expert reader before reusing its buffers");
@@ -25246,6 +25271,10 @@ static bool ds41_prefill_expert_read_start(ds41_prefill_expert_slot *slot,
         slot->dst[j] = ds4_gpu_tensor_contents(slot->tensor[j]);
         if (!slot->dst[j]) return false;
     }
+    /* RAM first: only the experts the decode cache lacks go to disk. */
+    if (!ds4_gpu_stream_prefill_copy_cached(&slot->table, slot->tensor[0], slot->tensor[1],
+                                            slot->tensor[2], slot->ready, &slot->ram_bytes))
+        return false;
     slot->read_fd = ds41_prefill_expert_open_nocache_fd(m->fd);
     slot->owns_read_fd = slot->read_fd >= 0;
     if (!slot->owns_read_fd) slot->read_fd = m->fd;
@@ -25262,13 +25291,12 @@ static bool ds41_prefill_expert_read_start(ds41_prefill_expert_slot *slot,
     return true;
 }
 
-static bool ds41_prefill_expert_sweep_supported(uint32_t count, bool wide,
+static bool ds41_prefill_expert_sweep_supported(uint32_t count,
                                                bool batch_hc, bool batch_core,
                                                bool encoder_only, bool resume_encoder) {
-    /* Expert storage depends on layer bytes, not token count. Keep the same
-     * single-chunk lifetime through 2048 rows; wide/deferred sweeps stay separate. */
-    return count >= 32u && count <= 2048u && !wide && batch_hc && batch_core &&
-        !encoder_only && !resume_encoder;
+    /* Expert storage depends on layer bytes, not token count: a slot stays
+     * bound through every tile of its layer. Deferred sweeps stay separate. */
+    return count >= 32u && batch_hc && batch_core && !encoder_only && !resume_encoder;
 }
 
 /* Process rows in causal order within each layer. Selection/candidate rows
@@ -25315,7 +25343,7 @@ static bool ds41_graph_prefill_sweep(ds41_gpu_graph *g, const ds4_model *m,
     bool engram_prefetched = overlap_engram &&
         ds41_engram_prefetch_start(&engram_prefetch, g, 0, total_count);
     ds41_prefill_expert_slot expert_slots[2] = {0};
-    const bool explicit_experts = ds41_prefill_expert_sweep_supported(total_count, wide,
+    const bool explicit_experts = ds41_prefill_expert_sweep_supported(total_count,
         batch_hc, batch_core, encoder_only, resume_encoder) &&
         ds41_prefill_expert_buffers_init(g, m, w, expert_slots);
     bool ok = !g->streaming || (explicit_experts ? metal_graph_stream_map_decode_static_all(m, w) :
@@ -25350,6 +25378,9 @@ static bool ds41_graph_prefill_sweep(ds41_gpu_graph *g, const ds4_model *m,
             if (ok && il + 1u < DS4_N_LAYER)
                 ok = ds41_prefill_expert_read_start(&expert_slots[(il + 1u) & 1u],
                                                     m, &w->layer[il + 1u], il + 1u);
+            if (ok && profile)
+                fprintf(stderr, "ds4: V4.1 prefill layer=%u experts from RAM %.3f GiB\n",
+                        il, slot->ram_bytes / 1073741824.0);
         } else if (g->streaming) {
             const uint32_t first_count = total_count < encoder_chunk ? total_count : encoder_chunk;
             if (!g->encoder_resident || il >= 20)

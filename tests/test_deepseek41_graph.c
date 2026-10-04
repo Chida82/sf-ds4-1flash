@@ -27,27 +27,19 @@ static int check_prefill_expert_admission(void) {
     const struct { uint32_t rows; bool supported; } cases[] = {
         {0, false}, {1, false}, {31, false}, {32, true}, {256, true}, {437, true},
         {1023, true}, {1024, true}, {1025, true}, {1241, true}, {2047, true},
-        {2048, true}, {2049, false}, {4096, false}, {8192, false}, {UINT32_MAX, false}
+        {2048, true}, {2049, true}, {4096, true}, {8192, true}, {16896, true}
     };
     int rc = 1;
     for (unsigned i = 0; i < sizeof(cases) / sizeof(*cases); i++) {
         /* Each bit violates one independent lifetime/graph requirement. */
-        for (unsigned excluded = 0; excluded < 32; excluded++) {
+        for (unsigned excluded = 0; excluded < 16; excluded++) {
             const bool got = ds41_prefill_expert_sweep_supported(cases[i].rows,
-                (excluded & 1u) != 0, (excluded & 2u) == 0, (excluded & 4u) == 0,
-                (excluded & 8u) != 0, (excluded & 16u) != 0);
+                (excluded & 1u) == 0, (excluded & 2u) == 0,
+                (excluded & 4u) != 0, (excluded & 8u) != 0);
             REQUIRE(got == (cases[i].supported && excluded == 0));
         }
     }
-    /* The row limit cannot override the graph's actual chunk capacity. */
-    const uint32_t capacities[] = {1024, 2048, 4096, 8192};
-    for (unsigned i = 0; i < sizeof(capacities) / sizeof(*capacities); i++) {
-        const ds41_gpu_graph graph = {.prefill_cap = capacities[i]};
-        const bool wide = 2048u > ds41_encoder_chunk_cap(&graph, 2048u);
-        REQUIRE(ds41_prefill_expert_sweep_supported(2048u, wide, true, true, false, false) ==
-                (capacities[i] >= 2048u));
-    }
-    puts("V4.1 explicit expert admission: 32..2048 rows, single-chunk boundaries and exclusions: PASS");
+    puts("V4.1 explicit expert admission: 32 rows and up, wide sweeps, deferred exclusions: PASS");
     rc = 0;
 done:
     return rc;
@@ -321,6 +313,77 @@ static int check_prefill_expert_stream(void) {
     REQUIRE(ds4_gpu_stream_prefill_bind_layer(NULL, NULL, NULL, NULL));
     REQUIRE(prefill_stream_moe(&model, &weights.layer[0], t, actual));
     REQUIRE(memcmp(reference[0], actual, output_bytes) == 0);
+    /* A wide sweep runs every tile of a layer on one binding while the next
+     * layer is read into the other slot. */
+    REQUIRE(ds4_gpu_stream_prefill_bind_layer(&slots[0].table,
+        slots[0].tensor[0], slots[0].tensor[1], slots[0].tensor[2]));
+    REQUIRE(ds41_prefill_expert_read_start(&slots[1], &model, &weights.layer[2], 2));
+    for (unsigned tile = 0; tile < 3; tile++) {
+        REQUIRE(prefill_stream_moe(&model, &weights.layer[0], t, actual));
+        REQUIRE(memcmp(reference[0], actual, output_bytes) == 0);
+    }
+    REQUIRE(ds41_prefill_expert_read_join(&slots[1]));
+    REQUIRE(ds4_gpu_stream_prefill_bind_layer(&slots[1].table,
+        slots[1].tensor[0], slots[1].tensor[1], slots[1].tensor[2]));
+    for (unsigned tile = 0; tile < 2; tile++) {
+        REQUIRE(prefill_stream_moe(&model, &weights.layer[2], t, actual));
+        REQUIRE(memcmp(reference[2], actual, output_bytes) == 0);
+    }
+    REQUIRE(ds4_gpu_stream_prefill_bind_layer(NULL, NULL, NULL, NULL));
+    /* RAM first: ready decode-cache entries are copied, the rest are read.
+     * In-flight entries are skipped; the file bytes of the cached experts are
+     * then clobbered, so a disk reread of a RAM hit would show. */
+    {
+        const ds4_layer_weights *l = &weights.layer[2];
+        const ds4_gpu_stream_expert_table table = graph_stream_expert_table_make(&model, l, 2,
+            routed_expert_row_bytes(l->ffn_gate_exps) * DS4_N_FF_EXP,
+            routed_expert_row_bytes(l->ffn_down_exps) * DS4_N_EMBD);
+        const uint64_t expert_bytes = 2 * table.gate_expert_bytes + table.down_expert_bytes;
+        const int32_t cached[] = {5, 4, 1}, extra[] = {7};
+        uint8_t ready[EXPERTS], clobber[4096];
+        uint64_t bytes = 0;
+        memset(clobber, 0xa5, sizeof(clobber));
+        ds4_gpu_set_streaming_expert_cache_budget(3);
+        REQUIRE(ds4_gpu_begin_commands());
+        REQUIRE(ds4_gpu_stream_expert_cache_seed_experts_gpu_copy(&table, cached, NULL, 3));
+        REQUIRE(ds41_prefill_expert_read_start(&slots[0], &model, l, 2));
+        REQUIRE(slots[0].ram_bytes == 0);
+        REQUIRE(ds41_prefill_expert_read_join(&slots[0]));
+        REQUIRE(ds4_gpu_end_commands());
+        const uint64_t starts[] = {table.gate_offset, table.up_offset, table.down_offset};
+        const uint64_t per[] = {table.gate_expert_bytes, table.gate_expert_bytes,
+                                table.down_expert_bytes};
+        for (unsigned i = 0; i < 3; i++) for (unsigned j = 0; j < 3; j++)
+            for (uint64_t b = 0; b < per[j]; b += sizeof(clobber)) {
+                const size_t n = per[j] - b < sizeof(clobber) ? (size_t)(per[j] - b) : sizeof(clobber);
+                REQUIRE(pwrite(model.fd, clobber, n, (off_t)(starts[j] + cached[i] * per[j] + b)) ==
+                        (ssize_t)n);
+            }
+        REQUIRE(ds41_prefill_expert_read_start(&slots[0], &model, l, 2));
+        REQUIRE(slots[0].ram_bytes == 3 * expert_bytes);
+        for (unsigned e = 0; e < EXPERTS; e++)
+            REQUIRE(slots[0].ready[e] == (e == 1 || e == 4 || e == 5));
+        /* One queued copy at a time: the next waits for this one's sources. */
+        REQUIRE(!ds4_gpu_stream_prefill_copy_cached(&table, slots[1].tensor[0], slots[1].tensor[1],
+                                                    slots[1].tensor[2], ready, &bytes));
+        REQUIRE(ds41_prefill_expert_read_join(&slots[0]));
+        for (unsigned j = 0; j < 3; j++) REQUIRE(memcmp(ds4_gpu_tensor_contents(slots[0].tensor[j]),
+            model.map + tensors[2][j].abs_offset, sizes[j]) == 0);
+        /* The copy counted no use: the entry seeded first is still the victim. */
+        REQUIRE(ds4_gpu_begin_commands());
+        REQUIRE(ds4_gpu_stream_expert_cache_seed_experts_gpu_copy(&table, extra, NULL, 1));
+        REQUIRE(ds4_gpu_end_commands());
+        REQUIRE(ds4_gpu_stream_prefill_copy_cached(&table, slots[1].tensor[0], slots[1].tensor[1],
+                                                   slots[1].tensor[2], ready, &bytes));
+        REQUIRE(ds4_gpu_stream_prefill_copy_wait());
+        for (unsigned e = 0; e < EXPERTS; e++) REQUIRE(ready[e] == (e == 1 || e == 4 || e == 7));
+        REQUIRE(bytes == 3 * expert_bytes);
+        ds4_gpu_set_streaming_expert_cache_budget(0);
+        REQUIRE(ds4_gpu_stream_expert_cache_current_count() == 0);
+        for (unsigned j = 0; j < 3; j++) for (unsigned i = 0; i < 3; i++)
+            REQUIRE(pwrite(model.fd, model.map + starts[j] + cached[i] * per[j], per[j],
+                           (off_t)(starts[j] + cached[i] * per[j])) == (ssize_t)per[j]);
+    }
     /* EOF and cancellation cleanup join every worker before releasing slots. */
     REQUIRE(ftruncate(model.fd, tensors[2][2].abs_offset + sizes[2] / 2) == 0);
     REQUIRE(ds41_prefill_expert_read_start(&slots[0], &model, &weights.layer[2], 2));
@@ -348,7 +411,7 @@ static int check_prefill_expert_stream(void) {
     REQUIRE(fcntl(model.fd, F_GETFD) >= 0);
     REQUIRE(!slots[0].tensor[0] && !slots[1].tensor[2] && !slots[0].started && !slots[1].started);
     REQUIRE(ds41_prefill_expert_buffers_free(slots));
-    puts("V4.1 explicit expert reads, binding lifetime, fallback and cancellation cleanup: PASS");
+    puts("V4.1 explicit expert reads, multi-tile binding lifetime, RAM-first copies, fallback and cancellation cleanup: PASS");
     rc = 0;
 done:
     if (ds4_gpu_commands_active()) ds4_gpu_end_commands();

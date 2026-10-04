@@ -107,10 +107,14 @@ batched and token-major kernels round differently. Since
   rows), so 3.5K and 7.5K prompts pay one sweep instead of two;
 - below 8192 rows the decoder layers (20-39) of a wide sweep compute only the
   rows the last token depends on, from 2048-row tiles;
-- single-chunk sweeps of 32-2048 rows read each layer's experts into two
-  locked Metal buffers inside the 7.12 GiB prefill reserve, reading the next
-  layer while the current one computes (stderr: "V4.1 prefill reads experts
-  into two explicit layer buffers").
+- sweeps of 32 rows or more read each layer's experts into two locked
+  Metal buffers inside the 7.12 GiB prefill reserve, reading the next layer
+  while the current one computes; a slot stays bound through every tile of
+  its layer (stderr: "V4.1 prefill reads experts into two explicit layer
+  buffers"). Wide sweeps joined in `100-prefill-weight-delivery`; only
+  the deferred-decoder sweeps (a 16384-row sweep with 8192 or more tokens
+  still to come, so prompts from about 24.5K) page their layers in through
+  mmap.
 
 `DS4_METAL_DISABLE_V41_SHORT_SWEEP=1` restores the plain schedule and
 `DS4_METAL_DISABLE_V41_DECODER_SUFFIX=1` turns the suffix off. The explicit

@@ -10967,6 +10967,7 @@ void ds4_gpu_cleanup(void) {
             g_stream_expert_cache_batch_seq = 0;
         }
         (void)ds4_gpu_wait_pending_command_buffers("cleanup");
+        (void)ds4_gpu_stream_prefill_copy_wait();
         (void)ds4_gpu_stream_prefill_bind_layer(NULL, NULL, NULL, NULL);
         if (ds4_gpu_stream_expert_timing_summary_enabled() &&
             getenv("DS4_METAL_MEMORY_REPORT") == NULL) {
@@ -17230,6 +17231,64 @@ int ds4_gpu_stream_expert_cache_seed_experts_gpu_copy(
                                                              1);
     }
 }
+
+static id<MTLCommandBuffer> g_stream_prefill_copy_cb;
+
+int ds4_gpu_stream_prefill_copy_cached(
+        const ds4_gpu_stream_expert_table *table,
+        ds4_gpu_tensor *gate, ds4_gpu_tensor *up, ds4_gpu_tensor *down,
+        uint8_t *ready, uint64_t *bytes) {
+    if (!table || !gate || !up || !down || !ready || !bytes || g_stream_prefill_copy_cb ||
+        table->layer >= DS4_METAL_STREAM_EXPERT_CACHE_MAX_LAYER ||
+        table->n_total_expert > DS4_METAL_STREAM_EXPERT_CACHE_MAX_EXPERT) return 0;
+    const uint32_t n = table->n_total_expert;
+    const uint64_t per[3] = {table->gate_expert_bytes, table->gate_expert_bytes,
+                             table->down_expert_bytes};
+    const uint64_t offsets[3] = {table->gate_offset, table->up_offset, table->down_offset};
+    ds4_gpu_tensor *dst[3] = {gate, up, down};
+    memset(ready, 0, n);
+    *bytes = 0;
+    for (unsigned j = 0; j < 3; j++)
+        if (!per[j] || per[j] > UINT64_MAX / n || ds4_gpu_tensor_bytes(dst[j]) < per[j] * n) return 0;
+    if (!g_ssd_streaming_mode) return 1;
+    @autoreleasepool {
+        id<MTLCommandBuffer> cb = nil;
+        id<MTLBlitCommandEncoder> blit = nil;
+        for (uint32_t e = 0; e < n; e++) {
+            const ds4_gpu_stream_expert_cache_entry *x = &g_stream_expert_cache[table->layer][e];
+            if (!ds4_gpu_stream_expert_cache_entry_matches(x, table->model_map, table->model_size,
+                    offsets[0] + e * per[0], offsets[1] + e * per[1], offsets[2] + e * per[2],
+                    per[0], per[2]) || ds4_gpu_stream_expert_cache_entry_inflight(x)) continue;
+            if (!blit) {
+                cb = ds4_gpu_new_command_buffer();
+                blit = cb ? [cb blitCommandEncoder] : nil;
+                if (!blit) return 0;
+            }
+            id<MTLBuffer> src[3] = {x->gate_buffer, x->up_buffer, x->down_buffer};
+            const NSUInteger inner[3] = {x->gate_inner, x->up_inner, x->down_inner};
+            for (unsigned j = 0; j < 3; j++)
+                [blit copyFromBuffer:src[j] sourceOffset:inner[j]
+                            toBuffer:ds4_gpu_tensor_buffer(dst[j])
+                   destinationOffset:(NSUInteger)(ds4_gpu_tensor_offset(dst[j]) + e * per[j])
+                                size:(NSUInteger)per[j]];
+            ready[e] = 1;
+            *bytes += per[0] + per[1] + per[2];
+        }
+        if (!blit) return 1;
+        [blit endEncoding];
+        [cb commit];
+        g_stream_prefill_copy_cb = cb;
+    }
+    return 1;
+}
+
+int ds4_gpu_stream_prefill_copy_wait(void) {
+    id<MTLCommandBuffer> cb = g_stream_prefill_copy_cb;
+    if (!cb) return 1;
+    g_stream_prefill_copy_cb = nil;
+    return ds4_gpu_wait_command_buffer(cb, "prefill cache copy");
+}
+
 static uint32_t ds4_gpu_q4_expert_table_group_size(uint32_t n_total_expert) {
     const char *env = getenv("DS4_METAL_Q4_EXPERT_TABLE_GROUP_SIZE");
     if (!env || !env[0]) return 1;
