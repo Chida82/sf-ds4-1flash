@@ -488,6 +488,28 @@ Each step against the previous kept state, `ab_bench.py`, `--bitwise`, 3600 s:
 |---|---|---|---|---|
 | S1 allocation-free pipeline lookup for V4.1 decode (D2, #1067 `d1738d2`'s plain getter): the step arms the existing fast cache, plain names keyed with a sentinel nsg | 2 pooled (22 pairs) | decode 2048 +0.42% (+0.28..+0.63), decode 8192 +0.23% (+0.02..+0.67) | append +300 +0.46% (+0.00..+0.69), append +1500 +1.75% (+1.46..+3.41), prefill 5000 +0.08% (-0.06..+0.37); guards once: decode 2500 +0.6%, ttft 2500 -0.1%; hit rates equal | kept |
 
+## Readback wait after 130 (2026-10-04, `131-decode-readback-spin-wait`)
+
+`main` at `b59c5dd`, `130`'s probe (CPU return from the wait against the
+command buffers' GPU times), decode 2048 and 8192 with 256 tokens: per layer
+72 us wake, 120-128 us CPU work, 104 us commit to GPU start. The gate
+(over 20 us of wake) is open.
+
+Primitives tried at the selected-id readback, single runs:
+- **Polling `cb.status`** with `yield` for up to 2 ms before
+  `waitUntilCompleted`: wake 72 -> 48 us. The status turns Completed about
+  45 us after the GPU ends, so this is the floor for any command-buffer wait.
+- **The shared-event path** that Q4 uses (`ds4_gpu_signal_batch_and_wait_event`),
+  blocking or polled: decode fell to 2.8 tokens/s on the IQ2/Q2 path. Not
+  investigated further; dropped.
+
+| Step (B) against the previous | Invocations | Target metrics | Other | Verdict |
+|---|---|---|---|---|
+| S1 bounded status poll (2 ms) before the blocking wait, only at the streaming decode's selected-id readback | 1 (18 pairs) | decode 2048 +2.8% (+1.0..+3.8), decode 8192 +3.1% (+2.2..+4.8) | append +300 +4.5% (+3.3..+5.0), prefill 5000 +2.1% (+1.3..+3.6), append +1500 -0.4% (-1.9..+6.6); guards once: decode 2500 +3.7%, ttft 2500 +0.1%; hit rates equal | kept |
+
+The gain exceeds the 24 us x 40 of shorter wake alone (about 2.3%): a
+thread that does not sleep also resumes on a warm core.
+
 ## Adding a row
 
 1. `SF_PARITY_FLAGS=--ssd-streaming tools/parity-check.sh sf-ds4-1flash` from
@@ -526,6 +548,7 @@ by `30-decode-layer-queue`.
 | 70 decode glue fusions | 2026-10-03 | 0d88af9 + 70 | DeepSeek-V4.1-Flash-Q2.gguf | 12 + 33 | PASS (bitwise) | 20.5 (+23.6%) | 20.3 (+19.4%) | 32.4 (+37.5%) | 17.5 (+92.9%) | 62.3 (+21.4%) | 23.7 (+84.9%) | 39.9 (+2.2%) | 14.4 (+21.9%) | 11.9 (+43.7%) | 59.7 (+13.5%) | 21.0 (+22.1%) | 87.4 (+27.4%) |
 | 100 prefill weight delivery | 2026-10-04 | 86bac78 + 100 | DeepSeek-V4.1-Flash-Q2.gguf | 13 + 41 | PASS (bitwise) |  |  | 32.0 (+34.4%) | 13.1 (+155.7%) | 55.4 (+32.2%) | 18.6 (+126.4%) | 27.8 (+46.7%) | 14.0 (+24.1%) | 8.14 (+106.7%) | 54.5 (+21.3%) | 22.3 (+27.6%) | 103.9 (+8.0%) |
 | 130 decode submission | 2026-10-04 | bfa0ef2 + 130 | DeepSeek-V4.1-Flash-Q2.gguf | 12 + 33 | PASS (bitwise) | 20.4 (+19.5%) | 21.0 (+21.3%) | 29.8 (+42.9%) | 13.7 (+152.9%) | 48.5 (+40.4%) | 21.4 (+120.7%) | 26.2 (+49.0%) | 13.2 (+24.7%) | 8.33 (+110.9%) |  | 21.6 (+23.3%) | 89.4 (+21.3%) |
+| 131 readback poll | 2026-10-04 | b59c5dd + 131 | DeepSeek-V4.1-Flash-Q2.gguf | 4 + 3 + 44 | PASS (bitwise) | 22.3 (+29.8%) | 22.5 (+28.1%) |  | 13.3 (+156.7%) |  | 18.9 (+125.8%) | 27.4 (+48.0%) |  |  |  |  | 94.3 (+18.3%) |
 
 `100-prefill-weight-delivery` (row above, `80` and `90` landed no runtime
 code) is two invocations against the start: `cold,append` with the guards
@@ -535,6 +558,16 @@ with `--cache-policy-change` (41 pairs). Its e2e holds decode at the
 reference, which `100` does not touch. Parity passed on the candidate tree
 (10 prompts, token-identical). The steps are in the "Prefill weight delivery
 after 90" section.
+
+`131-decode-readback-spin-wait` (row above) is three invocations against the
+start on an evening with the GPU throttling (thermal Heavy, runs down to
+575 MHz): `decode,cold,append` with the guards kept 4 of 20 pairs, its
+repeat on the kinds left empty 3 of 18, and `cold-3500,cold-7500` with
+`--cache-policy-change` 44. Decode is pooled over the first two (5 pairs:
+2048 +29.8%, +29.0..+37.2; 8192 +28.1%, +27.7..+28.8). The empty cells lost
+every pair to the clock check; `131` does not touch prefill, whose figures
+are `130`'s row. The e2e cell holds the unmeasured kinds at the reference.
+Parity passed on the candidate (10 prompts).
 
 `130-m5-decode-submission` (row above; `110` and `120` landed no runtime
 code) is two invocations against the start: `decode,cold,append` with the

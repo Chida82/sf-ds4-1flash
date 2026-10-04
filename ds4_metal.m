@@ -1290,7 +1290,17 @@ static void ds4_gpu_invalidate_completion_counters(void) {
     g_dsv4_hc_producer_last_completion = nil;
 }
 
+/* Nonzero only around the streaming decode's selected-id readback. */
+static uint64_t g_wait_poll_ns;
+
 static int ds4_gpu_wait_command_buffer(id<MTLCommandBuffer> cb, const char *label) {
+    /* Waking from waitUntilCompleted takes about 70 us, paid 40 times a token
+     * at the readback; polling the status sees completion about 25 us sooner. */
+    if (g_wait_poll_ns) {
+        const uint64_t end = clock_gettime_nsec_np(CLOCK_UPTIME_RAW) + g_wait_poll_ns;
+        while (cb.status < MTLCommandBufferStatusCompleted &&
+               clock_gettime_nsec_np(CLOCK_UPTIME_RAW) < end) __builtin_arm_yield();
+    }
     [cb waitUntilCompleted];
     if (getenv("DS4_METAL_CB_TIMES")) {
         static double prev_gpu_end;
@@ -34217,9 +34227,16 @@ int ds4_gpu_routed_moe_one_tensor(
                             selected_timing ? ds4_gpu_now_ms() : 0.0;
                         if (q4_selected_shared_event) {
                             if (ds4_gpu_signal_batch_and_wait_event("selected-id readback") == 0) { if (getenv("DS4_GLM_TP_DEBUG")) fprintf(stderr, "ds4: routed_moe_one silent return at line %d\n", 32942); return 0; }
-                        } else if (ds4_gpu_end_commands() == 0) {
-                            if (getenv("DS4_GLM_TP_DEBUG")) fprintf(stderr, "ds4: routed_moe_one silent return at line %d\n", 32931);
-                            return 0;
+                        } else {
+                            static int poll = -1;
+                            if (poll < 0) poll = getenv("DS4_METAL_DISABLE_V41_READBACK_POLL") == NULL;
+                            g_wait_poll_ns = poll ? 2000000u : 0u;
+                            const int ended = ds4_gpu_end_commands();
+                            g_wait_poll_ns = 0;
+                            if (ended == 0) {
+                                if (getenv("DS4_GLM_TP_DEBUG")) fprintf(stderr, "ds4: routed_moe_one silent return at line %d\n", 32931);
+                                return 0;
+                            }
                         }
                         if (selected_timing) {
                             selected_sync_ms +=

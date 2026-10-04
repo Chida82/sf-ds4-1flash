@@ -143,7 +143,9 @@ identical (`make test-deepseek41-decode-switch SWITCH=<env>`):
 - `DS4_METAL_DISABLE_GATHERED_KV_STAGE`;
 - `DS4_METAL_DISABLE_V41_EXPAND_FUSION`;
 - `DS4_METAL_DISABLE_V41_DECODE_PIPELINE_FAST_LOOKUP` (the allocation-free
-  pipeline lookup of `130-m5-decode-submission`).
+  pipeline lookup of `130-m5-decode-submission`);
+- `DS4_METAL_DISABLE_V41_READBACK_POLL` (the bounded status poll at the
+  selected-id readback, `131-decode-readback-spin-wait`).
 
 The alternative to streaming is not more RAM in one box but **two 128 GB Macs
 with TP/RDMA** (`docs/DISTRIBUTED.md`), which holds about 81 GiB of main weights
