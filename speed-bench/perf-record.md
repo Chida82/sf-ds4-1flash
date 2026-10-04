@@ -25,6 +25,9 @@ figures are in the named section.
 | Paired gate/up MPP with a fused SwiGLU epilogue | Ceiling about 0.2 s of ttft 10000 and nothing at 2048-row sweeps. Register headroom cannot be shown with the installed tools. | Prefill routed experts after 80 |
 | Live-entry index for expert-cache victim scans (#621 `61e35e2`) | A scan of 15360 entries costs 0.05 ms, at most 0.7% of a short-answer token and 0.1% of a long one; the upstream index is 722 lines. | Expert cache after 100 |
 | Global LRU instead of decayed hotness for expert-cache victims | Never fewer misses (decode +0.6%, append +0.2%, long answer equal). The avoidable misses come from seeds and decode replacing each other, which only route foresight could prevent. | Expert cache after 100 |
+| Faster Engram conversion (lookup table, NEON) | Conversion costs under 1 us of a row whose read costs 0.66 ms; a few ms per sweep. | Engram reads after 110 |
+| Engram cross-partition dedup or a raw-row cache | Duplicates are 4-8% of rows and already read once per partition; the sweep waits 0.2-0.8 s on Engram in total. | Engram reads after 110 |
+| More Engram readers (32 or 64 instead of 16) | Exposed wait 0.37-0.40 s against 0.43 s on `cold-2500`, inside noise: the drive is shared with expert reads at full rate. | Engram reads after 110 |
 | Judging a kernel from back-to-back single timeline runs | Thermal drift is larger than the effect: the same baseline read 29 and 39 ms per dispatch. Use the harness's sections mode. | Prefill routed experts after 80 |
 
 ## Situation 0 (2026-09-27, `main` at `a60b8ee`)
@@ -400,6 +403,46 @@ The gates (design D1):
   to know the future routing, which the design excludes.
 
 `110` lands no runtime code: this section is its record.
+
+## Engram reads after 110 (2026-10-04, `120-engram-read-efficiency` S0)
+
+`main` at `631fdda`, harness streaming flags, one run per shape with
+`DS4_METAL_GRAPH_PREFILL_PROFILE` and temporary timers in `ds4_engram.c`
+(time in `pread` and in conversion per row, summed over the 16 readers, and
+the rows served by the in-partition duplicate copy) and around the two
+decode joins. Rows are 264 bytes (256 E4M3 codes and 8 E8M0 scales).
+
+| Shape | Rows read | Duplicates | `pread`, thread sum | Conversion, thread sum | Exposed in the sweep | Decode wait per token |
+|---|---|---|---|---|---|---|
+| cold-2500 (2048-row sweep, 452 token-major) | 115787 | 4981 (4.3%) | 75.9 s (0.66 ms/row) | 0.10 s (0.86 us/row) | 0.43-0.76 s (layer 1 and 14) | 0.054 ms |
+| cold-7500 (one wide sweep) | 334616 | 26152 (7.8%) | 52.6 s | 0.24 s | 0.19 s | - |
+| append 5000 -> 5300 -> 6800 | 309383 | 19321 (6.2%) | 91.7 s | 0.26 s | 0.16 s, then 0 at +1500 | 0.037 ms |
+| decode 2048 + 8192, 256 tokens each | 387989 | 29803 (7.7%) | 115.3 s | 0.32 s | 0.44 s, then 0.05 s | 0.016 ms |
+
+Each row costs 0.66 ms of read latency against under 1 us of conversion: a
+prefill's Engram reads share the drive with the expert reads, which run at
+its full rate. What the sweep waits for is that latency, mostly at layer 1
+(only layer 0 hides table 0) and layer 14.
+
+The gates (design D1), all closed:
+- **D2, conversion:** under 0.5% of the readers' time, a few ms of wall
+  time per sweep. A lookup table or NEON cannot move ttft.
+- **D3, deduplication and row cache:** duplicates are 4-8% of rows and are
+  already read once inside each of the 16 partitions; a cross-partition run
+  can only repeat at the 15 boundaries of a 2048-token batch. A cross-batch
+  cache could save at most a similar share of a wait that is 0.2-0.8 s per
+  sweep: below the harness's resolution.
+- **D4, prefetch lifetime:** the prefix-sized output is
+  `carry_cap x 24 x 256 x 4` bytes, 768 MiB at ctx 32768, inside the static
+  context. A two-tile ring would only save memory, and the harness holds
+  the expert cache fixed, so it cannot win on speed.
+- **Decode:** `70`'s asynchronous reads leave 0.02-0.05 ms per token.
+
+Outside the design, a probe with 32 and 64 readers on `cold-2500` read
+0.37-0.40 s of exposed wait against 0.43 s with 16: inside run-to-run noise.
+Taking Engram reads off the expert drive is `150`'s question.
+
+`120` lands no runtime code: this section is its record.
 
 ## Adding a row
 
