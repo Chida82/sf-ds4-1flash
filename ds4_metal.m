@@ -2555,14 +2555,36 @@ static id<MTLComputePipelineState> ds4_gpu_get_mul_mm_id_pipeline(
     return pipeline;
 }
 
+#define DS4_METAL_DECODE_PIPELINE_FAST_NSG_NONE INT16_MIN
+static bool ds4_gpu_decode_pipeline_fast_key(const char *, int16_t, int16_t, uint16_t *, uint64_t *);
+static id<MTLComputePipelineState> ds4_gpu_decode_pipeline_fast_cache_lookup(const char *, int16_t, int16_t, uint16_t, uint64_t);
+static void ds4_gpu_decode_pipeline_fast_cache_insert(const char *, int16_t, int16_t, uint16_t, uint64_t, id<MTLComputePipelineState>);
+
 static id<MTLComputePipelineState> ds4_gpu_get_pipeline(
         const char *function_name) {
+    /* While a decode step arms it, use the allocation-free cache of the
+     * mul_mv getters; the sentinel nsg keeps plain names apart from them. */
+    uint16_t fast_name_len = 0;
+    uint64_t fast_hash = 0;
+    const bool fast_key_valid = g_decode_pipeline_fast_lookup_active &&
+        ds4_gpu_decode_pipeline_fast_key(function_name, DS4_METAL_DECODE_PIPELINE_FAST_NSG_NONE,
+                                         DS4_METAL_DECODE_PIPELINE_FAST_NXPSG_NONE,
+                                         &fast_name_len, &fast_hash);
+    if (fast_key_valid) {
+        id<MTLComputePipelineState> fast_cached = ds4_gpu_decode_pipeline_fast_cache_lookup(
+            function_name, DS4_METAL_DECODE_PIPELINE_FAST_NSG_NONE,
+            DS4_METAL_DECODE_PIPELINE_FAST_NXPSG_NONE, fast_name_len, fast_hash);
+        if (fast_cached) return fast_cached;
+    }
     NSString *key = [NSString stringWithFormat:@"%s", function_name];
     id<MTLComputePipelineState> cached = [g_pipeline_cache objectForKey:key];
     if (cached) {
         /* Failed lookups are remembered as NSNull so the error prints once
          * per name instead of on every dispatch. */
         if (cached == (id<MTLComputePipelineState>)[NSNull null]) return nil;
+        if (fast_key_valid)
+            ds4_gpu_decode_pipeline_fast_cache_insert(function_name, DS4_METAL_DECODE_PIPELINE_FAST_NSG_NONE,
+                DS4_METAL_DECODE_PIPELINE_FAST_NXPSG_NONE, fast_name_len, fast_hash, cached);
         return cached;
     }
 
@@ -2584,6 +2606,9 @@ static id<MTLComputePipelineState> ds4_gpu_get_pipeline(
     }
 
     [g_pipeline_cache setObject:pipeline forKey:key];
+    if (fast_key_valid)
+        ds4_gpu_decode_pipeline_fast_cache_insert(function_name, DS4_METAL_DECODE_PIPELINE_FAST_NSG_NONE,
+            DS4_METAL_DECODE_PIPELINE_FAST_NXPSG_NONE, fast_name_len, fast_hash, pipeline);
     return pipeline;
 }
 

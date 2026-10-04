@@ -48,6 +48,7 @@ A compact Engram file alone does not shrink the canonical internal GGUF. Actual 
 - Full verification is expensive: both tables are 188.83 GiB, about 30 s per engine open at the external 6.38 GB/s -> report startup and amortization, no hidden persistent trust cache. Acceptable for a long-lived server; a one-shot CLI run likely pays more than it gains.
 - Different inode loses page-cache locality or hides wrong data -> bounded content validation and stable descriptor identity.
 - Combined placement saturates external IO -> independently measure B and C; do not sum their estimated gains.
+- Moving Engram reads to the external drive frees internal-drive IOPS, not memory bandwidth: an Engram row is 264 bytes and a prefill reads a few hundred MB of them, far below the unified-memory bandwidth the GPU uses. Any gain must come from latency under contention (`120` measured 0.66 ms per row while expert reads saturate the internal drive); a decode token waits 0.02-0.05 ms on Engram, so decode cannot gain.
 
 ## Migration Plan
 

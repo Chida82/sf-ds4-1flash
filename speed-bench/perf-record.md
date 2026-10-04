@@ -444,6 +444,50 @@ Taking Engram reads off the expert drive is `150`'s question.
 
 `120` lands no runtime code: this section is its record.
 
+## Decode submission after 120 (2026-10-04, `130-m5-decode-submission` S0)
+
+`main` at `bfa0ef2`, harness streaming flags. `DS4_METAL_GPU_BUSY_PROFILE`
+over 16- and 272-token runs isolates 256 decoded tokens; `DS4_METAL_CB_TIMES`
+(print limit lifted) and a probe stamping the CPU's return from each wait
+against the command buffers' GPU times split the gaps; `sample` profiled the
+main thread for 15 s of decode.
+
+| Frontier | Token | GPU busy | GPU idle |
+|---|---|---|---|
+| 2048 | 40.9 ms | 28.5 ms | 12.4 ms (30%) |
+| 8192 | 41.8 ms | 30.6 ms | 11.2 ms (27%) |
+
+A token is 81 command buffers, two per layer. A (attention and router,
+about 430 us of GPU) is waited so the CPU can read the six selected ids; B
+(the routed experts and the rest of the layer, about 200 us) is encoded only
+then. Nearly all idle time sits in front of B, 310 us on average per layer:
+
+| Component | Per layer |
+|---|---|
+| CPU wake: A's `GPUEndTime` to the return of `waitUntilCompleted` | 76 us |
+| CPU work: ids, cache peek, bindings, encode of B, commit | 111-118 us |
+| Commit of B to its `GPUStartTime` | 103 us |
+
+The main thread waits 90.7% of the time. Of its CPU samples, the pipeline
+lookups (`stringWithFormat` in `ds4_gpu_get_mul_mv_pipeline` and the plain
+getter) are about 1% of wall time, `getenv` 0.5% spread over many callers,
+`F_RDADVISE` read-ahead 0.9% (dropped once by `40`). The gates:
+- **D2, allocation-free lookup:** open. The fast-lookup cache existed but
+  only the pre-M5 MXFP4 graph armed it; V4.1 decode inserts 21 pipelines,
+  well inside its 64 slots.
+- **D3, coalescing:** closed. Between B and the next A the gap is 1 us (A is
+  committed while B runs); the only gap is the selected-id readback, which
+  coalescing cannot cross.
+- The wake and commit-to-start components are outside this design: `131`
+  (bounded poll at the readback) and `132` (expert pass committed ahead and
+  gated by a shared event) are written for them.
+
+Each step against the previous kept state, `ab_bench.py`, `--bitwise`, 3600 s:
+
+| Step (B) against the previous | Invocations | Target metrics | Other | Verdict |
+|---|---|---|---|---|
+| S1 allocation-free pipeline lookup for V4.1 decode (D2, #1067 `d1738d2`'s plain getter): the step arms the existing fast cache, plain names keyed with a sentinel nsg | 2 pooled (22 pairs) | decode 2048 +0.42% (+0.28..+0.63), decode 8192 +0.23% (+0.02..+0.67) | append +300 +0.46% (+0.00..+0.69), append +1500 +1.75% (+1.46..+3.41), prefill 5000 +0.08% (-0.06..+0.37); guards once: decode 2500 +0.6%, ttft 2500 -0.1%; hit rates equal | kept |
+
 ## Adding a row
 
 1. `SF_PARITY_FLAGS=--ssd-streaming tools/parity-check.sh sf-ds4-1flash` from
@@ -481,6 +525,7 @@ by `30-decode-layer-queue`.
 | 60 prefill sweeps | 2026-09-30 | 2c733ca + 60 | DeepSeek-V4.1-Flash-Q2.gguf | 19 | PASS (bitwise) |  |  | 33.7 (+26.1%) | 17.2 (+91.0%) | 63.1 (+13.4%) | 23.2 (+85.2%) | 38.3 (+3.2%) | 14.9 (+10.9%) | 11.8 (+44.2%) | 59.1 (+8.6%) | 21.2 (+14.7%) | 99.1 (+10.8%) |
 | 70 decode glue fusions | 2026-10-03 | 0d88af9 + 70 | DeepSeek-V4.1-Flash-Q2.gguf | 12 + 33 | PASS (bitwise) | 20.5 (+23.6%) | 20.3 (+19.4%) | 32.4 (+37.5%) | 17.5 (+92.9%) | 62.3 (+21.4%) | 23.7 (+84.9%) | 39.9 (+2.2%) | 14.4 (+21.9%) | 11.9 (+43.7%) | 59.7 (+13.5%) | 21.0 (+22.1%) | 87.4 (+27.4%) |
 | 100 prefill weight delivery | 2026-10-04 | 86bac78 + 100 | DeepSeek-V4.1-Flash-Q2.gguf | 13 + 41 | PASS (bitwise) |  |  | 32.0 (+34.4%) | 13.1 (+155.7%) | 55.4 (+32.2%) | 18.6 (+126.4%) | 27.8 (+46.7%) | 14.0 (+24.1%) | 8.14 (+106.7%) | 54.5 (+21.3%) | 22.3 (+27.6%) | 103.9 (+8.0%) |
+| 130 decode submission | 2026-10-04 | bfa0ef2 + 130 | DeepSeek-V4.1-Flash-Q2.gguf | 12 + 33 | PASS (bitwise) | 20.4 (+19.5%) | 21.0 (+21.3%) | 29.8 (+42.9%) | 13.7 (+152.9%) | 48.5 (+40.4%) | 21.4 (+120.7%) | 26.2 (+49.0%) | 13.2 (+24.7%) | 8.33 (+110.9%) |  | 21.6 (+23.3%) | 89.4 (+21.3%) |
 
 `100-prefill-weight-delivery` (row above, `80` and `90` landed no runtime
 code) is two invocations against the start: `cold,append` with the guards
@@ -490,6 +535,14 @@ with `--cache-policy-change` (41 pairs). Its e2e holds decode at the
 reference, which `100` does not touch. Parity passed on the candidate tree
 (10 prompts, token-identical). The steps are in the "Prefill weight delivery
 after 90" section.
+
+`130-m5-decode-submission` (row above; `110` and `120` landed no runtime
+code) is two invocations against the start: `decode,cold,append` with the
+guards (12 pairs; 3500 and 7500 dropped for `60`'s cache seeding, the 16896
+guard for the GPU clock), then `cold-3500,cold-7500` with
+`--cache-policy-change` (33 pairs). Parity passed on the candidate tree
+(10 prompts). Its decode figures are the first since `70` and carry `130`'s
++0.2-0.4%; the steps are in the "Decode submission after 120" section.
 
 `30-decode-layer-queue` keeps one step, #1041's `bd6f912` (queue the decode
 layers on one box, commit each without waiting). Its 95% intervals: decode

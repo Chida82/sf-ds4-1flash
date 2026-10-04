@@ -24691,6 +24691,11 @@ static DS4_MAYBE_UNUSED bool ds41_graph_step(ds41_gpu_graph *g, const ds4_model 
             return false;
         }
     }
+    /* The pipeline key is the whole specialization, so the allocation-free
+     * lookup holds for the step; the encode after each selected-ID readback
+     * is on the GPU's critical path. */
+    const int previous_fast_lookup = ds4_gpu_set_decode_pipeline_fast_lookup(
+        !getenv("DS4_METAL_DISABLE_V41_DECODE_PIPELINE_FAST_LOOKUP"));
     const float initial_pre[] = {1, 0, 0, 0};
     bool ok = ds4_gpu_tensor_write(g->pre, 0, initial_pre, sizeof(initial_pre)) &&
         ds4_gpu_begin_commands() && ds41_embed(g, m, w, g->residual, g->x, token, g->pos);
@@ -24740,6 +24745,7 @@ static DS4_MAYBE_UNUSED bool ds41_graph_step(ds41_gpu_graph *g, const ds4_model 
     if (layer_resident && !metal_graph_stream_map_decode_static_all(m, w)) ok = false;
     if (g->tp_world == 2 && ds4_gpu_tp_failed()) ok = false;
     if (ok && logits) ok = ds41_graph_logits(g, m, w, logits);
+    (void)ds4_gpu_set_decode_pipeline_fast_lookup(previous_fast_lookup);
     if (!ok) {
         g->valid = false;
         return false;

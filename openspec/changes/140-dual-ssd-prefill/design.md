@@ -54,6 +54,7 @@ Considered and not pursued: reading the startup expert-cache preload (about 75 G
 
 - RAM reuse changes the actual byte ratio -> measure per-source residuals; do not promise 18.72 GB/s.
 - External IO competes with GPU or Engram -> end-to-end guards; no silent cache-capacity change.
+- Two drives' DMA shares unified-memory bandwidth with the GPU -> at about 16 GB/s internal plus the external rate it is a few percent of the memory bandwidth the decode kernels reach (the vocabulary head reads 605 GB/s), and prefill sweeps wait on the drive, not on memory. The one place it can show is a memory-bound GPU phase running under the bulk reads, such as the 4096-row tiles of a wide sweep: compare the sweep's GPU section time (`DS4_METAL_V41_STAGE_PROFILE`) with and without the second source before crediting the drive. Decode reads only cache misses (10-40 MB per token), so a second drive neither adds much there nor takes bandwidth from its kernels.
 - Replica validation dominates startup -> expose it and restrict claims to measured lifetimes.
 - Removable drive failure -> explicit error, joined ownership and safe session invalidation.
 
