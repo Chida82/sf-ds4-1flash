@@ -384,6 +384,92 @@ static int check_prefill_expert_stream(void) {
             REQUIRE(pwrite(model.fd, model.map + starts[j] + cached[i] * per[j], per[j],
                            (off_t)(starts[j] + cached[i] * per[j])) == (ssize_t)per[j]);
     }
+    /* Replica: up comes from the copy, gate/down from the model. Each file's
+     * other families are clobbered, so a read from the wrong drive shows. */
+    {
+        char replica_path[] = "/private/tmp/ds41-expert-replica-XXXXXX", link_path[64];
+        const ds4_layer_weights *l = &weights.layer[0];
+        uint8_t *junk = malloc(end);
+        int replica = mkstemp(replica_path), pipes[2] = {-1, -1};
+        uint64_t compared = 0;
+        REQUIRE(replica >= 0 && junk);
+        memset(junk, 0x5a, end);
+        REQUIRE(pwrite(replica, map, end, 0) == (ssize_t)end);
+        const uint64_t ranges[][2] = {{0, 128}, {l->ffn_up_exps->abs_offset, sizes[1]}};
+        REQUIRE(ds41_prefill_replica_check(model.fd, replica, ranges, 2, &compared) == NULL);
+        REQUIRE(compared == 128 + sizes[1]);
+        /* Only consumed ranges count; one changed byte inside one rejects. */
+        REQUIRE(pwrite(replica, junk, 1, (off_t)l->ffn_gate_exps->abs_offset) == 1);
+        REQUIRE(ds41_prefill_replica_check(model.fd, replica, ranges, 2, &compared) == NULL);
+        REQUIRE(pwrite(replica, junk, 1, (off_t)(l->ffn_up_exps->abs_offset + sizes[1] - 1)) == 1);
+        REQUIRE(ds41_prefill_replica_check(model.fd, replica, ranges, 2, &compared) != NULL);
+        REQUIRE(pwrite(replica, (const uint8_t *)map + l->ffn_up_exps->abs_offset + sizes[1] - 1, 1,
+                       (off_t)(l->ffn_up_exps->abs_offset + sizes[1] - 1)) == 1);
+        REQUIRE(ds41_prefill_replica_check(model.fd, model.fd, ranges, 2, &compared) != NULL);
+        snprintf(link_path, sizeof(link_path), "%s.link", model_path);
+        REQUIRE(link(model_path, link_path) == 0);
+        int linked = open(link_path, O_RDONLY);
+        unlink(link_path);
+        REQUIRE(linked >= 0);
+        const char *same = ds41_prefill_replica_check(model.fd, linked, ranges, 2, &compared);
+        close(linked);
+        REQUIRE(same != NULL);
+        REQUIRE(pipe(pipes) == 0);
+        REQUIRE(ds41_prefill_replica_check(model.fd, pipes[0], ranges, 2, &compared) != NULL);
+        close(pipes[0]); close(pipes[1]);
+        REQUIRE(ftruncate(replica, (off_t)end + 1) == 0);
+        REQUIRE(ds41_prefill_replica_check(model.fd, replica, ranges, 2, &compared) != NULL);
+        REQUIRE(ftruncate(replica, (off_t)end) == 0);
+        /* Unsupported modes fail before the file is opened. */
+        ds4_model none = model;
+        REQUIRE(!ds41_prefill_replica_open(&none, &weights, replica_path, false, true, false, false));
+        REQUIRE(!ds41_prefill_replica_open(&none, &weights, replica_path, true, false, false, false));
+        REQUIRE(!ds41_prefill_replica_open(&none, &weights, replica_path, true, true, true, false));
+        REQUIRE(!ds41_prefill_replica_open(&none, &weights, replica_path, true, true, false, true));
+        REQUIRE(!ds41_prefill_replica_open(&none, &weights, "/nonexistent/replica", true, true, false, false));
+        REQUIRE(!none.has_replica);
+        REQUIRE(ds41_prefill_replica_open(&none, &weights, replica_path, true, true, false, false));
+        REQUIRE(none.has_replica && none.replica_fd >= 0 && (fcntl(none.replica_fd, F_GETFD) & FD_CLOEXEC));
+        /* The admitted descriptor keeps the checked file if the path is replaced. */
+        REQUIRE(unlink(replica_path) == 0);
+        int replacement = open(replica_path, O_CREAT | O_EXCL | O_RDWR, 0600);
+        REQUIRE(replacement >= 0 && pwrite(replacement, junk, end, 0) == (ssize_t)end);
+        close(replacement);
+        for (unsigned j = 0; j < 3; j++) {
+            const ds4_tensor *t3 = j == 0 ? l->ffn_gate_exps : j == 1 ? l->ffn_up_exps : l->ffn_down_exps;
+            REQUIRE(pwrite(j == 1 ? model.fd : replica,
+                           junk, sizes[j], (off_t)t3->abs_offset) == (ssize_t)sizes[j]);
+        }
+        /* Writing the checked file stops prefill before any read is queued. */
+        REQUIRE(!ds41_prefill_expert_read_start(&slots[0], &none, l, 0));
+        REQUIRE(!slots[0].started && !slots[0].owns_read_fd);
+        struct stat rs;
+        REQUIRE(fstat(none.replica_fd, &rs) == 0);
+        none.replica_mtime = rs.st_mtimespec; /* as if the clobbered copy had been checked */
+        REQUIRE(ds41_prefill_expert_read_start(&slots[0], &none, l, 0));
+        REQUIRE(slots[0].n_up == 3 && slots[0].up_fd == none.replica_fd);
+        REQUIRE(slots[0].replica_bytes == sizes[1] && slots[0].model_bytes == sizes[0] + sizes[2]);
+        REQUIRE(ds41_prefill_expert_read_join(&slots[0]));
+        REQUIRE(fcntl(none.replica_fd, F_GETFD) >= 0);
+        for (unsigned j = 0; j < 3; j++) REQUIRE(memcmp(ds4_gpu_tensor_contents(slots[0].tensor[j]),
+            model.map + tensors[0][j].abs_offset, sizes[j]) == 0);
+        /* Both slots read from both drives at once, as in a sweep. */
+        REQUIRE(ds41_prefill_expert_read_start(&slots[1], &none, &weights.layer[1], 1));
+        REQUIRE(ds41_prefill_expert_read_start(&slots[0], &none, l, 0));
+        REQUIRE(ds41_prefill_expert_read_join(&slots[1]) && ds41_prefill_expert_read_join(&slots[0]));
+        for (unsigned j = 0; j < 3; j++) REQUIRE(memcmp(ds4_gpu_tensor_contents(slots[1].tensor[j]),
+            model.map + tensors[1][j].abs_offset, sizes[j]) == 0);
+        /* A truncated copy is refused; the model's descriptor survives. */
+        REQUIRE(ftruncate(replica, (off_t)(l->ffn_up_exps->abs_offset + sizes[1] / 2)) == 0);
+        REQUIRE(!ds41_prefill_expert_read_start(&slots[0], &none, l, 0));
+        REQUIRE(!slots[0].started && fcntl(model.fd, F_GETFD) >= 0);
+        REQUIRE(pwrite(model.fd, model.map + l->ffn_up_exps->abs_offset, sizes[1],
+                       (off_t)l->ffn_up_exps->abs_offset) == (ssize_t)sizes[1]);
+        close(none.replica_fd);
+        close(replica);
+        unlink(replica_path);
+        free(junk);
+    }
     /* EOF and cancellation cleanup join every worker before releasing slots. */
     REQUIRE(ftruncate(model.fd, tensors[2][2].abs_offset + sizes[2] / 2) == 0);
     REQUIRE(ds41_prefill_expert_read_start(&slots[0], &model, &weights.layer[2], 2));
@@ -411,7 +497,7 @@ static int check_prefill_expert_stream(void) {
     REQUIRE(fcntl(model.fd, F_GETFD) >= 0);
     REQUIRE(!slots[0].tensor[0] && !slots[1].tensor[2] && !slots[0].started && !slots[1].started);
     REQUIRE(ds41_prefill_expert_buffers_free(slots));
-    puts("V4.1 explicit expert reads, multi-tile binding lifetime, RAM-first copies, fallback and cancellation cleanup: PASS");
+    puts("V4.1 explicit expert reads, multi-tile binding lifetime, RAM-first copies, replica check and split reads, fallback and cancellation cleanup: PASS");
     rc = 0;
 done:
     if (ds4_gpu_commands_active()) ds4_gpu_end_commands();
@@ -1037,6 +1123,64 @@ done:
     ds4_tokens_free(&tokens);
     free(prompt);
     ds4_session_free(candidate); ds4_session_free(control);
+    ds4_engine_close(engine);
+    return rc;
+}
+
+/* Prefill with the routed up read from a checked copy against the model
+ * alone: logits, state and continued decode bitwise, in two sessions of one
+ * engine and again after reopening it. */
+static int check_prefill_replica(const char *path, const char *replica, const char *prompt_path) {
+    enum { FRONTIERS = 3, DECODE = 3 };
+    const int frontiers[FRONTIERS] = {1500, 2048, 3600};
+    float *control[FRONTIERS][1 + DECODE] = {{0}};
+    ds4_engine *engine = NULL;
+    ds4_session *s = NULL;
+    ds4_tokens tokens = {0};
+    char *prompt = NULL, err[256] = {0};
+    size_t prompt_bytes;
+    int rc = 1;
+    ds4_engine_options opt = {.model_path = path, .backend = DS4_BACKEND_METAL,
+        .context_size = 4096, .power_percent = 100, .ssd_streaming = true,
+        .ssd_streaming_cache_bytes = UINT64_C(32) << 30};
+    REQUIRE(!getenv("DS4_METAL_PREFILL_REPLICA"));
+    REQUIRE(read_text_file(prompt_path, &prompt, &prompt_bytes));
+    for (unsigned pass = 0; pass < 3; pass++) {
+        if (pass == 1) REQUIRE(setenv("DS4_METAL_PREFILL_REPLICA", replica, 1) == 0);
+        REQUIRE(ds4_engine_open(&engine, &opt) == 0);
+        REQUIRE(engine->model.has_replica == (pass > 0));
+        if (!tokens.len) ds4_encode_chat_prompt(engine, NULL, prompt, DS4_THINK_NONE, &tokens);
+        REQUIRE(tokens.len > frontiers[FRONTIERS - 1] + DECODE);
+        for (unsigned session = 0; session < (pass == 1 ? 2u : 1u); session++) {
+            REQUIRE(ds4_session_create(&s, engine, opt.context_size) == 0);
+            for (unsigned f = 0; f < FRONTIERS; f++) {
+                ds4_tokens prefix = tokens;
+                prefix.len = frontiers[f];
+                ds4_session_invalidate(s);
+                REQUIRE(ds4_session_sync(s, &prefix, err, sizeof(err)) == 0);
+                for (unsigned d = 0; d <= DECODE; d++) {
+                    if (d) REQUIRE(ds4_session_eval(s, tokens.v[frontiers[f] + d - 1], err, sizeof(err)) == 0);
+                    if (!pass) {
+                        REQUIRE((control[f][d] = malloc(DS4_N_VOCAB * 4u)) != NULL);
+                        memcpy(control[f][d], s->logits, DS4_N_VOCAB * 4u);
+                    } else {
+                        REQUIRE(memcmp(control[f][d], s->logits, DS4_N_VOCAB * 4u) == 0);
+                    }
+                }
+            }
+            ds4_session_free(s); s = NULL;
+        }
+        ds4_engine_close(engine); engine = NULL;
+    }
+    puts("V4.1 prefill replica: logits and continued decode bitwise against the model alone, two sessions and reopen: PASS");
+    rc = 0;
+done:
+    unsetenv("DS4_METAL_PREFILL_REPLICA");
+    if (rc) fprintf(stderr, "prefill replica error: %s\n", err);
+    for (unsigned f = 0; f < FRONTIERS; f++) for (unsigned d = 0; d <= DECODE; d++) free(control[f][d]);
+    ds4_tokens_free(&tokens);
+    free(prompt);
+    ds4_session_free(s);
     ds4_engine_close(engine);
     return rc;
 }
@@ -2370,6 +2514,8 @@ done:
 }
 
 int main(int argc, char **argv) {
+    if (argc == 5 && !strcmp(argv[2], "--prefill-replica"))
+        return check_prefill_replica(argv[1], argv[3], argv[4]);
     if (argc == 2 && !strcmp(argv[1], "--prefill-expert-stream"))
         return check_prefill_expert_stream();
     if (argc == 2 && !strcmp(argv[1], "--prefill-expert-admission"))

@@ -547,6 +547,48 @@ about 8 us per layer, under 1%; closed.
 |---|---|---|---|---|
 | S1 commit the router alone before the selected-id readback, so the shared expert runs while the CPU reads the ids | 2 (6 + 20 pairs) | decode 2048 +2.20% (+1.55..+2.45), decode 8192 +1.60% (+1.47..+2.29) pooled | append +300 +1.66% (+1.37..+1.86), append +1500 +1.29% (-7.47..+5.20) pooled, prefill 5000 +1.3% and +1.6%; guards once per invocation: decode 2500 +2.3%/+1.6%, ttft 2500 +0.8%/+0.8%; hit rates equal | kept |
 
+## Dual-drive prefill after 132 (2026-10-05, `140-dual-ssd-prefill`)
+
+The gate, on `main` at `67b75b8` with the internal SSD only, harness
+streaming flags, one run per shape with `DS4_METAL_GRAPH_PREFILL_PROFILE`
+(`map` is the exposed wait for a layer's weights, summed over the run):
+
+| Shape | ttft (that run) | map | first token after |
+|---|---|---|---|
+| 2500 (2048 rows, then 452 tokens) | 31.0 s | 3.09 s (above 5 ms in 30 of 40 layers) | 105 ms |
+| 7500 (one wide sweep, then 1356 rows) | 16.2 s | 0.84 s | 310 ms |
+| 10000 (8192-row wide sweep, then 1808 rows) | 26.8 s | 2.70 s | 344 ms |
+| 5000 (2 x 2048 rows) | 50.3 s | 1.23 s | 49 ms |
+| append 5300 -> +1500 | 8.7 s | 1.24 s | 230 ms |
+
+Decode (design D5), decode 2048 and 8192 with 256 tokens,
+`DS4_METAL_STREAMING_EXPERT_TIMING_SUMMARY`: 1032 and 970 layers with a miss,
+0.69 ms of `pread` each, so 2.8 and 2.6 ms per token of 42.3 and 41.8 ms
+(6.6% and 6.2%). Above the 5% line: not a rejected idea, and outside this
+change. A second drive taking a third of the miss bytes would save about 2%.
+
+The copy is a `cp` of the GGUF to the TB5 drive (ExFAT, 208 s). With
+`DS4_METAL_PREFILL_REPLICA` the 2500 sweep's `map` fell to 0.84-0.98 s; 2, 3
+or 4 of the 8 readers on the copy gave the same wait, so the split is 3.
+
+| Step (B) against the previous | Invocations | Target metrics | Other | Verdict |
+|---|---|---|---|---|
+| S1 routed up read from a checked copy on the second drive (`--b-env DS4_METAL_PREFILL_REPLICA=...`), gate/down from the model, at once | 2 (26 + 26 pairs) | ttft 2500 +6.80% (+6.41..+7.10), ttft 10000 +8.32% (+6.60..+12.28), append +1500 +24.18% (+17.75..+46.72) pooled; once: ttft 3500 +2.8% (+1.9..+4.4), ttft 7500 +1.5% (+1.3..+2.7), ttft 5000 +0.8% (-0.5..+1.7) | decode 2048 -0.33% (-1.03..+0.86), decode 8192 -0.06% (-0.55..+0.37), append +300 +2.12% (+1.50..+2.56), prefill 5000 +1.11% (-0.03..+2.38) pooled; guards once: ttft 16896 +0.6%, decode 2500 +1.4%; hit rates equal; bitwise | kept |
+
+The first invocation read decode -1.5% (-4.3..+0.2) and -0.9%; the second
++0.1% and +0.0%. Pooled, decode is unchanged. The harness emits no record
+row for a B-only environment. Not in the ttft figures: the check of 43.51
+GiB at every engine open, 12.1 s in these runs and 6.7-6.8 s once four workers
+read both drives at once (kept: same bytes compared). A one-shot CLI run pays
+it in full, a server once.
+
+Fresh process, `cold-2500` shape with one generated token, two runs per
+mode alternated: wall time 30.2 / 30.9 s without the replica and 34.8 / 36.7
+s with it (prefill 27.9 / 29.2 s against 26.4 / 28.4 s). One request pays
+the check; at the A/B savings (about 2.1 s for 2500 and 10000, 1.7 s for
+append +1500) an engine breaks even after 3-4 prompts that run an explicit
+sweep.
+
 ## Adding a row
 
 1. `SF_PARITY_FLAGS=--ssd-streaming tools/parity-check.sh sf-ds4-1flash` from
@@ -587,6 +629,7 @@ by `30-decode-layer-queue`.
 | 130 decode submission | 2026-10-04 | bfa0ef2 + 130 | DeepSeek-V4.1-Flash-Q2.gguf | 12 + 33 | PASS (bitwise) | 20.4 (+19.5%) | 21.0 (+21.3%) | 29.8 (+42.9%) | 13.7 (+152.9%) | 48.5 (+40.4%) | 21.4 (+120.7%) | 26.2 (+49.0%) | 13.2 (+24.7%) | 8.33 (+110.9%) |  | 21.6 (+23.3%) | 89.4 (+21.3%) |
 | 131 readback poll | 2026-10-04 | b59c5dd + 131 | DeepSeek-V4.1-Flash-Q2.gguf | 4 + 3 + 44 | PASS (bitwise) | 22.3 (+29.8%) | 22.5 (+28.1%) |  | 13.3 (+156.7%) |  | 18.9 (+125.8%) | 27.4 (+48.0%) |  |  |  |  | 94.3 (+18.3%) |
 | 132 readback split | 2026-10-05 | f8dd83e + 132 | DeepSeek-V4.1-Flash-Q2.gguf | 5 + 51 | PASS (bitwise) | 22.6 (+35.2%) | 22.7 (+34.5%) |  | 13.9 (+146.6%) |  | 19.8 (+122.8%) | 29.3 (+41.9%) |  |  |  |  | 104.3 (+8.5%) |
+| 140 dual-drive prefill | 2026-10-05 | 67b75b8 + 140 | DeepSeek-V4.1-Flash-Q2.gguf | 2 + 41 + 1 | PASS (bitwise) |  |  |  | 12.6 (+177.5%) |  | 18.0 (+131.1%) | 25.7 (+54.8%) |  |  |  |  | 103.7 (+8.7%) |
 
 `100-prefill-weight-delivery` (row above, `80` and `90` landed no runtime
 code) is two invocations against the start: `cold,append` with the guards
@@ -596,6 +639,19 @@ with `--cache-policy-change` (41 pairs). Its e2e holds decode at the
 reference, which `100` does not touch. Parity passed on the candidate tree
 (10 prompts, token-identical). The steps are in the "Prefill weight delivery
 after 90" section.
+
+`140-dual-ssd-prefill` (row above) is three invocations against the start,
+all with the shared `--env DS4_METAL_PREFILL_REPLICA=<copy on the TB5 drive>`
+(the start tree has no reference to it), on an afternoon with the GPU
+throttling (thermal Heavy/Moderate, 947-1518 MHz). The first,
+`decode,cold,append` with the guards, kept 2 of 20 pairs (10000); the second,
+`cold-3500,cold-7500` with `--cache-policy-change`, kept 41; the repeat of the
+empty kinds (`decode,cold-2500,cold-5000,append` with the guards) kept 1, so
+its decode (2048 +45.8%, 8192 +26.4%) is a single pair and stays out of the
+row. The e2e cell is the second invocation's. Parity passed on the candidate
+with and without the replica (10 prompts each; the replica was admitted in
+every child run, never in upstream's, but these short prompts run no explicit
+sweep). The step's own figures are in "Dual-drive prefill after 132".
 
 `132-gpu-all-hit-continuation` (row above) is two invocations against the
 start, again with the GPU throttling (thermal Heavy/Moderate, 905-1513 MHz):

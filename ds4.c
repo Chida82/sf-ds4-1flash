@@ -1670,6 +1670,9 @@ typedef struct ds4_model {
 
     int ngram_fd;
     const ds4_tensor *ngram_tensor;
+    bool has_replica;    /* V4.1 prefill reads routed up from a validated copy. */
+    int replica_fd;
+    struct timespec replica_mtime;
 } ds4_model;
 
 static uint64_t scalar_value_size(uint32_t type) {
@@ -1859,6 +1862,7 @@ static bool model_get_array(const ds4_model *m, const char *key, ds4_array_ref *
 static void model_close(ds4_model *m) {
     if (!m) return;
     if (m->ngram_tensor && m->ngram_fd >= 0) close(m->ngram_fd);
+    if (m->has_replica) close(m->replica_fd);
     free(m->kv);
     free(m->tensors);
     if (m->map) munmap((void *)m->map, (size_t)m->size);
@@ -25090,15 +25094,15 @@ struct ds41_prefill_expert_slot {
     uint8_t *dst[3];
     uint64_t bytes[3];
     bool locked[3];
-    int read_fd;
+    int read_fd, up_fd;
     bool owns_read_fd;
     ds4_gpu_stream_expert_table table;
     pthread_t threads[16];
     ds41_prefill_expert_worker workers[16];
     bool ok[16];
-    uint32_t n_threads, started;
+    uint32_t n_threads, n_up, started;
     uint8_t ready[DS4_MAX_EXPERT];
-    uint64_t ram_bytes;
+    uint64_t ram_bytes, model_bytes, replica_bytes;
 };
 
 /* A separate open keeps prefill's uncached reads from changing the model fd
@@ -25137,8 +25141,120 @@ static bool ds41_prefill_expert_pread(int fd, uint8_t *dst, uint64_t offset, uin
     return true;
 }
 
+typedef struct {
+    int model_fd, replica_fd;
+    const uint64_t (*ranges)[2];
+    uint32_t n_ranges;
+    uint64_t compared[4];
+    const char *err[4];
+} ds41_prefill_replica_scan;
+
+/* Worker w compares every fourth 8 MiB chunk, so both drives always have
+ * requests in flight. */
+static void ds41_prefill_replica_scan_chunks(void *arg, size_t w) {
+    enum { CHUNK = 8u << 20 };
+    ds41_prefill_replica_scan *scan = arg;
+    uint8_t *a = malloc(CHUNK), *b = malloc(CHUNK);
+    const char *err = !a || !b ? "out of memory" : NULL;
+    uint64_t k = 0;
+    for (uint32_t i = 0; !err && i < scan->n_ranges; i++) {
+        for (uint64_t off = scan->ranges[i][0], end = off + scan->ranges[i][1];
+             !err && off < end; off += CHUNK, k++) {
+            if (k % 4u != w) continue;
+            const uint64_t len = end - off < CHUNK ? end - off : CHUNK;
+            if (!ds41_prefill_expert_pread(scan->model_fd, a, off, len) ||
+                !ds41_prefill_expert_pread(scan->replica_fd, b, off, len)) err = "read failed";
+            else if (memcmp(a, b, (size_t)len) != 0) err = "content differs from the model";
+            else scan->compared[w] += len;
+        }
+    }
+    free(a); free(b);
+    scan->err[w] = err;
+}
+
+/* NULL when the replica is a different regular file of the same size whose
+ * bytes match the model's in every range. Both reads skip the page cache. */
+static const char *ds41_prefill_replica_check(int model_fd, int replica_fd,
+                                              const uint64_t (*ranges)[2], uint32_t n_ranges,
+                                              uint64_t *compared) {
+    struct stat ms, before, after;
+    if (fstat(model_fd, &ms) != 0 || fstat(replica_fd, &before) != 0 || !S_ISREG(before.st_mode))
+        return "not a regular file";
+    if (before.st_size != ms.st_size) return "size differs from the model";
+    if (before.st_dev == ms.st_dev && before.st_ino == ms.st_ino) return "it is the model file itself";
+    const int model_read = ds41_prefill_expert_open_nocache_fd(model_fd);
+    ds41_prefill_replica_scan scan = {.model_fd = model_read >= 0 ? model_read : model_fd,
+        .replica_fd = replica_fd, .ranges = ranges, .n_ranges = n_ranges};
+    dispatch_apply_f(4, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), &scan,
+                     ds41_prefill_replica_scan_chunks);
+    if (model_read >= 0) close(model_read);
+    const char *err = NULL;
+    *compared = 0;
+    for (unsigned w = 0; w < 4; w++) {
+        if (!err) err = scan.err[w];
+        *compared += scan.compared[w];
+    }
+    if (!err && (fstat(replica_fd, &after) != 0 || after.st_size != before.st_size ||
+                 after.st_mtimespec.tv_sec != before.st_mtimespec.tv_sec ||
+                 after.st_mtimespec.tv_nsec != before.st_mtimespec.tv_nsec))
+        err = "changed while it was checked";
+    return err;
+}
+
+/* The engine keeps the checked file open; a write to it would make prefill
+ * read bytes that were never compared, so any change stops the sweep. */
+static bool ds41_prefill_replica_unchanged(const ds4_model *m) {
+    struct stat st;
+    return fstat(m->replica_fd, &st) == 0 && (uint64_t)st.st_size == m->file_size &&
+        st.st_mtimespec.tv_sec == m->replica_mtime.tv_sec &&
+        st.st_mtimespec.tv_nsec == m->replica_mtime.tv_nsec;
+}
+
+/* DS4_METAL_PREFILL_REPLICA names a copy of the model on another drive. The
+ * explicit prefill buffers read routed up from it and gate/down from the
+ * model; decode and every other read keep the model file. */
+static bool ds41_prefill_replica_open(ds4_model *m, const ds4_weights *w, const char *path,
+                                      bool metal, bool streaming, bool quality, bool tp) {
+    const char *err = !metal ? "needs Metal" : !streaming ? "needs --ssd-streaming" :
+        quality ? "not supported with --quality" : tp ? "not supported with tensor parallelism" : NULL;
+    uint64_t ranges[1 + DS4_MAX_LAYER][2] = {{0, m->tensor_data_pos}};
+    for (uint32_t il = 0; !err && il < DS4_N_LAYER; il++) {
+        const ds4_layer_weights *l = &w->layer[il];
+        if (!l->ffn_gate_exps || !l->ffn_up_exps || !l->ffn_down_exps ||
+            l->ffn_gate_exps->type != DS4_TENSOR_IQ2_XXS || l->ffn_up_exps->type != DS4_TENSOR_IQ2_XXS ||
+            l->ffn_down_exps->type != DS4_TENSOR_Q2_K) err = "needs the Q2 routed experts";
+        else { ranges[1 + il][0] = l->ffn_up_exps->abs_offset; ranges[1 + il][1] = l->ffn_up_exps->bytes; }
+    }
+    int fd = -1;
+    if (!err) {
+        do { fd = open(path, O_RDONLY | O_CLOEXEC); } while (fd < 0 && errno == EINTR);
+        if (fd < 0) err = strerror(errno);
+        else if (fcntl(fd, F_NOCACHE, 1) != 0 || fcntl(fd, F_RDAHEAD, 0) != 0) err = "cannot disable caching";
+    }
+    uint64_t compared = 0;
+    const double t0 = now_sec();
+    if (!err) err = ds41_prefill_replica_check(m->fd, fd, (const uint64_t (*)[2])ranges,
+                                               1 + DS4_N_LAYER, &compared);
+    if (err) {
+        if (fd >= 0) close(fd);
+        fprintf(stderr, "ds4: DS4_METAL_PREFILL_REPLICA %s: %s\n", path, err);
+        return false;
+    }
+    struct stat st;
+    (void)fstat(fd, &st);
+    m->has_replica = true;
+    m->replica_fd = fd;
+    m->replica_mtime = st.st_mtimespec;
+    fprintf(stderr, "ds4: V4.1 prefill reads routed up from %s (device %d, inode %llu), "
+            "%.2f GiB checked against the model in %.1f s\n", path, (int)st.st_dev,
+            (unsigned long long)st.st_ino, compared / 1073741824.0, now_sec() - t0);
+    return true;
+}
+
 /* Each worker reads an equal share of the experts the RAM copy did not
- * cover, in file order, merging adjacent experts into one request. */
+ * cover, in file order, merging adjacent experts into one request. With a
+ * replica the first n_up workers read only up from it and the others
+ * gate/down from the model, so neither drive waits behind the other. */
 static void *ds41_prefill_expert_read(void *arg) {
     ds41_prefill_expert_worker *worker = arg;
     ds41_prefill_expert_slot *slot = worker->slot;
@@ -25146,17 +25262,24 @@ static void *ds41_prefill_expert_read(void *arg) {
                                 slot->table.down_offset};
     const uint64_t per[] = {slot->table.gate_expert_bytes, slot->table.gate_expert_bytes,
                             slot->table.down_expert_bytes};
+    const bool up_worker = worker->index < slot->n_up;
+    const int fd = up_worker ? slot->up_fd : slot->read_fd;
+    const uint64_t index = up_worker ? worker->index : worker->index - slot->n_up;
+    const uint64_t n = up_worker ? slot->n_up : slot->n_threads - slot->n_up;
+    bool family[3];
     uint64_t total = 0;
-    for (uint32_t e = 0; e < slot->table.n_total_expert; e++)
-        if (!slot->ready[e]) total += per[0] + per[1] + per[2];
-    const uint64_t part = total / slot->n_threads, extra = total % slot->n_threads;
-    const uint64_t index = worker->index;
+    for (unsigned j = 0; j < 3; j++) {
+        family[j] = !slot->n_up || (j == 1) == up_worker;
+        for (uint32_t e = 0; e < slot->table.n_total_expert; e++)
+            if (family[j] && !slot->ready[e]) total += per[j];
+    }
+    const uint64_t part = total / n, extra = total % n;
     const uint64_t lo = part * index + (index < extra ? index : extra);
     const uint64_t hi = lo + part + (index < extra);
     uint64_t v = 0, run_offset = 0, run_len = 0;
     uint8_t *run_dst = NULL;
     for (unsigned j = 0; j < 3; j++) for (uint32_t e = 0; e < slot->table.n_total_expert; e++) {
-        if (slot->ready[e]) continue;
+        if (!family[j] || slot->ready[e]) continue;
         const uint64_t a = v > lo ? v : lo, b = v + per[j] < hi ? v + per[j] : hi;
         if (a < b) {
             const uint64_t at = e * per[j] + (a - v);
@@ -25164,14 +25287,14 @@ static void *ds41_prefill_expert_read(void *arg) {
                 run_dst + run_len == slot->dst[j] + at) {
                 run_len += b - a;
             } else {
-                if (run_len && !ds41_prefill_expert_pread(slot->read_fd, run_dst, run_offset, run_len))
+                if (run_len && !ds41_prefill_expert_pread(fd, run_dst, run_offset, run_len))
                     return NULL;
                 run_offset = offsets[j] + at; run_dst = slot->dst[j] + at; run_len = b - a;
             }
         }
         v += per[j];
     }
-    if (run_len && !ds41_prefill_expert_pread(slot->read_fd, run_dst, run_offset, run_len))
+    if (run_len && !ds41_prefill_expert_pread(fd, run_dst, run_offset, run_len))
         return NULL;
     slot->ok[worker->index] = true;
     return NULL;
@@ -25266,6 +25389,10 @@ static bool ds41_prefill_expert_read_start(ds41_prefill_expert_slot *slot,
                                           const ds4_model *m,
                                           const ds4_layer_weights *l, uint32_t il) {
     if (slot->started || slot->owns_read_fd) return false;
+    if (m->has_replica && !ds41_prefill_replica_unchanged(m)) {
+        fprintf(stderr, "ds4: DS4_METAL_PREFILL_REPLICA changed after it was checked; prefill stops\n");
+        return false;
+    }
     slot->table = graph_stream_expert_table_make(m, l, il,
         routed_expert_row_bytes(l->ffn_gate_exps) * DS4_N_FF_EXP,
         routed_expert_row_bytes(l->ffn_down_exps) * DS4_N_EMBD);
@@ -25291,6 +25418,16 @@ static bool ds41_prefill_expert_read_start(ds41_prefill_expert_slot *slot,
     slot->owns_read_fd = slot->read_fd >= 0;
     if (!slot->owns_read_fd) slot->read_fd = m->fd;
     slot->n_threads = metal_graph_stream_prefill_layer_pagein_threads();
+    /* Up is 31% of the bytes on a drive with half the rate: 3 of 8 readers
+     * (2 or 4 measured the same wait). */
+    slot->n_up = m->has_replica && slot->n_threads > 1 ? (slot->n_threads * 3u + 4u) / 8u : 0;
+    if (slot->n_up >= slot->n_threads) slot->n_up = slot->n_threads - 1u;
+    slot->up_fd = slot->n_up ? m->replica_fd : slot->read_fd;
+    slot->model_bytes = slot->replica_bytes = 0;
+    for (uint32_t e = 0; e < slot->table.n_total_expert; e++) if (!slot->ready[e]) {
+        slot->model_bytes += per_expert[0] + per_expert[2] + (slot->n_up ? 0 : per_expert[1]);
+        if (slot->n_up) slot->replica_bytes += per_expert[1];
+    }
     for (uint32_t i = 0; i < slot->n_threads; i++) {
         slot->ok[i] = false;
         slot->workers[i] = (ds41_prefill_expert_worker){slot, i};
@@ -25360,6 +25497,9 @@ static bool ds41_graph_prefill_sweep(ds41_gpu_graph *g, const ds4_model *m,
         ds41_prefill_expert_buffers_init(g, m, w, expert_slots);
     bool ok = !g->streaming || (explicit_experts ? metal_graph_stream_map_decode_static_all(m, w) :
                                                   metal_graph_stream_map_token(m, w));
+    if (m->has_replica && !explicit_experts && total_count >= 32u)
+        fprintf(stderr, "ds4: V4.1 prefill sweep of %u rows has no explicit expert buffers; "
+                "it reads only the model, not DS4_METAL_PREFILL_REPLICA\n", total_count);
     if (ok && explicit_experts) {
         fprintf(stderr, "ds4: V4.1 prefill reads experts into two explicit layer buffers\n");
         ok = ds41_prefill_expert_read_start(&expert_slots[0], m, &w->layer[0], 0);
@@ -25391,8 +25531,9 @@ static bool ds41_graph_prefill_sweep(ds41_gpu_graph *g, const ds4_model *m,
                 ok = ds41_prefill_expert_read_start(&expert_slots[(il + 1u) & 1u],
                                                     m, &w->layer[il + 1u], il + 1u);
             if (ok && profile)
-                fprintf(stderr, "ds4: V4.1 prefill layer=%u experts from RAM %.3f GiB\n",
-                        il, slot->ram_bytes / 1073741824.0);
+                fprintf(stderr, "ds4: V4.1 prefill layer=%u experts from RAM %.3f GiB, "
+                        "model %.3f GiB, replica %.3f GiB\n", il, slot->ram_bytes / 1073741824.0,
+                        slot->model_bytes / 1073741824.0, slot->replica_bytes / 1073741824.0);
         } else if (g->streaming) {
             const uint32_t first_count = total_count < encoder_chunk ? total_count : encoder_chunk;
             if (!g->encoder_resident || il >= 20)
@@ -30410,6 +30551,14 @@ static int ds4_engine_open_internal(ds4_engine **out,
         const uint32_t ctx = opt->context_size > 0 ? (uint32_t)opt->context_size : 4096;
         const uint32_t sessions = e->placement_session_count_hint > 0 ?
             (uint32_t)e->placement_session_count_hint : 1;
+        const char *replica = getenv("DS4_METAL_PREFILL_REPLICA");
+        if (replica && replica[0] &&
+            !ds41_prefill_replica_open(&e->model, &e->weights, replica, e->backend == DS4_BACKEND_METAL,
+                                       e->ssd_streaming, e->quality, opt->tp.role != DS4_TP_NONE)) {
+            ds4_engine_close(e);
+            *out = NULL;
+            return 1;
+        }
         if (!ds41_memory_admit(e, ds4_mul_sat_u64(ds41_graph_bytes(ctx), sessions), true)) {
             ds4_engine_close(e);
             *out = NULL;

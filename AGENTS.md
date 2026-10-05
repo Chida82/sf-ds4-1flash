@@ -121,6 +121,18 @@ batched and token-major kernels round differently. Since
 buffers have no switch; they fall back to mmap when the reserve cannot hold
 them. All three keep the output bitwise identical.
 
+`DS4_METAL_PREFILL_REPLICA=<path>` (`140-dual-ssd-prefill`, off by default)
+names a byte-identical copy of the GGUF on a second drive. The explicit prefill
+buffers then read routed `up` from it on 3 of their 8 readers and gate/down
+from the model on the others, so both drives read at once; decode, Engram and
+every other read keep the model file. At engine open it compares the header
+and the 43.51 GiB of routed up against the model (about 7 s with the copy on
+the TB5 drive) and refuses to start on a difference, a missing file, the model
+file itself, or anything but single-box Metal SSD streaming with the Q2
+experts. A later change to the copy stops the next prefill with an error.
+Output stays bitwise identical (`make test-deepseek41-prefill-replica
+REPLICA=<path>`); measured gains are in `speed-bench/perf-record.md`.
+
 Since `70-decode-glue-fusions`, a decode token issues fewer, larger kernels
 per layer, and its Engram rows are read on workers while the first layers
 encode. The fusions are:

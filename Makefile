@@ -167,6 +167,12 @@ SWITCH ?= DS4_METAL_DISABLE_V41_DECODE_FLUSH
 test-deepseek41-decode-switch: tests/test_deepseek41_graph
 	./tests/test_deepseek41_graph deepseek-v4.1-flash.gguf --decode-switch speed-bench/promessi_sposi.txt $(SWITCH)
 
+# DS4_METAL_PREFILL_REPLICA against the model alone, bitwise; REPLICA is a copy
+# of the GGUF on a second drive.
+.PHONY: test-deepseek41-prefill-replica
+test-deepseek41-prefill-replica: tests/test_deepseek41_graph
+	./tests/test_deepseek41_graph deepseek-v4.1-flash.gguf --prefill-replica $(REPLICA) speed-bench/promessi_sposi.txt
+
 tests/test_deepseek41_graph.o: tests/test_deepseek41_graph.c ds4.c ds4_gpu.h ds4_engram.h
 	$(CC) $(filter-out -ffast-math,$(CFLAGS)) -Wno-unused-function -I. -c -o $@ $<
 

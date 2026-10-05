@@ -149,7 +149,7 @@ Two plausible reasons, neither verified: the cache had not fully recovered
 between runs, and space freed on ExFAT may not have been trimmed, so the drive
 still counts it as used, which shrinks the dynamic cache. Practical figure:
 **about 45-50 GiB at 5.2 GB/s, then about 1-1.3 GB/s**. Copying a 341 GiB GGUF
-onto this drive in one go takes roughly 5 minutes of pure I/O, not 1.
+onto this drive in one go took 208 s with `cp` (1.76 GB/s, 2026-10-05), not 1 minute.
 
 ## What the numbers say
 
@@ -185,12 +185,15 @@ them was measured end to end with the model.
    **Not possible today without code**: the tables live inside the same GGUF,
    and `ds4_engram_table_open` opens the model path. It needs either a split
    Engram file or an option giving the Engram path.
-3. **Striping expert reads across both drives** (a second copy of the GGUF on
-   the external drive, a share of the misses read from it) could raise miss
-   bandwidth from ~13 to ~19 GB/s, **up to about 1.45x**, in bandwidth-bound
-   phases (prefill sweeps, cold starts). Decode gains little: its time is
-   dominated by the 38 ms `sync`, not by the 2 ms of reads. Needs code; for
-   most of the benefit give the internal drive ~2/3 of the bytes.
+3. **Prefill reads from both drives: implemented** as
+   `DS4_METAL_PREFILL_REPLICA=<copy of the GGUF>` (`140-dual-ssd-prefill`).
+   Routed `up` (31% of a layer's expert bytes) comes from the copy, gate/down
+   from the internal drive, at once. Measured against internal-only, bitwise
+   identical output: ttft 2500 +6.8%, ttft 10000 +8.3%, append +1500 +24%,
+   decode unchanged; the copy costs about 7 s of checking at every engine open
+   (`speed-bench/perf-record.md`, Dual-drive prefill after 132). Decode misses
+   still read only the internal drive: their `pread` is 6.2-6.6% of a token,
+   so a second drive could add about 2% at best.
 4. **Model storage and transfers.** Good as an archive for GGUFs:
    copying 341 GiB from it to the internal SSD is bounded by the 6.4 GB/s read,
    about 1 minute of pure I/O (`cp` or `hf` will be slower). Symlinks work on
