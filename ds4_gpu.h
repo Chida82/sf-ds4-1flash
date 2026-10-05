@@ -55,6 +55,7 @@ int ds4_gpu_pack_slot_rows_f32_tensor(
 
 int ds4_gpu_begin_commands(void);
 int ds4_gpu_flush_commands(void);
+int ds4_gpu_split_readback(void);
 int ds4_gpu_commands_active(void);
 #include "ds4_deepseek41_gpu.h"
 int ds4_gpu_parallel_ffn_finish(void);

@@ -202,6 +202,11 @@ For inference correctness and release checks, read [testing](docs/TESTING.md).
 
 ## Speed without changing the output
 
+> **Hardware.** Every performance number in this repository was measured on
+> one machine: an Apple **M5 Max with 128 GB** of unified memory, with the
+> Q2 GGUF streamed from its internal SSD. Other Macs will give different
+> absolute numbers.
+
 **Every performance change so far has left the model's output bit for bit
 identical.** No precision is traded for speed: no lower-precision KV cache, no
 approximate kernel, no route that changes a single logit.
@@ -211,11 +216,58 @@ approximate kernel, no route that changes a single logit.
 | Prefill and decode | logits **bit-identical** to the build before each step (`speed-bench/ab_bench.py --bitwise`); every step in `speed-bench/perf-record.md` passed that bitwise gate |
 | Against upstream ds4 | greedy output **token-identical** to ds4 at the merge-base (StarForge parity oracle, ten prompts) |
 
+**How it is checked.** Every change goes through four checks:
+- the StarForge parity oracle (`tools/parity-check.sh`) runs ten prompts
+  greedily on this child and on upstream ds4 at the child's merge-base, with
+  the same GGUF, and requires token-identical output;
+- the A/B harness requires identical tokens against the previous build, and
+  bit-identical logits (`--bitwise`) when a change claims it;
+- every runtime switch that turns a speed-up off is checked with
+  `make test-deepseek41-decode-switch SWITCH=<env>`: 65 decode tokens with and
+  without it, logits, Engram history and KV state compared bit for bit;
+- kernel tests compare optimized kernels with the CPU reference or with the
+  kernel they replace.
+
 ## Speed
 
-No DeepSeek V4.1 Flash baseline has been recorded for this fork yet. The
-curves under `speed-bench/` were measured on other models and are not relabelled
-here; regenerate them with `sf-ds4-1flash-bench` before quoting a number.
+On a 128 GB Mac this model always runs with `--ssd-streaming` (see
+`AGENTS.md`), so every figure here is a streaming figure, with the expert
+cache fixed at `--ssd-streaming-cache-experts 82GB` (74.88 GiB dynamic).
+`speed-bench/ab_bench.py` alternates the two builds in A B B A runs, drops
+pairs whose GPU clock sagged or whose expert cache diverged, and reports
+medians with bootstrap 95% intervals for decode, time to first token on cold
+prompts of 2.5K-10K tokens, and appends to a live session. A step is kept only
+when its target gains and no other metric clearly loses. Each change appends a
+row to `speed-bench/perf-record.md` against a fixed start commit.
+
+**Against ds4.** Measured on 2026-10-05 with upstream's own bench. The builds
+compared are ds4 at the merge-base `0aaea5a` and this child at
+`132-gpu-all-hit-continuation`, on DeepSeek V4.1 Flash Q2.
+- Both run `ds4-bench` (here `sf-ds4-1flash-bench`) on *I Promessi Sposi* with
+  `--ssd-streaming --ssd-streaming-cache-experts 82GB`, context frontiers from
+  2048 to 32768 doubling, and 128 generated tokens per frontier. Each frontier
+  prefills the new tokens on top of the previous context.
+- Each value is the mean of two runs per build, in the order ds4, sf, sf, ds4,
+  with 180 s between runs.
+- "Generation" counts all 128 tokens, including the first one after the
+  prefill; "steady decode" leaves that first token out.
+
+| Measurement | ds4 t/s | sf t/s | sf vs ds4 |
+|---|---:|---:|---:|
+| prefill, first 2048 tokens | 124.6 | 172.4 | +38.4% |
+| prefill, +2048 to context 4096 | 115.8 | 182.4 | +57.5% |
+| prefill, +4096 to context 8192 | 205.1 | 285.0 | +39.0% |
+| prefill, +8192 to context 16384 | 364.4 | 463.4 | +27.2% |
+| prefill, +16384 to context 32768 | 404.3 | 636.5 | +57.4% |
+| generation, context 2048 | 12.1 | 24.4 | +100.5% |
+| generation, context 8192 | 12.9 | 20.3 | +58.2% |
+| generation, context 32768 | 11.6 | 20.7 | +79.2% |
+| steady decode, context 2048 | 15.7 | 25.7 | +63.4% |
+| steady decode, context 8192 | 16.8 | 24.4 | +45.9% |
+| steady decode, context 32768 | 15.7 | 22.0 | +40.3% |
+
+The first token after a prefill took 2.1-3.0 s on ds4 and 0.3-1.1 s here.
+Greedy output is token-identical to ds4 (parity oracle, ten prompts).
 
 See [performance and benchmarking](docs/PERFORMANCE.md) for the full numbers,
 comparison conditions, and benchmark commands.

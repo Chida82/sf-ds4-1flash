@@ -145,7 +145,10 @@ identical (`make test-deepseek41-decode-switch SWITCH=<env>`):
 - `DS4_METAL_DISABLE_V41_DECODE_PIPELINE_FAST_LOOKUP` (the allocation-free
   pipeline lookup of `130-m5-decode-submission`);
 - `DS4_METAL_DISABLE_V41_READBACK_POLL` (the bounded status poll at the
-  selected-id readback, `131-decode-readback-spin-wait`).
+  selected-id readback, `131-decode-readback-spin-wait`);
+- `DS4_METAL_DISABLE_V41_READBACK_SPLIT` (the router committed alone, so the
+  shared expert runs while the CPU reads the ids,
+  `132-gpu-all-hit-continuation`).
 
 The alternative to streaming is not more RAM in one box but **two 128 GB Macs
 with TP/RDMA** (`docs/DISTRIBUTED.md`), which holds about 81 GiB of main weights

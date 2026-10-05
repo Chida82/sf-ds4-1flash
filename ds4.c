@@ -24201,6 +24201,12 @@ static bool ds41_moe_partial(ds41_gpu_graph *g, const ds4_model *m,
             m->map, m->size, bias->abs_offset, 0, 0, token,
             DS4_N_EXPERT, DS4_N_EXPERT_USED, DS4_EXPERT_WEIGHT_SCALE, 0, 0, true, false,
             g->route_logits)) return false;
+#ifdef __APPLE__
+    /* The shared expert does not feed the selected-id readback: commit the
+     * router alone so the shared expert runs while the CPU reads the ids. */
+    if (g->streaming && g->tp_world == 1 && !getenv("DS4_METAL_DISABLE_V41_READBACK_SPLIT") &&
+        !ds4_gpu_split_readback()) return false;
+#endif
     const bool shared_here = !shared_owner || g->tp_rank == (il & 1u);
     /* sf-ablate(cuda): shared_queued and ds4_gpu_dsv41_shared_start are CUDA-only; on Metal the shared expert always runs here */
     const bool shared_fused = shared_here &&

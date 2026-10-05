@@ -2,6 +2,11 @@
 
 [README](../README.md)
 
+> **Hardware.** Every performance number in this repository was measured on
+> one machine: an Apple **M5 Max with 128 GB** of unified memory, with the
+> DeepSeek V4.1 Flash Q2 GGUF streamed from its internal SSD. Other Macs will
+> give different absolute numbers.
+
 Compare the same checkpoint, quantization, context, and sampling settings.
 Record the commit and whether weights were resident, streamed, or distributed.
 Keep other GPU workloads idle and repeat in alternating order: one favorable
@@ -40,11 +45,15 @@ A single sweep with the command above is a picture of one build, not a verdict.
 
 ## Recorded baselines
 
-None yet. The sweeps that used to fill this section were
-measured on DeepSeek V4 Flash and V4 PRO, which this fork does not run, and
-were deleted rather than relabelled: a throughput number carried over from
-another model is worse than an empty section. Record a DeepSeek V4.1 Flash
-sweep with the command above and add the CSV under `speed-bench/`.
+DeepSeek V4.1 Flash Q2 against ds4 at the merge-base `0aaea5a`, 2026-10-05,
+this child at `132-gpu-all-hit-continuation`: the sweep above with
+`--ssd-streaming --ssd-streaming-cache-experts 82GB --ctx-start 2048
+--ctx-max 32768 --step-mul 2 --gen-tokens 128`, two runs per build in the
+order ds4, sf, sf, ds4. The CSVs are in
+[speed-bench/v41-q2-vs-ds4-20261005](../speed-bench/v41-q2-vs-ds4-20261005)
+and the table in the README's "Speed" section: prefill +27% to +58%, steady
+decode +40% to +63%, the first token after a prefill 0.3-1.1 s against
+2.1-3.0 s.
 
 ## What to compare next
 

@@ -1,5 +1,10 @@
 # Performance record
 
+> **Hardware.** Every performance number in this repository was measured on
+> one machine: an Apple **M5 Max with 128 GB** of unified memory, with the
+> DeepSeek V4.1 Flash Q2 GGUF streamed from its internal SSD. Other Macs will
+> give different absolute numbers.
+
 Where the performance work on this child started, and where it has got to.
 Each row is one `speed-bench/ab_bench.py` run, pasted from the `record row:`
 line of its summary. A cell reads `B median (gain)`: the candidate's absolute
@@ -28,6 +33,8 @@ figures are in the named section.
 | Faster Engram conversion (lookup table, NEON) | Conversion costs under 1 us of a row whose read costs 0.66 ms; a few ms per sweep. | Engram reads after 110 |
 | Engram cross-partition dedup or a raw-row cache | Duplicates are 4-8% of rows and already read once per partition; the sweep waits 0.2-0.8 s on Engram in total. | Engram reads after 110 |
 | More Engram readers (32 or 64 instead of 16) | Exposed wait 0.37-0.40 s against 0.43 s on `cold-2500`, inside noise: the drive is shared with expert reads at full rate. | Engram reads after 110 |
+| Expert pass pre-committed behind a CPU-signalled shared event | The GPU restarts 102-105 us after the signal, like after a commit; the encode it would save is about 8 us per layer. | Expert pass submission after 131 |
+| GPU kernel spin-waiting on a CPU store (or the CPU on a GPU store) in shared memory | Neither side sees the other's store until the kernel ends. | Expert pass submission after 131 |
 | Judging a kernel from back-to-back single timeline runs | Thermal drift is larger than the effect: the same baseline read 29 and 39 ms per dispatch. Use the harness's sections mode. | Prefill routed experts after 80 |
 
 ## Situation 0 (2026-09-27, `main` at `a60b8ee`)
@@ -510,6 +517,36 @@ Primitives tried at the selected-id readback, single runs:
 The gain exceeds the 24 us x 40 of shorter wake alone (about 2.3%): a
 thread that does not sleep also resumes on a warm core.
 
+## Expert pass submission after 131 (2026-10-05, `132-gpu-all-hit-continuation`)
+
+Two standalone Metal probes (a busy command buffer, then a tiny kernel that
+writes a flag the CPU spins on; 400 iterations):
+- **CPU-signalled shared event.** A command buffer committed early behind
+  `encodeWaitForEvent` starts 102-105 us (median) after the CPU sets
+  `signaledValue`. A plain encode and commit takes 103-107 us. Pre-committing the
+  expert pass therefore saves only its encode, not the GPU restart.
+- **Spinning on shared memory inside a kernel**, in both directions: a GPU
+  store (relaxed atomic plus device fence, or volatile) becomes visible to the
+  CPU only when the kernel ends, and a running kernel never sees a CPU store
+  (shared and write-combined buffers alike). A GPU-side wait is not available.
+
+A probe on the split tree (below), decode 2048, 256 tokens, per layer, medians:
+
+| Layers | wake | id read | cache peek/load/prune | expert encode | rest-of-layer encode | commit to B start | GPU idle before B |
+|---|---|---|---|---|---|---|---|
+| all six cached (8739) | 43.6 us | 0.6 | 1.5 | 4.4 | 3.6 | 115.8 | 121.6 |
+| with a miss (989) | 43.6 us | 0.7 | 994.5 | 8.8 | 6.7 | 93.2 | 1098 |
+
+The CPU work between the readback and the commit is about 10 us on all-hit
+layers. `130`'s probe read 115-128 us for that span, before `131`'s poll;
+the difference was not traced, as that probe is gone. The remaining idle is the
+GPU restart. The event-gated pass (design D2 as first written) could save
+about 8 us per layer, under 1%; closed.
+
+| Step (B) against the previous | Invocations | Target metrics | Other | Verdict |
+|---|---|---|---|---|
+| S1 commit the router alone before the selected-id readback, so the shared expert runs while the CPU reads the ids | 2 (6 + 20 pairs) | decode 2048 +2.20% (+1.55..+2.45), decode 8192 +1.60% (+1.47..+2.29) pooled | append +300 +1.66% (+1.37..+1.86), append +1500 +1.29% (-7.47..+5.20) pooled, prefill 5000 +1.3% and +1.6%; guards once per invocation: decode 2500 +2.3%/+1.6%, ttft 2500 +0.8%/+0.8%; hit rates equal | kept |
+
 ## Adding a row
 
 1. `SF_PARITY_FLAGS=--ssd-streaming tools/parity-check.sh sf-ds4-1flash` from
@@ -549,6 +586,7 @@ by `30-decode-layer-queue`.
 | 100 prefill weight delivery | 2026-10-04 | 86bac78 + 100 | DeepSeek-V4.1-Flash-Q2.gguf | 13 + 41 | PASS (bitwise) |  |  | 32.0 (+34.4%) | 13.1 (+155.7%) | 55.4 (+32.2%) | 18.6 (+126.4%) | 27.8 (+46.7%) | 14.0 (+24.1%) | 8.14 (+106.7%) | 54.5 (+21.3%) | 22.3 (+27.6%) | 103.9 (+8.0%) |
 | 130 decode submission | 2026-10-04 | bfa0ef2 + 130 | DeepSeek-V4.1-Flash-Q2.gguf | 12 + 33 | PASS (bitwise) | 20.4 (+19.5%) | 21.0 (+21.3%) | 29.8 (+42.9%) | 13.7 (+152.9%) | 48.5 (+40.4%) | 21.4 (+120.7%) | 26.2 (+49.0%) | 13.2 (+24.7%) | 8.33 (+110.9%) |  | 21.6 (+23.3%) | 89.4 (+21.3%) |
 | 131 readback poll | 2026-10-04 | b59c5dd + 131 | DeepSeek-V4.1-Flash-Q2.gguf | 4 + 3 + 44 | PASS (bitwise) | 22.3 (+29.8%) | 22.5 (+28.1%) |  | 13.3 (+156.7%) |  | 18.9 (+125.8%) | 27.4 (+48.0%) |  |  |  |  | 94.3 (+18.3%) |
+| 132 readback split | 2026-10-05 | f8dd83e + 132 | DeepSeek-V4.1-Flash-Q2.gguf | 5 + 51 | PASS (bitwise) | 22.6 (+35.2%) | 22.7 (+34.5%) |  | 13.9 (+146.6%) |  | 19.8 (+122.8%) | 29.3 (+41.9%) |  |  |  |  | 104.3 (+8.5%) |
 
 `100-prefill-weight-delivery` (row above, `80` and `90` landed no runtime
 code) is two invocations against the start: `cold,append` with the guards
@@ -558,6 +596,14 @@ with `--cache-policy-change` (41 pairs). Its e2e holds decode at the
 reference, which `100` does not touch. Parity passed on the candidate tree
 (10 prompts, token-identical). The steps are in the "Prefill weight delivery
 after 90" section.
+
+`132-gpu-all-hit-continuation` (row above) is two invocations against the
+start, again with the GPU throttling (thermal Heavy/Moderate, 905-1513 MHz):
+`decode,cold,append` with the guards kept 5 of 20 pairs (decode 3 and
+10000 2; the other cold kinds, append and the guards lost every pair to the
+clock check), then `cold-3500,cold-7500` with `--cache-policy-change` 51.
+The e2e cell is the second invocation's, holding decode and the other
+prompts at the reference. Parity passed on the candidate (10 prompts).
 
 `131-decode-readback-spin-wait` (row above) is three invocations against the
 start on an evening with the GPU throttling (thermal Heavy, runs down to

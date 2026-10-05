@@ -1,5 +1,10 @@
 ## Benchmarking
 
+> **Hardware.** Every performance number in this repository was measured on
+> one machine: an Apple **M5 Max with 128 GB** of unified memory, with the
+> DeepSeek V4.1 Flash Q2 GGUF streamed from its internal SSD. Other Macs will
+> give different absolute numbers.
+
 Here we collect prefill and generation speed obtained with different hardware.
 
 sf-ablate(ds4): the CSV and SVG baselines that used to live here were measured

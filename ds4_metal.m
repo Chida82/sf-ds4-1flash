@@ -9008,6 +9008,35 @@ int ds4_gpu_commands_active(void) {
     return g_batch_cb != nil;
 }
 
+/* The batch opened by ds4_gpu_split_readback(): it holds work the selected-id
+ * readback does not need, which then runs on the GPU while the CPU reads. */
+static id<MTLCommandBuffer> g_readback_split_cb;
+
+int ds4_gpu_split_readback(void) {
+    if (!ds4_gpu_flush_commands()) return 0;
+    g_readback_split_cb = g_batch_cb;
+    return 1;
+}
+
+/* Commits the split batch behind the pending command buffers and waits only
+ * for those. Its transient buffers and model views stay until the next full
+ * drain, since it is still running. */
+static int ds4_gpu_commit_split_wait_pending(void) {
+    ds4_gpu_parallel_ffn_reset_state(YES);
+    ds4_gpu_close_batch_encoder();
+    id<MTLCommandBuffer> cb = g_batch_cb;
+    const uint64_t seq = g_stream_expert_cache_batch_seq;
+    g_batch_cb = nil;
+    g_batch_has_work = NO;
+    g_stream_expert_cache_batch_seq = 0;
+    g_readback_split_cb = nil;
+    [cb commit];
+    const int ok = ds4_gpu_wait_pending_command_buffers("selected-id readback");
+    [g_pending_cbs addObject:cb];
+    g_stream_expert_cache_pending_max_seq = seq;
+    return ok;
+}
+
 /* Exact M5 full-FFN overlap inside one concurrent compute encoder.  Shared
  * gate/up and routed IQ2 pair-SwiGLU launch together; explicit level barriers
  * precede the routed Q2 and shared Q8 down consumers. */
@@ -34231,7 +34260,9 @@ int ds4_gpu_routed_moe_one_tensor(
                             static int poll = -1;
                             if (poll < 0) poll = getenv("DS4_METAL_DISABLE_V41_READBACK_POLL") == NULL;
                             g_wait_poll_ns = poll ? 2000000u : 0u;
-                            const int ended = ds4_gpu_end_commands();
+                            const int ended = g_readback_split_cb == g_batch_cb ?
+                                ds4_gpu_commit_split_wait_pending() :
+                                ds4_gpu_end_commands();
                             g_wait_poll_ns = 0;
                             if (ended == 0) {
                                 if (getenv("DS4_GLM_TP_DEBUG")) fprintf(stderr, "ds4: routed_moe_one silent return at line %d\n", 32931);
