@@ -40,6 +40,7 @@ figures are in the named section.
 | Reading part of each decode miss from the external TB5 copy (family split, up from the copy) | decode 8192 -1.7% (CI below zero): a single miss is latency-bound, and the copy's floor of about 0.6-0.7 ms for 2-3 MiB is slower than the internal drive's whole expert. | Decode misses after 140 |
 | Engram rows from a copy on the external drive (`150`) | With the `140` copy admitted the sweeps wait 0.00-0.03 s on Engram, 0.37 s at 10000; checking both tables (188.83 GiB) costs about 30 s per engine open. | Engram placement after 145 |
 | Decode route-prediction prefetch with a cheap guess (`170`: int8 router copy, one background core) | The guess alone costs decode 0.7% (CI below zero), more than a third of what the sustainable policy hides; the policy that would pay needs about 8 GB/s of wasted reads. | Route guess cost after 160 |
+| Re-warming the decode statics with `WILLNEED` at the end of a sweep (`200` S1) | On one drive the reload costs drive time wherever it is issued: synchronous, it moved the first token's wait into the sweep (ttft 10000 -8.8%, append +1500 -8.3%, CIs below zero); asynchronous, the 1.5-1.7 s of reads outlast the last layer and the first token still waits. | Static weights after a sweep |
 | Judging a kernel from back-to-back single timeline runs | Thermal drift is larger than the effect: the same baseline read 29 and 39 ms per dispatch. Use the harness's sections mode. | Prefill routed experts after 80 |
 
 ## Situation 0 (2026-09-27, `main` at `a60b8ee`)
@@ -860,6 +861,70 @@ The prefill gains are larger than `140`'s own A/B against `67b75b8`, and
 `145`'s change sits between them. The 5000 shape gains least: most of its
 time is a 904-token tail at decode speed, which the copy does not touch. The
 README table quotes these figures.
+
+## Static weights after a sweep (2026-10-06, `200-post-sweep-page-reload` S0)
+
+With the harness cache flag the engine leaves the decode static spans
+pageable ("static weights remain pageable to preserve runtime headroom",
+9.38 GiB). A probe tree, never landed, read their `mincore` residency at
+sweep start, at layers 10/20/30, at sweep end and around the first token,
+on `main` at `57b6f11`:
+
+| Sweep (frontier) | Without the copy: resident at end / first token | With the TB5 copy |
+|---|---|---|
+| first sweep, 2500 or 5000 | 8.82-8.93 GiB / 44-61 ms | 8.72-8.99 GiB / 47-61 ms |
+| 6144 rows after decode at 2048 (8192) | 5.49 GiB / 1180 ms | 9.37 GiB / 524 ms |
+| append 1500 after 5300 (6800) | 7.52 GiB / 846 ms | 9.37 GiB / 537 ms |
+| 10000, second sweep | 7.71 GiB / 776 ms | 9.36 GiB / 507 ms |
+
+Without the copy, later sweeps evict up to 3.9 GiB of the statics, mostly in
+their last ten layers, and the first token pages them back to 9.38 GiB. That
+is 0.3-0.65 s of the first token after a long sweep. With the copy they stay
+resident; why is not traced. Gate open (D1). The first token after a sweep is
+also inside every reply that follows a long prompt or append.
+
+**S1, re-warm the statics at the end of a sweep (D2).** `posix_madvise(WILLNEED)`
+over the decode static spans. A/B against `d700a32` (same code as `57b6f11`),
+`decode,append,cold-10000` plus `guard-decode`, 3600 s, bitwise PASS each time:
+
+| Variant | first token 8192 | first token 2048 | decode 2048 | append +1500 | ttft 10000 |
+|---|---|---|---|---|---|
+| S1a: from layer 30, every third layer, and at the end | 1139 -> 183 ms | +24% (CI crosses 0) | +2.8% (+2.1..+3.0) | -9.3% (-12.8..+1.6) | -9.2% (-18.0..-4.8) |
+| S1b: once, after the last layer's experts arrive | 990 -> 184 ms | 227 -> 133 ms | +1.0% (+0.1..+2.3) | -8.3% (-9.9..-5.2) | -8.8% (-12.1..-3.9) |
+| S1c: as S1b on a GCD worker, last sweep of a prompt only | 1017 -> 1086 ms | 252 -> 155 ms | +0.6% (-0.4..+1.2) | +0.4% (-11.2..+3.5) | -7.0% (-7.8..+4.5) |
+
+Darwin's `WILLNEED` reads before it returns. Timed in a probe, it took
+0.41 s after a 4096-row first sweep and 0.74 s after the 1500-row append. In
+S1a and S1b that wait sat in front of the last layer's encode, so the
+sweep's time grew by about what the first token saved. On a worker (S1c) it
+overlaps the sweep's end and the first token. But after 256 decode tokens at
+2048, the 6144-row sweep leaves 1.5-1.7 s of reads, and the first token waits
+on them anyway (1.05-1.26 s, against 1.20-1.29 s without). With one drive
+the reload costs drive time whenever it is issued. The last layer's compute
+is the only free window, and it is too short. Dropped.
+
+**S2, keep the statics resident (D3): not tried, needs the owner.** The lock
+is refused by the admission check at engine open (`ds4.c`, "Metal SSD static
+weights"): `static + dynamic cache + prefill headroom` must fit in
+`ds4_streaming_manual_cache_safe_bytes`, 7/8 of Metal's 107.52 GiB working
+set less the context buffers.
+
+| Configuration | Dynamic cache | Statics |
+|---|---|---|
+| harness flag `--ssd-streaming-cache-experts 82GB` | 74.88 GiB (8078 slots) | pageable, 9.38 GiB |
+| automatic cache (no flag), ctx-alloc 32768 | 69.50 GiB (7498 slots) | locked, 9.37 GiB |
+
+Locking them at the harness's cache would admit 9.4 GiB more than the
+check allows. The fitting alternative is the automatic cache: 580 fewer
+slots, statics locked. Either changes memory admission or the measurement
+configuration, which design D3 leaves to the owner.
+
+**S3, the copy's steady decode (D4): open.** No state was kept to measure
+it against. The gate showed the copy keeps the statics resident, so the
+copy's -1.9% steady decode is not the same eviction, and its cause is not
+traced.
+
+No runtime change from `200`.
 
 ## Adding a row
 
