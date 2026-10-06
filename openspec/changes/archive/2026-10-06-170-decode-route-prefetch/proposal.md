@@ -20,7 +20,7 @@ The `145` probe showed that predicting the next layer's experts from the current
 ## Capabilities
 
 ### New Capabilities
-- `decode-route-prefetch`: decode reads predicted next-layer experts ahead of their selection, with bounded staging, identical output and unchanged cache budget.
+None. The D1 gate closed (`speed-bench/perf-record.md`, Route guess cost after 160), so `decode-route-prefetch` is not added.
 
 ### Modified Capabilities
 None.

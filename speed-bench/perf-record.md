@@ -39,6 +39,7 @@ figures are in the named section.
 | Minimal decode route-prediction prefetch (CPU guess from the layer before, 1 read per layer, layers 20-39) | Catches 0.48 misses per token, but decode 2048 -2.1% and 8192 -1.7% (CIs below zero): the guess (85 us per layer, 7.9 MB of router weights) and the wasted reads cost more than the hidden reads. | Decode misses after 140 |
 | Reading part of each decode miss from the external TB5 copy (family split, up from the copy) | decode 8192 -1.7% (CI below zero): a single miss is latency-bound, and the copy's floor of about 0.6-0.7 ms for 2-3 MiB is slower than the internal drive's whole expert. | Decode misses after 140 |
 | Engram rows from a copy on the external drive (`150`) | With the `140` copy admitted the sweeps wait 0.00-0.03 s on Engram, 0.37 s at 10000; checking both tables (188.83 GiB) costs about 30 s per engine open. | Engram placement after 145 |
+| Decode route-prediction prefetch with a cheap guess (`170`: int8 router copy, one background core) | The guess alone costs decode 0.7% (CI below zero), more than a third of what the sustainable policy hides; the policy that would pay needs about 8 GB/s of wasted reads. | Route guess cost after 160 |
 | Judging a kernel from back-to-back single timeline runs | Thermal drift is larger than the effect: the same baseline read 29 and 39 ms per dispatch. Use the harness's sections mode. | Prefill routed experts after 80 |
 
 ## Situation 0 (2026-09-27, `main` at `a60b8ee`)
@@ -757,6 +758,32 @@ per request, about 0.01% of a 28 s request, within the owner's -0.2%
 allowance. Accepted. Each request writes 1-2 checkpoints of 23-49 MiB, which
 now land on the replaceable drive. `README.md`, `docs/SERVER.md` and
 `AGENTS.md` give the command.
+
+## Route guess cost after 160 (2026-10-06, `170-decode-route-prefetch` S0)
+
+Design D1: measure the cheapest guess first, and stop if it costs more than
+a third of the time it could hide. The guess:
+- an int8 copy of each layer's router rows (2 MB per layer, built once,
+  scaled per row), with the router input quantized per token;
+- scored for all 384 experts on one background GCD serial queue, from layer
+  `il-1`'s readback on;
+- 52 us per layer on one core, against 85 us on 8 cores for `145`'s F32
+  guess.
+
+A guess-only build (no reads started), A/B against `cc71085` with the shared
+replica environment, `decode`, 30 pairs, bitwise: decode 2048 -0.7% (-0.9..-0.5),
+decode 8192 -0.7% (-1.0..-0.5). That is about 0.3 ms per token.
+
+| Policy (`145` probe) | Hideable per token | A third | Guess cost | Wasted 9.49 MiB reads per token |
+|---|---|---|---|---|
+| top 6, 1 per layer | 0.76 ms | 0.25 ms | 0.30 ms | 7.3 |
+| top 12, 2 per layer | 1.46 ms | 0.49 ms | 0.30 ms | 36.5 (about 8 GB/s, beyond either drive) |
+
+Gate closed, no runtime change. The policy the drives could sustain does not
+pay for even this guess. The one that would pay for it needs more read
+bandwidth than the machine has. Reading prefetches from the TB5 copy (D4)
+would spare the internal drive, but not the 8 GB/s, and would need the whole
+expert tables (142 GiB) checked at every start.
 
 ## Adding a row
 
