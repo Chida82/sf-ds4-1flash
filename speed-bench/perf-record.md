@@ -35,6 +35,9 @@ figures are in the named section.
 | More Engram readers (32 or 64 instead of 16) | Exposed wait 0.37-0.40 s against 0.43 s on `cold-2500`, inside noise: the drive is shared with expert reads at full rate. | Engram reads after 110 |
 | Expert pass pre-committed behind a CPU-signalled shared event | The GPU restarts 102-105 us after the signal, like after a commit; the encode it would save is about 8 us per layer. | Expert pass submission after 131 |
 | GPU kernel spin-waiting on a CPU store (or the CPU on a GPU store) in shared memory | Neither side sees the other's store until the kernel ends. | Expert pass submission after 131 |
+| Starting a decode expert's compute before all its bytes arrive (first bytes from one drive, last from the other) | One expert's decode compute is about 29 us (gate/up 18, down 11); each extra GPU restart costs about 100 us. | Decode misses after 140 |
+| Minimal decode route-prediction prefetch (CPU guess from the layer before, 1 read per layer, layers 20-39) | Catches 0.48 misses per token, but decode 2048 -2.1% and 8192 -1.7% (CIs below zero): the guess (85 us per layer, 7.9 MB of router weights) and the wasted reads cost more than the hidden reads. | Decode misses after 140 |
+| Reading part of each decode miss from the external TB5 copy (family split, up from the copy) | decode 8192 -1.7% (CI below zero): a single miss is latency-bound, and the copy's floor of about 0.6-0.7 ms for 2-3 MiB is slower than the internal drive's whole expert. | Decode misses after 140 |
 | Judging a kernel from back-to-back single timeline runs | Thermal drift is larger than the effect: the same baseline read 29 and 39 ms per dispatch. Use the harness's sections mode. | Prefill routed experts after 80 |
 
 ## Situation 0 (2026-09-27, `main` at `a60b8ee`)
@@ -589,6 +592,113 @@ the check; at the A/B savings (about 2.1 s for 2500 and 10000, 1.7 s for
 append +1500) an engine breaks even after 3-4 prompts that run an explicit
 sweep.
 
+## Decode misses after 140 (2026-10-05, `145-dual-ssd-decode-misses` S0)
+
+The gate (design D1), on `main` at `50ff39c` with the TB5 copy admitted
+(`DS4_METAL_PREFILL_REPLICA`), decode still reading only the model. Decode
+2048 and 8192, 256 tokens, `DS4_METAL_STREAMING_EXPERT_TIMING_SUMMARY`, on a
+cool evening (decode 26.2 and 26.1 tokens/s):
+- 1032 of 10240 layer steps load a miss: 4.0 per token, 1.09 experts each.
+  Only 8 layers ran the split-deferred path (3 or more misses).
+- `pread` takes 0.667 ms per miss layer, so 2.7 ms of a 38 ms token (7%).
+- Prepare takes 0.40 ms per miss layer, before the reads start. 0.31 ms of it
+  is the three `F_RDADVISE` calls, which `40` found neutral to turn off: they
+  start the I/O, they do not waste it.
+
+A standalone probe (`missbench`, scratchpad) read random experts as decode
+does: 4 pieces aligned to 16 KiB per family range, all concurrent on GCD,
+`F_NOCACHE` on both files, 300 alternated iterations per mode. `k/4` is how
+many of up's 4 pieces come from the copy:
+
+| Missing experts in the layer | 0/4 (today) | 1/4 | 2/4 | 3/4 | 4/4 (family split) |
+|---|---|---|---|---|---|
+| 1 | 0.772 ms (p10 0.335, p90 1.009) | 0.750 | 0.728 | 0.713 (p90 0.919) | 0.736 (p10 0.693, p90 0.860) |
+| 2 | 1.231 | 1.087 | 1.035 | 0.986 | 1.055 |
+| 3 | 1.544 | 1.496 | 1.409 | 1.352 | 1.505 |
+
+The copy has a floor of about 0.6-0.7 ms for 2.2-2.9 MiB in 4 pieces, while
+the internal drive alone sometimes finishes a whole 9.49 MiB expert in 0.33
+ms. With one missing expert, the typical case, the best split (3/4) saves
+about 0.06 ms: about 0.25 ms per token, 0.6% of decode. That is at the
+harness's decode resolution (the pooled CIs of `140` were 0.9-1.9% wide).
+The ideal "a third of `pread` removed" (2.4%) does not survive the copy's
+latency.
+
+GPU time of one decode routed pass (`DS4_METAL_ENCODER_TIMELINE`, 16
+tokens after 2048): gate/up pair with SwiGLU 108.7 us, down with the sum of
+six 66.7 us, so about 29 us per expert. Starting one expert's compute before
+its bytes are complete (D5) could hide at most those 29 us, against about
+100 us for each extra GPU restart (`132`): rejected. The split-deferred path
+on a single miss could hide the five resident experts (about 145 us) behind
+the read, minus one restart: at most about 45 us per miss layer, 0.5% of
+decode.
+
+Route-prediction probe (S4 gate, design D7). A probe tree, never landed,
+logged at every decode layer `il`:
+- the selected ids and which of them missed;
+- the top 16 of layer `il+1`'s and `il+2`'s routers (bias included) applied
+  on the CPU to `il`'s router input, with whether each was cached at that
+  moment.
+
+Run: decode 2048 and 8192, 256 tokens each (512 tokens, 19968 layer steps,
+3.91 misses per token). In the policy rows below, prefetch reads the first
+uncached predicted expert per layer.
+
+| Prediction from the layer before (lead about 1 ms) | Value |
+|---|---|
+| Selected experts in the predicted top 6 / top 12 | 70.4% / 83.2% |
+| Misses caught, top-6 window, 1 per layer | 0.95 per token (24%), 7.3 wasted reads per token |
+| Same, only with a score margin of at least +0.05 over rank 6 | 0.56 per token (13%), 3.1 wasted |
+| Top-12 window, 2 per layer | 1.82 per token (47%), 36.5 wasted |
+| Top-6, 1 per layer, layers 20-39 only | 0.51 per token, 1.9 wasted |
+| Two layers ahead, top 6 | 64.3% of selected, 17% of misses |
+
+The misses are the hard experts: 70% of all selections are predicted, but
+only a quarter of the misses. Caught misses are worth about 0.8 ms each if
+the read and its 0.40 ms prepare both leave the critical path. That makes
+the best low-waste policies worth about 0.4-0.8 ms per token (1-2% of
+decode), at the cost of 2-7 extra 9.49 MiB reads per token on the drive
+that serves the demand misses. Verdict: a marginal go. The ceiling is near
+the harness resolution, and the mechanism (staging slots, promotion,
+eviction protection) is the largest piece of code in this change.
+
+| Step (B) against `50ff39c` | Invocations | Target metrics | Other | Verdict |
+|---|---|---|---|---|
+| S4 minimal route-prediction prefetch: layer `il`'s router (F32, 5120 x 384) applied in the background, on 8 GCD workers, to layer `il-1`'s router input; the first uncached expert of the predicted top 6 loads through the pending-load slot; settled before the lookup (installed if selected, buffers returned otherwise); layers 20-39 | 1 (20 pairs) | decode 2048 -2.1% (-2.7..-1.1), decode 8192 -1.7% (-2.4..-1.0) | append +300 -0.7% (-1.3..-0.4), append +1500 +0.3%, prefill 5000 -0.3%; guard decode 2500 0.0%; bitwise (and decode-switch 65 steps at 511 and 2047) | dropped |
+
+It did what the probe said: layers with a miss fell from 1032 to 909 in
+decode 2048 (0.48 per token), and settling cost nothing (prefetches had
+finished: 3-6 us). The guess is the cost. It takes 85 us per layer on the
+main thread (7.9 MB of F32 router weights read per guess), plus 18 us to
+start the load. In the background it still lost about 2%. The likely causes
+are 8 busy CPU cores competing with the GPU for power and memory, and 1.9
+wasted 9.49 MiB reads per token on the drive that serves the demand misses.
+A caught miss is worth about 0.8 ms, at 0.48 per token, so prefetch only
+pays with a guess that costs well under 1 ms per token in total (change
+`170`).
+
+| Step (B) against `50ff39c` | Invocations | Target metrics | Other | Verdict |
+|---|---|---|---|---|
+| S2 split-deferred path from one miss instead of three: the resident experts run in their own stage while the missing one loads | 2 (20 + 30 pairs) | decode 2048 +0.45% (+0.14..+0.65), decode 8192 +0.55% (+0.46..+0.76) pooled | append +300 +0.6% (+0.4..+1.0), prefill 5000 +0.5% (+0.4..+0.8), append +1500 +0.8% (+0.0..+2.3); guard decode 2500 +0.9%; hit rates equal; bitwise | kept |
+
+The first invocation alone read decode +0.1% (-0.5..+0.9) and +0.4%
+(-0.1..+0.8); a decode-only repeat with 30 pairs read +0.5% and +0.6%. The
+gate bounded S2 at about 45 us per miss layer (0.5%); the measurement lands
+there. The threshold function goes: both masks nonzero is now the whole
+condition.
+
+| Step (B) against the S2 state | Invocations | Target metrics | Other | Verdict |
+|---|---|---|---|---|
+| S1 family split: a decode miss reads routed up from the TB5 copy and gate/down from the model, on the existing pread pool (the copy's fd per task; a change to the copy fails the read) | 1 (20 pairs) | decode 2048 -1.0% (-2.3..+0.2), decode 8192 -1.7% (-2.1..-0.4) | append +300 -0.9% (-1.2..-0.8), prefill 5000 -0.7% (-1.1..-0.1), append +1500 +1.1%; guard decode 2500 +1.1%; bitwise | dropped |
+
+The probe had put the best split at 0.6% faster. With S2 kept, a lone miss
+now goes through the early-load path, where up is one 2.9 MiB task on one
+thread: on the copy, that is about 0.6 ms of latency against the internal
+drive's gate/down. A single decode miss is latency-bound, and the second
+drive only adds latency. S3 (byte-proportional or miss-count placement,
+needing the whole tables checked at every start) is not tried: it would
+spread the same misses over the same slower device.
+
 ## Adding a row
 
 1. `SF_PARITY_FLAGS=--ssd-streaming tools/parity-check.sh sf-ds4-1flash` from
@@ -630,6 +740,7 @@ by `30-decode-layer-queue`.
 | 131 readback poll | 2026-10-04 | b59c5dd + 131 | DeepSeek-V4.1-Flash-Q2.gguf | 4 + 3 + 44 | PASS (bitwise) | 22.3 (+29.8%) | 22.5 (+28.1%) |  | 13.3 (+156.7%) |  | 18.9 (+125.8%) | 27.4 (+48.0%) |  |  |  |  | 94.3 (+18.3%) |
 | 132 readback split | 2026-10-05 | f8dd83e + 132 | DeepSeek-V4.1-Flash-Q2.gguf | 5 + 51 | PASS (bitwise) | 22.6 (+35.2%) | 22.7 (+34.5%) |  | 13.9 (+146.6%) |  | 19.8 (+122.8%) | 29.3 (+41.9%) |  |  |  |  | 104.3 (+8.5%) |
 | 140 dual-drive prefill | 2026-10-05 | 67b75b8 + 140 | DeepSeek-V4.1-Flash-Q2.gguf | 2 + 41 + 1 | PASS (bitwise) |  |  |  | 12.6 (+177.5%) |  | 18.0 (+131.1%) | 25.7 (+54.8%) |  |  |  |  | 103.7 (+8.7%) |
+| 145 decode misses | 2026-10-06 | 50ff39c + 145 | DeepSeek-V4.1-Flash-Q2.gguf | 2 + 11 | PASS (bitwise) | 22.3 (+31.4%) | 21.9 (+27.2%) |  |  |  |  | 27.1 (+48.9%) |  |  |  |  | 98.6 (+14.5%) |
 
 `100-prefill-weight-delivery` (row above, `80` and `90` landed no runtime
 code) is two invocations against the start: `cold,append` with the guards
@@ -639,6 +750,14 @@ with `--cache-policy-change` (41 pairs). Its e2e holds decode at the
 reference, which `100` does not touch. Parity passed on the candidate tree
 (10 prompts, token-identical). The steps are in the "Prefill weight delivery
 after 90" section.
+
+`145-dual-ssd-decode-misses` (row above) is two invocations against the
+start, with the shared replica environment, at night with the GPU still
+throttling (thermal Heavy, 952-1494 MHz). The first, `decode,cold,append`
+with the guards, kept 2 of 20 pairs (10000). The repeat on decode, the only
+phase `145` changes, kept 11 of 24. The e2e cell is the repeat's, holding
+prefill at the reference. Parity passed on the candidate with and without
+the replica (10 prompts each). The steps are in "Decode misses after 140".
 
 `140-dual-ssd-prefill` (row above) is three invocations against the start,
 all with the shared `--env DS4_METAL_PREFILL_REPLICA=<copy on the TB5 drive>`

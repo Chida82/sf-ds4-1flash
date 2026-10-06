@@ -12129,19 +12129,6 @@ static uint32_t ds4_gpu_stream_expert_popcount(uint32_t mask) {
     return (uint32_t)__builtin_popcount(mask);
 }
 
-static int ds4_gpu_stream_expert_split_worthwhile(
-        uint32_t resident_mask,
-        uint32_t missing_mask) {
-    if (resident_mask == 0 || missing_mask == 0) return 0;
-    /*
-     * The split path pays an extra command stage and a second routed-expert
-     * bind.  It is worthwhile when several experts are missing and their SSD
-     * reads can be hidden by resident expert work.  With one or two misses,
-     * especially in large caches, a single unsplit routed pass is faster.
-     */
-    return ds4_gpu_stream_expert_popcount(missing_mask) >= 3u;
-}
-
 static void ds4_gpu_stream_expert_timing_note_selected(
         double sync_ms,
         double copy_ms,
@@ -34476,10 +34463,10 @@ int ds4_gpu_routed_moe_one_tensor(
                 use_stream_expert_split_deferred =
                     use_stream_expert_split_candidate &&
                     use_stream_expert_masked_addr_table &&
+                    /* Even one miss: the resident experts run while it loads.
+                     * The extra stage costs less than the wait (145 S2). */
                     stream_expert_resident_mask != 0 &&
                     stream_expert_missing_mask != 0 &&
-                    ds4_gpu_stream_expert_split_worthwhile(stream_expert_resident_mask,
-                                                           stream_expert_missing_mask) &&
                     g_batch_cb != nil &&
                     getenv("DS4_METAL_MOE_ONE_STAGE_PROFILE") == NULL;
                 if (use_stream_expert_split_deferred) {

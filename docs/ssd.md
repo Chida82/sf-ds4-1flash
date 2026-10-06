@@ -192,8 +192,10 @@ them was measured end to end with the model.
    identical output: ttft 2500 +6.8%, ttft 10000 +8.3%, append +1500 +24%,
    decode unchanged; the copy costs about 7 s of checking at every engine open
    (`speed-bench/perf-record.md`, Dual-drive prefill after 132). Decode misses
-   still read only the internal drive: their `pread` is 6.2-6.6% of a token,
-   so a second drive could add about 2% at best.
+   read only the internal drive. `145` measured reading their up part from
+   the copy: decode 8192 -1.7%. A single miss is latency-bound, and the
+   copy's floor (about 0.6-0.7 ms for 2-3 MiB) is slower than the internal
+   drive reading the whole expert.
 4. **Model storage and transfers.** Good as an archive for GGUFs:
    copying 341 GiB from it to the internal SSD is bounded by the 6.4 GB/s read,
    about 1 minute of pure I/O (`cp` or `hf` will be slower). Symlinks work on

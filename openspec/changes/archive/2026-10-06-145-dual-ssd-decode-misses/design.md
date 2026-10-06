@@ -99,13 +99,16 @@ Popularity from the cache's decayed hotness is tried as a filter: a predicted ra
 
 **Stop rule.** If no threshold catches enough misses to beat the harness resolution, net of the wasted reads' cost in bandwidth, S4 stops with a Rejected-ideas row and both figures.
 
-**Mechanism, if the probe passes.**
-- Prefetched experts land in a small set of staging slots outside the cache budget, bounded and counted.
-- A staged expert is promoted into the cache only when it is actually selected; an unused one is dropped.
-- Predicted experts are protected from eviction until the next layer is bound.
-- Output stays bitwise identical. Cache statistics may differ from the no-prefetch run, and the A/B reports them; the cache budget does not change.
+**Mechanism, the minimal variant.** The probe was a marginal go (1-2%), so `145` lands only the low-waste policy: target layers 20-39, one read per layer. The full variant (every layer, staging slots outside the budget, a separate reader pool) is change `170`.
 
-**Learned predictor.** It is only a follow-up if router reuse falls short, mainly to see further ahead (2-3 layers). The ANE is reachable only through Core ML: about 0.1-0.5 ms of dispatch on each of 40 layers, inference only. So a learned model would first run on the GPU in the same command buffer.
+- The router input of layer N is copied when its readback returns (16 KiB).
+- At the start of layer N+1's selected-id readback wait, the CPU applies layer N+1's router and bias to that copy, on 8 workers. This happens while the CPU waits for the GPU anyway.
+- The first uncached expert of the predicted top 6 starts loading through the existing single pending-load slot.
+- After the readback and before the cache lookup, the pending prefetch for that layer is settled:
+  - if its expert was selected, it is installed, and the lookup finds it;
+  - otherwise its buffers go back to the pool and nothing is installed.
+- The slot's victim was chosen when the load was prepared, so cache statistics may differ, and the A/B reports them.
+- Output stays bitwise identical, checked with `make test-deepseek41-decode-switch SWITCH=DS4_METAL_DISABLE_V41_ROUTE_PREFETCH`.
 
 ### D8. Measurement
 

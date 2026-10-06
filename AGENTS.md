@@ -133,6 +133,17 @@ experts. A later change to the copy stops the next prefill with an error.
 Output stays bitwise identical (`make test-deepseek41-prefill-replica
 REPLICA=<path>`); measured gains are in `speed-bench/perf-record.md`.
 
+Since `145-dual-ssd-decode-misses`, a decode layer with even one missing
+expert computes its resident experts in a separate stage while the miss loads
+(the split-deferred path used to start at three misses). It measured +0.5%
+decode. The same change measured and dropped three other ideas:
+- reading misses partly from the TB5 copy;
+- a CPU-guessed next-layer prefetch;
+- starting an expert before its bytes arrive.
+
+The figures are in `speed-bench/perf-record.md`, Decode misses after 140.
+Prefetch with a cheaper guess is change `170`.
+
 Since `70-decode-glue-fusions`, a decode token issues fewer, larger kernels
 per layer, and its Engram rows are read on workers while the first layers
 encode. The fusions are:

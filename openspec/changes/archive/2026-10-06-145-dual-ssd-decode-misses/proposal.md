@@ -19,10 +19,10 @@ After `140`, decode still reads every missing routed expert from the internal SS
 ## Capabilities
 
 ### New Capabilities
-- `dual-ssd-decode-misses`: decode expert misses read from both drives when a validated replica is admitted, with identical output and safe failure.
+None. The decode reads from the replica and the prefetch were measured and dropped (`speed-bench/perf-record.md`, Decode misses after 140). The kept step, the split-deferred path from one miss, changes no externally visible behaviour. The planned `dual-ssd-decode-misses` capability and the change to `dual-ssd-prefill` are therefore not added: `dual-ssd-prefill` keeps its requirement that decode reads only the model.
 
 ### Modified Capabilities
-- `dual-ssd-prefill`: its requirement that the replica never serve ordinary decode reads is relaxed for the validated ranges that this change uses. Lands after `140` is archived.
+None.
 
 ## Impact
 
