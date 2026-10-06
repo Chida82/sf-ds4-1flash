@@ -38,6 +38,7 @@ figures are in the named section.
 | Starting a decode expert's compute before all its bytes arrive (first bytes from one drive, last from the other) | One expert's decode compute is about 29 us (gate/up 18, down 11); each extra GPU restart costs about 100 us. | Decode misses after 140 |
 | Minimal decode route-prediction prefetch (CPU guess from the layer before, 1 read per layer, layers 20-39) | Catches 0.48 misses per token, but decode 2048 -2.1% and 8192 -1.7% (CIs below zero): the guess (85 us per layer, 7.9 MB of router weights) and the wasted reads cost more than the hidden reads. | Decode misses after 140 |
 | Reading part of each decode miss from the external TB5 copy (family split, up from the copy) | decode 8192 -1.7% (CI below zero): a single miss is latency-bound, and the copy's floor of about 0.6-0.7 ms for 2-3 MiB is slower than the internal drive's whole expert. | Decode misses after 140 |
+| Engram rows from a copy on the external drive (`150`) | With the `140` copy admitted the sweeps wait 0.00-0.03 s on Engram, 0.37 s at 10000; checking both tables (188.83 GiB) costs about 30 s per engine open. | Engram placement after 145 |
 | Judging a kernel from back-to-back single timeline runs | Thermal drift is larger than the effect: the same baseline read 29 and 39 ms per dispatch. Use the harness's sections mode. | Prefill routed experts after 80 |
 
 ## Situation 0 (2026-09-27, `main` at `a60b8ee`)
@@ -698,6 +699,32 @@ drive's gate/down. A single decode miss is latency-bound, and the second
 drive only adds latency. S3 (byte-proportional or miss-count placement,
 needing the whole tables checked at every start) is not tried: it would
 spread the same misses over the same slower device.
+
+## Engram placement after 145 (2026-10-06, `150-engram-storage-isolation` S0)
+
+The gate (design D1), on `main` at `99bfc74`, harness streaming flags, one
+run per shape with `DS4_METAL_GRAPH_PREFILL_PROFILE`. `engram` is the
+exposed wait for a sweep's Engram rows, summed over the run:
+
+| Shape | Internal only: engram / map | With the `140` copy: engram / map |
+|---|---|---|
+| 2500 | 0.36 s / 2.55 s | 0.00 s / 1.04 s |
+| 7500 | 0.26 s / 1.23 s | 0.03 s / 0.44 s |
+| 10000 | 0.56 s / 2.16 s | 0.37 s / 0.95 s |
+| 5000, then 5300 and 6800 | 0.25 s / 2.19 s | 0.00 s / 0.38 s |
+
+With `140`'s copy admitted, the normal setup with the external drive, the
+expert reads leave the internal drive sooner, and the Engram rows are ready
+in time except in the 10000 sweep (0.37 s of about 25 s). Gate closed, no
+runtime change:
+- Isolation (Engram from a copy on the external drive) could win at most
+  those 0.37 s, on the drive that already carries `140`'s up reads during
+  the sweeps.
+- It would need both tables, 188.83 GiB, checked at every engine open:
+  about 30 s, paid back after about 80 prompts of 10K tokens.
+- Without the `140` copy the exposed wait is 0.25-0.56 s. `140` takes the
+  external drive for more (ttft +7-8%, append +1500 +24%).
+- Decode cannot gain: a token waits 0.02-0.05 ms on Engram (`120`).
 
 ## Adding a row
 

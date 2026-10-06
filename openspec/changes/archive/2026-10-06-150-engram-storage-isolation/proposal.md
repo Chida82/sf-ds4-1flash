@@ -15,10 +15,10 @@ Moving sparse Engram reads to a separate device may reduce contention with inter
 ## Capabilities
 
 ### New Capabilities
-- `engram-secondary-source`: opt-in content-validated external Engram reads with unchanged model output and safe failure behavior.
+None. The D1 gate closed (`speed-bench/perf-record.md`, Engram placement after 145), so `engram-secondary-source` is not added.
 
 ### Modified Capabilities
-None. `dual-ssd-prefill`, if implemented, is composed through its existing option, not redefined.
+None.
 
 ## Impact
 
