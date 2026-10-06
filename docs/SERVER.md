@@ -108,6 +108,13 @@ Check `./sf-ds4-1flash-server --help` for their defaults.
 
 Quantization variants may share compatible prefixes. Add
 `--kv-cache-reject-different-quant` for same-quant reuse only.
+
+The cache directory can live on an external drive, which takes the cache's
+writes off the soldered internal SSD. The README gives the command and the
+one-time move. Its measured cost on a TB5 drive is about 2 ms per stored 36 MiB
+checkpoint (`speed-bench/perf-record.md`, KV cache placement after 150). If the
+directory cannot be created, for example because the drive is not mounted, the
+server logs it and runs without a disk cache.
 Cache files contain prompt text and model state: treat the directory as
 private. It is disposable; stop the server before clearing it.
 

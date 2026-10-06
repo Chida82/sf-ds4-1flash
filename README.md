@@ -139,6 +139,49 @@ elsewhere.
 The server listens at `http://127.0.0.1:8002` by default; see [serving](docs/SERVER.md)
 for API access and multiple sessions.
 
+### A second drive
+
+An external SSD has two uses here. The one measured is a Samsung 9100 PRO
+1 TB (ExFAT) in an ACASIS TB501 Pro enclosure on Thunderbolt 5, 80 Gbit/s.
+Inside, the enclosure runs the drive at PCIe 4.0 x4, which caps reads at
+about 6.4 GB/s, half the internal SSD ([docs/ssd.md](docs/ssd.md)). Other
+enclosures and links will give different figures.
+
+- **Faster prompts.** Put a byte-identical copy of the GGUF on it, for example
+  with `cp`, and pass it as `DS4_METAL_PREFILL_REPLICA`. Long prompts then read
+  part of each layer's weights from each drive at once. Measured: time to
+  first token about 6% shorter at 2500 tokens and 8% at 10000 tokens, and
+  appending 1500 tokens to a conversation about 20% shorter; generation speed
+  unchanged. The engine
+  compares the copy with the model at every start (about 7 s on that drive)
+  and refuses to start on any difference. A long-running server earns that
+  back after 3-4 long prompts; a one-shot CLI command does not.
+- **Less wear on the internal SSD.** Reading does not wear an SSD; writing
+  does. During inference the server writes only its disk KV cache, 1-2
+  checkpoints of 23-49 MiB per request. A Mac's internal SSD is soldered to the
+  board, so put that cache on the replaceable drive with `--kv-disk-dir`. It
+  costs about 2 ms per checkpoint, about 0.01% of a request.
+
+Both together:
+
+```sh
+DS4_METAL_PREFILL_REPLICA=/Volumes/<drive>/sf-ds4-1flash/DeepSeek-V4.1-Flash-Q2.gguf \
+  ./sf-ds4-1flash-server --ssd-streaming --ctx 32768 \
+  --kv-disk-dir /Volumes/<drive>/sf-ds4-1flash/kv --kv-disk-space-mb 4096
+```
+
+To move an existing cache once, stop the server and run
+`mv ~/.sf/ds4-1flash/kv/*.kv /Volumes/<drive>/sf-ds4-1flash/kv/`; each file
+carries its own eviction state. If the drive is not mounted, the engine
+refuses to start when the copy is configured. Without the copy, the server
+logs that it cannot create the cache directory and runs without a disk cache.
+The drive slows to about 1 GB/s only after 45-50 GiB
+written in one continuous burst, while its fast write cache is full
+([docs/ssd.md](docs/ssd.md)). The KV cache writes 23-49 MiB at a time, so it
+never gets there; copying the 341 GiB GGUF does. The measurements are in
+[speed-bench/perf-record.md](speed-bench/perf-record.md) (Dual-drive prefill
+after 132, KV cache placement after 150).
+
 The interactive CLI keeps a multi-turn conversation. Use `/help`, `/read FILE`,
 `/ctx N`, and `/quit`. Ctrl+C interrupts generation and returns to the prompt.
 Run each binary with `--help` for its full options.

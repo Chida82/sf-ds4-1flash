@@ -726,6 +726,38 @@ runtime change:
   external drive for more (ttft +7-8%, append +1500 +24%).
 - Decode cannot gain: a token waits 0.02-0.05 ms on Engram (`120`).
 
+## KV cache placement after 150 (2026-10-06, `160-kv-cache-external-ssd`)
+
+Diagnostic, not a harness row: `ab_bench.py` does not drive the server.
+`sf-ds4-1flash-server --ssd-streaming --ssd-streaming-cache-experts 82GB
+--ctx 32768 --kv-disk-space-mb 4096`, with the `140` copy admitted in both
+arms. Only `--kv-disk-dir` differed: `~/.sf/ds4-1flash/kv-bench160` on the
+internal SSD, or `/Volumes/ExFAT-TB5/sf-ds4-1flash/kv-bench160` on the TB5
+drive. Runs were in ABBA order with a server restart per arm, using
+`serve_concurrency_bench.py` at concurrency 1, 4096-token prompts and 256
+generated tokens. Two shapes:
+- cold: fresh-nonce prompts, 4 requests per arm, each storing a cold and an
+  evict checkpoint;
+- hit: the shared prompt with a restart before every request, so each
+  request loaded its 6144-token checkpoint from disk (`kv cache hit` lines,
+  8 per arm).
+
+| Figure | Internal | TB5 drive |
+|---|---|---|
+| Checkpoint stores, median size / save | 36.4 MiB / 20.1 ms (max 35.4) | 36.5 MiB / 21.9 ms (max 41.2) |
+| Disk hits, median load | 16.3 ms | 16.4 ms |
+| cold, E2EL median of run medians | 27.4 / 31.4 s | 29.4 / 27.5 s |
+| hit, E2EL median | 29.1 s | 27.6 s |
+
+The request times move by up to 15% between runs of the same arm. The
+end-to-end comparison is noise: the external arm reads 5% faster on hits, with
+a 95% CI of -12.9..+9.2%. The work actually moved is measured directly: about
+1.8 ms more per stored checkpoint and 0.1 ms per load. That is about 4 ms
+per request, about 0.01% of a 28 s request, within the owner's -0.2%
+allowance. Accepted. Each request writes 1-2 checkpoints of 23-49 MiB, which
+now land on the replaceable drive. `README.md`, `docs/SERVER.md` and
+`AGENTS.md` give the command.
+
 ## Adding a row
 
 1. `SF_PARITY_FLAGS=--ssd-streaming tools/parity-check.sh sf-ds4-1flash` from

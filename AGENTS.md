@@ -15,7 +15,7 @@ what this repo is and how to work in it. For code-quality rules read
 | Backend | Metal only. No CUDA, no ROCm. CPU path kept as reference/debug and for model-less tests |
 | Binaries | `sf-ds4-1flash`, `sf-ds4-1flash-server`, `sf-ds4-1flash-bench`, `sf-ds4-1flash-eval`. No agent binary |
 | Server default port | `8002` |
-| Home dir | `~/.sf/ds4-1flash` (CLI history; suggested `--kv-disk-dir ~/.sf/ds4-1flash/kv`) |
+| Home dir | `~/.sf/ds4-1flash` (CLI history; suggested `--kv-disk-dir ~/.sf/ds4-1flash/kv`, or `/Volumes/<drive>/sf-ds4-1flash/kv` when a second drive is in use, see `README.md`) |
 | Instance lock | `/tmp/sf-ds4-1flash.lock` (override: `DS4_LOCK_FILE`) |
 | Vision | yes, `--vision gguf/DeepSeek-V4.1-Flash-Vision.gguf` |
 | Memory | **SSD streaming is the normal mode**: Q2 is 341 GiB against a 128 GB machine. See "SSD streaming is not optional" below |
