@@ -149,18 +149,46 @@ enclosures and links will give different figures.
 
 - **Faster prompts.** Put a byte-identical copy of the GGUF on it, for example
   with `cp`, and pass it as `DS4_METAL_PREFILL_REPLICA`. Long prompts then read
-  part of each layer's weights from each drive at once. Measured: time to
-  first token about 6% shorter at 2500 tokens and 8% at 10000 tokens, and
-  appending 1500 tokens to a conversation about 20% shorter; generation speed
-  unchanged. The engine
-  compares the copy with the model at every start (about 7 s on that drive)
-  and refuses to start on any difference. A long-running server earns that
-  back after 3-4 long prompts; a one-shot CLI command does not.
+  part of each layer's weights from each drive at once (table below). The
+  engine compares the copy with the model at every start (about 7 s on that
+  drive) and refuses to start on any difference. A long-running server earns
+  that back after 3-4 long prompts; a one-shot CLI command does not.
 - **Less wear on the internal SSD.** Reading does not wear an SSD; writing
   does. During inference the server writes only its disk KV cache, 1-2
   checkpoints of 23-49 MiB per request. A Mac's internal SSD is soldered to the
   board, so put that cache on the replaceable drive with `--kv-disk-dir`. It
   costs about 2 ms per checkpoint, about 0.01% of a request.
+
+Measured on the tree of 2026-10-06 with `speed-bench/ab_bench.py`, internal
+SSD only against the same build with the copy, 2-4 invocations pooled per
+shape. The times are one invocation's medians; the gain is the pooled
+median.
+
+| Shape | Internal SSD only | With the copy | Gain |
+|---|---|---|---|
+| 2500-token prompt, time to first token | 30.9 s | 28.2 s | +10.2% |
+| 3500-token prompt | 13.2 s | 11.2 s | +16.8% |
+| 5000-token prompt | 53.3 s | 50.9 s | +4.6% |
+| 7500-token prompt | 19.5 s | 17.1 s | +14.2% |
+| 10000-token prompt | 29.0 s | 25.0 s | +15.3% |
+| append 1500 tokens to a 5300-token conversation | 8.6 s | 7.0 s | +17.1% |
+| append 300 tokens | 13.2 s | 13.0 s | +0.8% (within noise) |
+| decode after 2048 tokens | 22.0 tokens/s | 22.2 tokens/s | +1.1% |
+| first token after an 8192-token context | 1.38 s | 0.18 s | 1.2 s sooner |
+| decode after 8192 tokens, steady | 22.3 tokens/s | 21.9 tokens/s | -1.9% |
+| 256 tokens after an 8192-token context, first included | 12.8 s | 11.9 s | +7.5% |
+| typical mix (harness estimate) | | | +3.2% |
+
+The copy speeds up the layer sweeps of a prompt, not the tokens read one at
+a time after them. The 5000-token prompt spends most of its time in a
+904-token tail at decode speed, so it gains least; 3500, 7500 and 10000 are
+almost all sweeps. Decode never reads the copy. After an 8192-token context
+with the copy, the first token comes 1.2 s sooner and the steady rate is 2%
+lower, so the copy is ahead for answers up to about 1300 tokens there. The
+first token is slower without the copy because about 7 GiB of model pages
+are read back from the internal drive after the prompt's sweep; with the
+copy, half of them are still in memory. Why that differs, and what causes
+the steady -2%, is not yet known.
 
 Both together:
 

@@ -189,9 +189,12 @@ them was measured end to end with the model.
    `DS4_METAL_PREFILL_REPLICA=<copy of the GGUF>` (`140-dual-ssd-prefill`).
    Routed `up` (31% of a layer's expert bytes) comes from the copy, gate/down
    from the internal drive, at once. Measured against internal-only, bitwise
-   identical output: ttft 2500 +6.8%, ttft 10000 +8.3%, append +1500 +24%,
-   decode unchanged; the copy costs about 7 s of checking at every engine open
-   (`speed-bench/perf-record.md`, Dual-drive prefill after 132). Decode misses
+   identical output, on the tree of 2026-10-06: ttft 2500 +10.2%, 3500
+   +16.8%, 7500 +14.2%, 10000 +15.3%, append +1500 +17.1%. Decode never reads
+   the copy. After an 8192-token context, the first token comes 1.2 s sooner
+   and the steady rate is 1.9% lower (not traced). The copy costs about
+   7 s of checking at every engine open (`speed-bench/perf-record.md`,
+   External SSD evidence after 170; the README has the table). Decode misses
    read only the internal drive. `145` measured reading their up part from
    the copy: decode 8192 -1.7%. A single miss is latency-bound, and the
    copy's floor (about 0.6-0.7 ms for 2-3 MiB) is slower than the internal

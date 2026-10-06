@@ -785,6 +785,82 @@ bandwidth than the machine has. Reading prefetches from the TB5 copy (D4)
 would spare the internal drive, but not the 8 GB/s, and would need the whole
 expert tables (142 GiB) checked at every start.
 
+## External SSD evidence after 170 (2026-10-06, `180-external-ssd-evidence`)
+
+**Cost of `140`'s code without the drive (design D1).**
+- A: `main` (`31c05e0`) with `ds4.c`, its graph test and the Makefile target
+  from `67b75b8`, so `140`'s replica code is gone (ds4.c 161 lines shorter)
+  and `145`'s change stays.
+- B: `main`.
+- Neither sets `DS4_METAL_PREFILL_REPLICA`. Kinds `cold,append,decode`,
+  three invocations, 114 pairs, none dropped, bitwise.
+
+Pooled, B against A: decode 2048 +0.07% (-0.22..+0.26), decode 8192 -0.44%
+(-0.63..+0.20), ttft 2500 +1.08% (+0.15..+1.57), ttft 3500 +0.28%
+(-0.22..+0.51), ttft 5000 +0.21% (-0.32..+0.67), ttft 7500 +0.66%
+(+0.43..+0.83), ttft 10000 +0.93% (-0.32..+4.36), prefill 5000 +1.03%
+(-0.02..+1.78), append +300 +0.46% (-0.11..+1.27), append +1500 +3.71%
+(-0.53..+16.08).
+
+Under D1 that is inconclusive: no CI lies wholly below -0.1%, but several
+lower bounds do. Without the variable the code runs only a few comparisons
+per prefill layer, and decode does not reach it. The owner accepted the
+result.
+
+**With and without the drive (D2).** A: `main` without the variable. B: the
+same tree with `--b-env DS4_METAL_PREFILL_REPLICA=<TB5 copy>`. Two
+invocations (24 + 30 pairs), pooled:
+
+| Metric | Gain | 95% CI |
+|---|---|---|
+| ttft 2500 | +10.16% | +9.35..+10.55 |
+| ttft 5000 | +4.58% | +4.10..+5.17 |
+| ttft 7500 | +14.18% | +13.87..+14.62 |
+| ttft 10000 | +15.26% | +11.38..+17.34 |
+| prefill 5000 | +5.07% | +4.09..+5.90 |
+| append +300 | +0.76% | -0.13..+3.53 |
+| append +1500 | +17.08% | +13.46..+28.34 |
+| decode 2048 | +2.56% | +0.80..+3.04 |
+| decode 8192 | -2.17% | -2.60..-1.64 |
+| e2e (estimate) | +3.2% | |
+
+ttft 3500 lost every pair to the clock check in both invocations. Two
+reruns of `cold-3500,decode` (32 + 44 pairs):
+- ttft 3500 +16.81% (+15.79..+18.26), 32 pairs;
+- decode 2048 +1.08% (+0.80..+1.45), decode 8192 -1.94% (-2.14..-1.65),
+  pooled over all four invocations, 52 pairs.
+
+The first token after the 8192 frontier (a 6144-row sweep) took 1300-1426 ms
+without the copy and 180-190 ms with it, in every invocation. Over 256 tokens
+that is 12.8 s against 11.9 s (+7.5%). The break-even is an answer of about
+1300 tokens. Decode does not read the copy.
+
+Diagnosis, single runs:
+- Expert misses are identical in both modes (970 miss layers at 8192). The
+  first token's extra 1.2 s is all readback wait.
+- In the 6144-row sweep, the per-layer GPU drain sums to 12.9 s without the
+  copy against 10.0 s with it.
+- In the 3.5 s after the sweep ends, `vm_stat` counts 7.35 GiB of page-ins
+  without the copy against 3.7 GiB with it. Memory use climbs about 8 GiB in
+  both modes, over 1.2 s without the copy and 0.5 s with it. Meanwhile the
+  GPU is 19-50% active, and the internal drive reads 3-5 GB/s.
+
+So the first token waits for model pages to come back from the internal
+drive after the explicit buffers are released. With the copy, half of them
+are still resident. A direct test excluded the obvious culprit: `F_NOCACHE`
+preads leave nothing in the page cache, on APFS or ExFAT. Open:
+- why more model pages stay resident with the copy;
+- whether the same effect causes the steady -1.9%: decode miss preads
+  averaged 0.76 ms with the copy against 0.73 ms without.
+
+Avoiding the 7 GiB re-read after a long sweep could be worth up to 1.2 s of
+first token without any second drive.
+
+The prefill gains are larger than `140`'s own A/B against `67b75b8`, and
+`145`'s change sits between them. The 5000 shape gains least: most of its
+time is a 904-token tail at decode speed, which the copy does not touch. The
+README table quotes these figures.
+
 ## Adding a row
 
 1. `SF_PARITY_FLAGS=--ssd-streaming tools/parity-check.sh sf-ds4-1flash` from
