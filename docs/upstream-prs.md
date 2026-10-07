@@ -9,6 +9,15 @@ are not a sync base. The base stays in git: the `sync-*` tags and
 
 Last review: 2026-09-26
 
+## Outgoing ports
+
+Work from this child ported to the owner's ds4 fork for a possible upstream
+PR. Nothing here has been pushed or proposed upstream.
+
+| Change | Fork branch (local commit, base) | Status |
+|---|---|---|
+| `190` dual-drive prefill, approach A | `dual-ssd-prefill-v41` (`683e062`, `0aaea5a`) | not offered: bitwise identical, but prefill loses 13-38% against original ds4 (`speed-bench/perf-record.md`, Dual-drive port to upstream ds4) |
+
 ## Finding what changed
 
 ```sh

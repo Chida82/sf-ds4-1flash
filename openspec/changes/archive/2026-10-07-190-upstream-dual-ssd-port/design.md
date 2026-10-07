@@ -58,6 +58,33 @@ Only after D3, and each on the owner's decision:
 
 A combined diff is larger and less likely to be accepted upstream. The D3 numbers decide whether it is worth offering.
 
+### D5. Binding point (task 1.1, 2026-10-06)
+
+Read in ds4 at `0aaea5a`; branch `dual-ssd-prefill-v41` in `~/github/chida82/ds4`.
+
+- **GPU side.** In a wide V4.1 sweep the routed MoE runs `ds4_gpu_routed_moe_batch_tensor`, and on its non-cached branch it resolves gate, up and down with `ds4_gpu_wrap_model_range(model_map, ...)` (`ds4_metal.m`). That function looks the range up among the registered model views by `(model_map, offset)`, and under SSD streaming `ds4_gpu_set_model_map_spans` replaces only the views of the map it is given. So a second map can coexist with the model's:
+  - the sweep registers the layer's up range from the copy's mapping next to the model's layer spans;
+  - a setter, `ds4_gpu_set_prefill_up_map`, makes that one `wrap` call resolve up from the copy;
+  - the sweep sets it per layer and clears it before decode.
+
+  The small-batch paths (selected-address and cached) keep the model, and so do decode and the single-token MoE.
+- **Page-in side.** The sweep's layer page-in (`metal_graph_stream_prefill_layer_pagein_start`, `pread_only`) splits each span evenly over 8 workers, and every worker `pread`s from `model->fd`. With a copy:
+  - workers 0-2 read the layer's up from the copy's fd;
+  - workers 3-7 read the rest from the model in contiguous byte shares, as `140`'s 3-of-8 split does, so both drives have requests in flight;
+  - `pread_range` takes the fd as a parameter.
+- **Open.** `ds4_engine_open` opens and checks the copy as `140` does, right after `ds4_gpu_set_ssd_streaming`, for V4.1 only:
+  - the header and every layer's routed up are compared through uncached descriptors;
+  - the copy must be a different inode with the same size.
+
+  Caching is then turned back on for the copy, and it is mmapped read-only. A change after the check stops the next sweep.
+
+Diff: about 280 lines, almost all in V4.1 prefill code:
+- `ds4.c`: about 270 lines;
+- `ds4_metal.m`: 7 lines;
+- `ds4_gpu.h`: 3 lines.
+
+The only shared-code touches are the fd parameter of `pread_range` and the map choice in one `wrap` call, which uses the model unless the V4.1 sweep has set the copy. Not invasive: go.
+
 ## Risks / Trade-offs
 
 - [ds4's Metal model map may assume one mapping per model] -> a second mapping for the up ranges only. If that touches too much shared code, stop and report before widening.

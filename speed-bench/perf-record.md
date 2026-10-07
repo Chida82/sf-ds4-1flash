@@ -41,6 +41,7 @@ figures are in the named section.
 | Engram rows from a copy on the external drive (`150`) | With the `140` copy admitted the sweeps wait 0.00-0.03 s on Engram, 0.37 s at 10000; checking both tables (188.83 GiB) costs about 30 s per engine open. | Engram placement after 145 |
 | Decode route-prediction prefetch with a cheap guess (`170`: int8 router copy, one background core) | The guess alone costs decode 0.7% (CI below zero), more than a third of what the sustainable policy hides; the policy that would pay needs about 8 GB/s of wasted reads. | Route guess cost after 160 |
 | Re-warming the decode statics with `WILLNEED` at the end of a sweep (`200` S1) | On one drive the reload costs drive time wherever it is issued: synchronous, it moved the first token's wait into the sweep (ttft 10000 -8.8%, append +1500 -8.3%, CIs below zero); asynchronous, the 1.5-1.7 s of reads outlast the last layer and the first token still waits. | Static weights after a sweep |
+| Dual-drive prefill in upstream ds4 through its mmap path (`190` approach A: up warmed from the copy, GPU binds up from the copy's mapping) | Bitwise identical and the page-in waits vanish, but the routed `up` stage runs about 2x slower from the copy's mapping (cause not traced) and prefill loses 13-38% against original ds4. | Dual-drive port to upstream ds4 |
 | Judging a kernel from back-to-back single timeline runs | Thermal drift is larger than the effect: the same baseline read 29 and 39 ms per dispatch. Use the harness's sections mode. | Prefill routed experts after 80 |
 
 ## Situation 0 (2026-09-27, `main` at `a60b8ee`)
@@ -925,6 +926,71 @@ copy's -1.9% steady decode is not the same eviction, and its cause is not
 traced.
 
 No runtime change from `200`.
+
+## Dual-drive port to upstream ds4 (2026-10-07, `190-upstream-dual-ssd-port`)
+
+Approach A in the owner's ds4 fork, branch `dual-ssd-prefill-v41` (local
+commit `683e062` on `0aaea5a`, not pushed). It is `140`'s split adapted to
+ds4's mmap prefill:
+- the copy is checked at open and mmapped;
+- 3 of the 8 layer page-in workers `pread` routed up from the copy, and 5
+  read the rest from the model;
+- the batched routed MoE binds up from the copy's mapping.
+
+Design D5 in the archived change has the binding point.
+
+Checks:
+- the fork builds without warnings;
+- its model-less tests pass;
+- `test-deepseek41-metal` passes;
+- a missing file, the model itself and a wrong-size file are refused;
+- the TB5 copy is accepted (43.51 GiB checked in 6.7 s);
+- the frontier logits at 2500/5000/7500/10000 are bitwise identical across
+  upstream `0aaea5a`, the port without the copy and the port with it.
+
+`ds4_test` needs the V4 Flash GGUF, which is not on this machine, on `main`
+as on the branch.
+
+Measurement (design D3): upstream `ds4-bench` at `0aaea5a` (A) against the
+port with the copy (B):
+- same GGUF;
+- `--ssd-streaming --ssd-streaming-cache-experts 82GB --ctx-alloc 32768`;
+- one untimed pair, then 2 alternated rounds (AB, BA).
+
+Prefill in tokens per second, both rounds:
+
+| Shape (upstream bench) | A | B | B against A |
+|---|---|---|---|
+| cold 2500 | 55.2, 57.8 | 47.0, 45.8 | -18% |
+| cold 5000 | 70.5, 69.6 | 61.4, 60.6 | -13% |
+| cold 10000 | 251.3, 241.7 | 161.9, 165.6 | -34% |
+| append 5000 -> 6800 (+1800) | 101.9, 94.3 | 60.2, 61.5 | -38% |
+| 2048, then append to 8192 (+6144) | 124.4/256.7, 126.4/249.3 | 79.6/166.7, 79.1/163.8 | -37%, -35% |
+
+Steady decode and the first token are within run-to-run spread.
+
+Why it loses:
+- The page-in works: a 2500 sweep waits 0.2 s on its layer maps instead
+  of 3.5-3.8 s.
+- The GPU drain grows from 6.7-7.6 s to 16-20 s.
+- `mincore` just before each layer shows gate, down (model) and up (copy)
+  fully resident.
+- `DS4_METAL_MOE_STAGE_PROFILE` puts the extra time in the routed `up`
+  stage: 1.07 s against 0.49 s per 2500 sweep, with gate and down unchanged.
+- The rest of the drain growth is not attributed.
+- Not the filesystem: a standalone Metal read of 1 GiB of `pread`-warmed
+  pages costs the same from the APFS model and the exFAT copy, about 13 ms
+  sequential and 30 ms scattered.
+- Not `F_NOCACHE`: toggling it back on, or an uncached descriptor on the
+  same file, still lets `pread` fill the mmap-visible cache.
+
+The cause is open. Approach A is a net loss on this machine.
+
+`140` reads the same split into locked explicit buffers, so its kernels
+never touch the copy's mapping. That is why it gains here (`180`: ttft
++4.6..+16.8%, append +1500 +17.1%). The D4 nice-to-have, porting the
+explicit buffers of `60`/`100` and then `140`, is what would carry the gain
+to ds4. It is a much larger diff and was not started.
 
 ## Adding a row
 
