@@ -39,6 +39,153 @@ investigated for Apple Silicon. None of it changed what the model writes:
 every speed-up so far keeps the output bit for bit identical (see "Speed
 without changing the output" below).
 
+## Speed
+
+> **Hardware.** Every performance number in this repository was measured on
+> one machine: an Apple **M5 Max with 128 GB** of unified memory, with the
+> Q2 GGUF streamed from its internal SSD. Other Macs will give different
+> absolute numbers.
+
+On a 128 GB Mac this model always runs with `--ssd-streaming` (see
+`AGENTS.md`), so every figure here is a streaming figure, with the expert
+cache fixed at `--ssd-streaming-cache-experts 82GB` (74.88 GiB dynamic).
+
+**Against ds4**, same GGUF, same flags, upstream's own bench:
+
+| Measurement | ds4 t/s | sf t/s | sf vs ds4 |
+|---|---:|---:|---:|
+| prefill, first 2048 tokens | 124.6 | 172.4 | +38.4% |
+| prefill, +2048 to context 4096 | 115.8 | 182.4 | +57.5% |
+| prefill, +4096 to context 8192 | 205.1 | 285.0 | +39.0% |
+| prefill, +8192 to context 16384 | 364.4 | 463.4 | +27.2% |
+| prefill, +16384 to context 32768 | 404.3 | 636.5 | +57.4% |
+| generation, context 2048 | 12.1 | 24.4 | +100.5% |
+| generation, context 8192 | 12.9 | 20.3 | +58.2% |
+| generation, context 32768 | 11.6 | 20.7 | +79.2% |
+| steady decode, context 2048 | 15.7 | 25.7 | +63.4% |
+| steady decode, context 8192 | 16.8 | 24.4 | +45.9% |
+| steady decode, context 32768 | 15.7 | 22.0 | +40.3% |
+
+The first token after a prefill took 2.1-3.0 s on ds4 and 0.3-1.1 s here.
+Greedy output is token-identical to ds4 (parity oracle, ten prompts).
+
+**How it was measured** on 2026-10-05. The builds compared are ds4 at the
+merge-base `0aaea5a` and this child at `132-gpu-all-hit-continuation`, on
+DeepSeek V4.1 Flash Q2.
+- Both run `ds4-bench` (here `sf-ds4-1flash-bench`) on *I Promessi Sposi* with
+  `--ssd-streaming --ssd-streaming-cache-experts 82GB`, context frontiers from
+  2048 to 32768 doubling, and 128 generated tokens per frontier. Each frontier
+  prefills the new tokens on top of the previous context.
+- Each value is the mean of two runs per build, in the order ds4, sf, sf, ds4,
+  with 180 s between runs.
+- "Generation" counts all 128 tokens, including the first one after the
+  prefill; "steady decode" leaves that first token out.
+
+Every step between ds4 and this tree is judged by `speed-bench/ab_bench.py`,
+which alternates the two builds in A B B A runs, drops pairs whose GPU clock
+sagged or whose expert cache diverged, and reports medians with bootstrap 95%
+intervals for decode, time to first token on cold prompts of 2.5K-10K tokens,
+and appends to a live session. A step is kept only when its target gains and
+no other metric clearly loses. Each change appends a row to
+`speed-bench/perf-record.md` against a fixed start commit.
+
+See [performance and benchmarking](docs/PERFORMANCE.md) for the full numbers,
+comparison conditions, and benchmark commands.
+
+## Speed without changing the output
+
+**Every performance change so far has left the model's output bit for bit
+identical.** No precision is traded for speed: no lower-precision KV cache, no
+approximate kernel, no route that changes a single logit.
+
+| Path | Guarantee |
+|---|---|
+| Prefill and decode | logits **bit-identical** to the build before each step (`speed-bench/ab_bench.py --bitwise`); every step in `speed-bench/perf-record.md` passed that bitwise gate |
+| Against upstream ds4 | greedy output **token-identical** to ds4 at the merge-base (StarForge parity oracle, ten prompts) |
+
+**How it is checked.** Every change goes through four checks:
+- the StarForge parity oracle (`tools/parity-check.sh`) runs ten prompts
+  greedily on this child and on upstream ds4 at the child's merge-base, with
+  the same GGUF, and requires token-identical output;
+- the A/B harness requires identical tokens against the previous build, and
+  bit-identical logits (`--bitwise`) when a change claims it;
+- every runtime switch that turns a speed-up off is checked with
+  `make test-deepseek41-decode-switch SWITCH=<env>`: 65 decode tokens with and
+  without it, logits, Engram history and KV state compared bit for bit;
+- kernel tests compare optimized kernels with the CPU reference or with the
+  kernel they replace.
+
+## A second drive
+
+An external SSD has two uses here. The one measured is a Samsung 9100 PRO
+1 TB (ExFAT) in an ACASIS TB501 Pro enclosure on Thunderbolt 5, 80 Gbit/s.
+Inside, the enclosure runs the drive at PCIe 4.0 x4, which caps reads at
+about 6.4 GB/s, half the internal SSD ([docs/ssd.md](docs/ssd.md)). Other
+enclosures and links will give different figures.
+
+- **Faster prompts.** Put a byte-identical copy of the GGUF on it, for example
+  with `cp`, and pass it as `DS4_METAL_PREFILL_REPLICA`. Long prompts then read
+  part of each layer's weights from each drive at once (table below). The
+  engine compares the copy with the model at every start (about 7 s on that
+  drive) and refuses to start on any difference. A long-running server earns
+  that back after 3-4 long prompts; a one-shot CLI command does not.
+- **Less wear on the internal SSD.** Reading does not wear an SSD; writing
+  does. During inference the server writes only its disk KV cache, 1-2
+  checkpoints of 23-49 MiB per request. A Mac's internal SSD is soldered to the
+  board, so put that cache on the replaceable drive with `--kv-disk-dir`. It
+  costs about 2 ms per checkpoint, about 0.01% of a request.
+
+Measured on the tree of 2026-10-06 with `speed-bench/ab_bench.py`, internal
+SSD only against the same build with the copy, 2-4 invocations pooled per
+shape. The times are one invocation's medians; the gain is the pooled
+median.
+
+| Shape | Internal SSD only | With the copy | Gain |
+|---|---|---|---|
+| 2500-token prompt, time to first token | 30.9 s | 28.2 s | +10.2% |
+| 3500-token prompt | 13.2 s | 11.2 s | +16.8% |
+| 5000-token prompt | 53.3 s | 50.9 s | +4.6% |
+| 7500-token prompt | 19.5 s | 17.1 s | +14.2% |
+| 10000-token prompt | 29.0 s | 25.0 s | +15.3% |
+| append 1500 tokens to a 5300-token conversation | 8.6 s | 7.0 s | +17.1% |
+| append 300 tokens | 13.2 s | 13.0 s | +0.8% (within noise) |
+| decode after 2048 tokens | 22.0 tokens/s | 22.2 tokens/s | +1.1% |
+| first token after an 8192-token context | 1.38 s | 0.18 s | 1.2 s sooner |
+| decode after 8192 tokens, steady | 22.3 tokens/s | 21.9 tokens/s | -1.9% |
+| 256 tokens after an 8192-token context, first included | 12.8 s | 11.9 s | +7.5% |
+| typical mix (harness estimate) | | | +3.2% |
+
+The copy speeds up the layer sweeps of a prompt, not the tokens read one at
+a time after them. The 5000-token prompt spends most of its time in a
+904-token tail at decode speed, so it gains least; 3500, 7500 and 10000 are
+almost all sweeps. Decode never reads the copy. After an 8192-token context
+with the copy, the first token comes 1.2 s sooner and the steady rate is 2%
+lower, so the copy is ahead for answers up to about 1300 tokens there. The
+first token is slower without the copy because about 7 GiB of model pages
+are read back from the internal drive after the prompt's sweep; with the
+copy, half of them are still in memory. Why that differs, and what causes
+the steady -2%, is not yet known.
+
+Both together:
+
+```sh
+DS4_METAL_PREFILL_REPLICA=/Volumes/<drive>/sf-ds4-1flash/DeepSeek-V4.1-Flash-Q2.gguf \
+  ./sf-ds4-1flash-server --ssd-streaming --ctx 32768 \
+  --kv-disk-dir /Volumes/<drive>/sf-ds4-1flash/kv --kv-disk-space-mb 4096
+```
+
+To move an existing cache once, stop the server and run
+`mv ~/.sf/ds4-1flash/kv/*.kv /Volumes/<drive>/sf-ds4-1flash/kv/`; each file
+carries its own eviction state. If the drive is not mounted, the engine
+refuses to start when the copy is configured. Without the copy, the server
+logs that it cannot create the cache directory and runs without a disk cache.
+The drive slows to about 1 GB/s only after 45-50 GiB
+written in one continuous burst, while its fast write cache is full
+([docs/ssd.md](docs/ssd.md)). The KV cache writes 23-49 MiB at a time, so it
+never gets there; copying the 341 GiB GGUF does. The measurements are in
+[speed-bench/perf-record.md](speed-bench/perf-record.md) (Dual-drive prefill
+after 132, KV cache placement after 150).
+
 ## Supported hardware
 
 * **Metal**, the primary target, on Macs with 96 GB or more. Smaller machines
@@ -139,77 +286,6 @@ elsewhere.
 The server listens at `http://127.0.0.1:8002` by default; see [serving](docs/SERVER.md)
 for API access and multiple sessions.
 
-### A second drive
-
-An external SSD has two uses here. The one measured is a Samsung 9100 PRO
-1 TB (ExFAT) in an ACASIS TB501 Pro enclosure on Thunderbolt 5, 80 Gbit/s.
-Inside, the enclosure runs the drive at PCIe 4.0 x4, which caps reads at
-about 6.4 GB/s, half the internal SSD ([docs/ssd.md](docs/ssd.md)). Other
-enclosures and links will give different figures.
-
-- **Faster prompts.** Put a byte-identical copy of the GGUF on it, for example
-  with `cp`, and pass it as `DS4_METAL_PREFILL_REPLICA`. Long prompts then read
-  part of each layer's weights from each drive at once (table below). The
-  engine compares the copy with the model at every start (about 7 s on that
-  drive) and refuses to start on any difference. A long-running server earns
-  that back after 3-4 long prompts; a one-shot CLI command does not.
-- **Less wear on the internal SSD.** Reading does not wear an SSD; writing
-  does. During inference the server writes only its disk KV cache, 1-2
-  checkpoints of 23-49 MiB per request. A Mac's internal SSD is soldered to the
-  board, so put that cache on the replaceable drive with `--kv-disk-dir`. It
-  costs about 2 ms per checkpoint, about 0.01% of a request.
-
-Measured on the tree of 2026-10-06 with `speed-bench/ab_bench.py`, internal
-SSD only against the same build with the copy, 2-4 invocations pooled per
-shape. The times are one invocation's medians; the gain is the pooled
-median.
-
-| Shape | Internal SSD only | With the copy | Gain |
-|---|---|---|---|
-| 2500-token prompt, time to first token | 30.9 s | 28.2 s | +10.2% |
-| 3500-token prompt | 13.2 s | 11.2 s | +16.8% |
-| 5000-token prompt | 53.3 s | 50.9 s | +4.6% |
-| 7500-token prompt | 19.5 s | 17.1 s | +14.2% |
-| 10000-token prompt | 29.0 s | 25.0 s | +15.3% |
-| append 1500 tokens to a 5300-token conversation | 8.6 s | 7.0 s | +17.1% |
-| append 300 tokens | 13.2 s | 13.0 s | +0.8% (within noise) |
-| decode after 2048 tokens | 22.0 tokens/s | 22.2 tokens/s | +1.1% |
-| first token after an 8192-token context | 1.38 s | 0.18 s | 1.2 s sooner |
-| decode after 8192 tokens, steady | 22.3 tokens/s | 21.9 tokens/s | -1.9% |
-| 256 tokens after an 8192-token context, first included | 12.8 s | 11.9 s | +7.5% |
-| typical mix (harness estimate) | | | +3.2% |
-
-The copy speeds up the layer sweeps of a prompt, not the tokens read one at
-a time after them. The 5000-token prompt spends most of its time in a
-904-token tail at decode speed, so it gains least; 3500, 7500 and 10000 are
-almost all sweeps. Decode never reads the copy. After an 8192-token context
-with the copy, the first token comes 1.2 s sooner and the steady rate is 2%
-lower, so the copy is ahead for answers up to about 1300 tokens there. The
-first token is slower without the copy because about 7 GiB of model pages
-are read back from the internal drive after the prompt's sweep; with the
-copy, half of them are still in memory. Why that differs, and what causes
-the steady -2%, is not yet known.
-
-Both together:
-
-```sh
-DS4_METAL_PREFILL_REPLICA=/Volumes/<drive>/sf-ds4-1flash/DeepSeek-V4.1-Flash-Q2.gguf \
-  ./sf-ds4-1flash-server --ssd-streaming --ctx 32768 \
-  --kv-disk-dir /Volumes/<drive>/sf-ds4-1flash/kv --kv-disk-space-mb 4096
-```
-
-To move an existing cache once, stop the server and run
-`mv ~/.sf/ds4-1flash/kv/*.kv /Volumes/<drive>/sf-ds4-1flash/kv/`; each file
-carries its own eviction state. If the drive is not mounted, the engine
-refuses to start when the copy is configured. Without the copy, the server
-logs that it cannot create the cache directory and runs without a disk cache.
-The drive slows to about 1 GB/s only after 45-50 GiB
-written in one continuous burst, while its fast write cache is full
-([docs/ssd.md](docs/ssd.md)). The KV cache writes 23-49 MiB at a time, so it
-never gets there; copying the 341 GiB GGUF does. The measurements are in
-[speed-bench/perf-record.md](speed-bench/perf-record.md) (Dual-drive prefill
-after 132, KV cache placement after 150).
-
 The interactive CLI keeps a multi-turn conversation. Use `/help`, `/read FILE`,
 `/ctx N`, and `/quit`. Ctrl+C interrupts generation and returns to the prompt.
 Run each binary with `--help` for its full options.
@@ -270,78 +346,6 @@ The default suite is `core`; `--suite all` runs core and hard cases.
 non-interactive output, and `--regrade-trace FILE` scores an existing trace
 without generating again. Sources and licenses are in [EVAL_DATA.md](EVAL_DATA.md).
 For inference correctness and release checks, read [testing](docs/TESTING.md).
-
-## Speed without changing the output
-
-> **Hardware.** Every performance number in this repository was measured on
-> one machine: an Apple **M5 Max with 128 GB** of unified memory, with the
-> Q2 GGUF streamed from its internal SSD. Other Macs will give different
-> absolute numbers.
-
-**Every performance change so far has left the model's output bit for bit
-identical.** No precision is traded for speed: no lower-precision KV cache, no
-approximate kernel, no route that changes a single logit.
-
-| Path | Guarantee |
-|---|---|
-| Prefill and decode | logits **bit-identical** to the build before each step (`speed-bench/ab_bench.py --bitwise`); every step in `speed-bench/perf-record.md` passed that bitwise gate |
-| Against upstream ds4 | greedy output **token-identical** to ds4 at the merge-base (StarForge parity oracle, ten prompts) |
-
-**How it is checked.** Every change goes through four checks:
-- the StarForge parity oracle (`tools/parity-check.sh`) runs ten prompts
-  greedily on this child and on upstream ds4 at the child's merge-base, with
-  the same GGUF, and requires token-identical output;
-- the A/B harness requires identical tokens against the previous build, and
-  bit-identical logits (`--bitwise`) when a change claims it;
-- every runtime switch that turns a speed-up off is checked with
-  `make test-deepseek41-decode-switch SWITCH=<env>`: 65 decode tokens with and
-  without it, logits, Engram history and KV state compared bit for bit;
-- kernel tests compare optimized kernels with the CPU reference or with the
-  kernel they replace.
-
-## Speed
-
-On a 128 GB Mac this model always runs with `--ssd-streaming` (see
-`AGENTS.md`), so every figure here is a streaming figure, with the expert
-cache fixed at `--ssd-streaming-cache-experts 82GB` (74.88 GiB dynamic).
-`speed-bench/ab_bench.py` alternates the two builds in A B B A runs, drops
-pairs whose GPU clock sagged or whose expert cache diverged, and reports
-medians with bootstrap 95% intervals for decode, time to first token on cold
-prompts of 2.5K-10K tokens, and appends to a live session. A step is kept only
-when its target gains and no other metric clearly loses. Each change appends a
-row to `speed-bench/perf-record.md` against a fixed start commit.
-
-**Against ds4.** Measured on 2026-10-05 with upstream's own bench. The builds
-compared are ds4 at the merge-base `0aaea5a` and this child at
-`132-gpu-all-hit-continuation`, on DeepSeek V4.1 Flash Q2.
-- Both run `ds4-bench` (here `sf-ds4-1flash-bench`) on *I Promessi Sposi* with
-  `--ssd-streaming --ssd-streaming-cache-experts 82GB`, context frontiers from
-  2048 to 32768 doubling, and 128 generated tokens per frontier. Each frontier
-  prefills the new tokens on top of the previous context.
-- Each value is the mean of two runs per build, in the order ds4, sf, sf, ds4,
-  with 180 s between runs.
-- "Generation" counts all 128 tokens, including the first one after the
-  prefill; "steady decode" leaves that first token out.
-
-| Measurement | ds4 t/s | sf t/s | sf vs ds4 |
-|---|---:|---:|---:|
-| prefill, first 2048 tokens | 124.6 | 172.4 | +38.4% |
-| prefill, +2048 to context 4096 | 115.8 | 182.4 | +57.5% |
-| prefill, +4096 to context 8192 | 205.1 | 285.0 | +39.0% |
-| prefill, +8192 to context 16384 | 364.4 | 463.4 | +27.2% |
-| prefill, +16384 to context 32768 | 404.3 | 636.5 | +57.4% |
-| generation, context 2048 | 12.1 | 24.4 | +100.5% |
-| generation, context 8192 | 12.9 | 20.3 | +58.2% |
-| generation, context 32768 | 11.6 | 20.7 | +79.2% |
-| steady decode, context 2048 | 15.7 | 25.7 | +63.4% |
-| steady decode, context 8192 | 16.8 | 24.4 | +45.9% |
-| steady decode, context 32768 | 15.7 | 22.0 | +40.3% |
-
-The first token after a prefill took 2.1-3.0 s on ds4 and 0.3-1.1 s here.
-Greedy output is token-identical to ds4 (parity oracle, ten prompts).
-
-See [performance and benchmarking](docs/PERFORMANCE.md) for the full numbers,
-comparison conditions, and benchmark commands.
 
 ## Detailed Guides
 
