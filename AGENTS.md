@@ -171,7 +171,11 @@ identical (`make test-deepseek41-decode-switch SWITCH=<env>`):
   selected-id readback, `131-decode-readback-spin-wait`);
 - `DS4_METAL_DISABLE_V41_READBACK_SPLIT` (the router committed alone, so the
   shared expert runs while the CPU reads the ids,
-  `132-gpu-all-hit-continuation`).
+  `132-gpu-all-hit-continuation`);
+- `DS4_METAL_DISABLE_V41_READBACK_MAILBOX` (the router batch publishes the ids
+  to a shared box the CPU polls instead of the batch's status,
+  `210-decode-router-mailbox`; it rides on the split, so the split switch
+  turns it off too).
 
 The alternative to streaming is not more RAM in one box but **two 128 GB Macs
 with TP/RDMA** (`docs/DISTRIBUTED.md`), which holds about 81 GiB of main weights

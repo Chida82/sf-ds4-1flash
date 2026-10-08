@@ -24209,7 +24209,7 @@ static bool ds41_moe_partial(ds41_gpu_graph *g, const ds4_model *m,
     /* The shared expert does not feed the selected-id readback: commit the
      * router alone so the shared expert runs while the CPU reads the ids. */
     if (g->streaming && g->tp_world == 1 && !getenv("DS4_METAL_DISABLE_V41_READBACK_SPLIT") &&
-        !ds4_gpu_split_readback()) return false;
+        !ds4_gpu_split_readback(g->selected, DS4_N_EXPERT_USED)) return false;
 #endif
     const bool shared_here = !shared_owner || g->tp_rank == (il & 1u);
     /* sf-ablate(cuda): shared_queued and ds4_gpu_dsv41_shared_start are CUDA-only; on Metal the shared expert always runs here */

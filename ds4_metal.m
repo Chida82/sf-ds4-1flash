@@ -1293,6 +1293,16 @@ static void ds4_gpu_invalidate_completion_counters(void) {
 /* Nonzero only around the streaming decode's selected-id readback. */
 static uint64_t g_wait_poll_ns;
 
+/* The selected-id mailbox: the split batch's last dispatch copies the ids
+ * into g_readback_box, and the readback polls it instead of waiting for the
+ * batch's status. g_readback_box_cb is the publishing batch while armed. */
+static id<MTLBuffer> g_readback_box;
+static id<MTLCommandBuffer> g_readback_box_cb;
+static const ds4_gpu_tensor *g_readback_box_tensor;
+static uint64_t g_readback_box_cb_seq;
+static uint32_t g_readback_box_seq, g_readback_box_n;
+static uint64_t g_readback_box_hits, g_readback_box_fallbacks;
+
 static int ds4_gpu_wait_command_buffer(id<MTLCommandBuffer> cb, const char *label) {
     /* Waking from waitUntilCompleted takes about 70 us, paid 40 times a token
      * at the readback; polling the status sees completion about 25 us sooner. */
@@ -4387,6 +4397,11 @@ void ds4_gpu_print_memory_report(const char *label) {
                 bytes += [g_stream_expert_cache_slabs[i] length];
             fprintf(stderr, "ds4:   streaming slab residency: %u slabs, %.2f GiB allocations\n",
                     g_stream_expert_cache_slab_count, ds4_gpu_gib(bytes));
+        }
+        if (g_readback_box_hits != 0 || g_readback_box_fallbacks != 0) {
+            fprintf(stderr, "ds4:   selected-id mailbox hits=%llu fallbacks=%llu\n",
+                    (unsigned long long)g_readback_box_hits,
+                    (unsigned long long)g_readback_box_fallbacks);
         }
         if (g_stream_expert_cache_mlock_bytes != 0 ||
             g_stream_expert_cache_mlock_failures != 0) {
@@ -9012,16 +9027,73 @@ int ds4_gpu_commands_active(void) {
  * readback does not need, which then runs on the GPU while the CPU reads. */
 static id<MTLCommandBuffer> g_readback_split_cb;
 
-int ds4_gpu_split_readback(void) {
+/* Ends the batch with a dispatch that publishes the n selected ids to the
+ * mailbox (n <= 8, serial encoder only), then commits it without waiting. */
+int ds4_gpu_split_readback(const ds4_gpu_tensor *selected, uint32_t n) {
+    g_readback_box_cb = nil;
+    const uint64_t batch_seq = g_stream_expert_cache_batch_seq;
+    id<MTLComputePipelineState> pipeline = nil;
+    if (g_batch_cb && selected && n <= 8 && !g_batch_encoder_concurrent &&
+        !getenv("DS4_METAL_DISABLE_V41_READBACK_MAILBOX")) {
+        if (!g_readback_box) {
+            g_readback_box = [g_device newBufferWithLength:64 options:MTLResourceStorageModeShared];
+            if (g_readback_box) memset([g_readback_box contents], 0, 64);
+        }
+        pipeline = g_readback_box ? ds4_gpu_get_pipeline("kernel_dsv41_selected_publish") : nil;
+    }
+    if (pipeline) {
+        const uint32_t args[2] = {++g_readback_box_seq, n};
+        id<MTLComputeCommandEncoder> enc = ds4_gpu_compute_encoder(g_batch_cb);
+        if (!enc) return 0;
+        [enc setComputePipelineState:pipeline];
+        [enc setBytes:args length:sizeof(args) atIndex:0];
+        [enc setBuffer:ds4_gpu_tensor_buffer(selected) offset:ds4_gpu_tensor_offset(selected) atIndex:1];
+        [enc setBuffer:g_readback_box offset:0 atIndex:2];
+        [enc dispatchThreadgroups:MTLSizeMake(1, 1, 1) threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
+        ds4_gpu_end_compute_encoder(g_batch_cb, enc);
+    }
     if (!ds4_gpu_flush_commands()) return 0;
+    if (pipeline) {
+        g_readback_box_cb = [g_pending_cbs lastObject];
+        g_readback_box_cb_seq = batch_seq;
+        g_readback_box_tensor = selected;
+        g_readback_box_n = n;
+    }
     g_readback_split_cb = g_batch_cb;
     return 1;
 }
 
+/* Spins until the mailbox holds the armed sequence with a matching checksum,
+ * for at most 20 ms (a layer's GPU work is well under 1 ms). */
+static int ds4_gpu_readback_box_poll(int32_t *ids, uint32_t n) {
+    const volatile uint32_t *box = (const volatile uint32_t *)[g_readback_box contents];
+    const uint32_t seq = g_readback_box_seq;
+    const uint64_t end = clock_gettime_nsec_np(CLOCK_UPTIME_RAW) + 20000000u;
+    for (;;) {
+        if (box[0] == seq) {
+            __atomic_thread_fence(__ATOMIC_ACQUIRE);
+            uint32_t sum = seq * 2654435761u;
+            for (uint32_t i = 0; i < n; i++) {
+                const uint32_t v = box[2 + i];
+                ids[i] = (int32_t)v;
+                sum = (sum ^ v) * 16777619u;
+            }
+            if (sum == box[1]) return 1;
+        }
+        if (clock_gettime_nsec_np(CLOCK_UPTIME_RAW) >= end) return 0;
+        __builtin_arm_yield();
+    }
+}
+
 /* Commits the split batch behind the pending command buffers and waits only
  * for those. Its transient buffers and model views stay until the next full
- * drain, since it is still running. */
-static int ds4_gpu_commit_split_wait_pending(void) {
+ * drain, since it is still running. With the mailbox armed for `selected` it
+ * waits for the ids instead and returns 2 with them in `ids`: the publishing
+ * batch stays pending, everything committed before it is waited (it ended
+ * before that batch started, so this does not block), and the expert cache
+ * treats every older sequence as done. */
+static int ds4_gpu_commit_split_wait_pending(const ds4_gpu_tensor *selected,
+                                             int32_t *ids, uint32_t n) {
     ds4_gpu_parallel_ffn_reset_state(YES);
     ds4_gpu_close_batch_encoder();
     id<MTLCommandBuffer> cb = g_batch_cb;
@@ -9031,6 +9103,29 @@ static int ds4_gpu_commit_split_wait_pending(void) {
     g_stream_expert_cache_batch_seq = 0;
     g_readback_split_cb = nil;
     [cb commit];
+    id<MTLCommandBuffer> box_cb = g_readback_box_cb;
+    g_readback_box_cb = nil;
+    if (box_cb && selected == g_readback_box_tensor && n == g_readback_box_n) {
+        if (ds4_gpu_readback_box_poll(ids, n)) {
+            int ok = 1;
+            NSUInteger older = 0;
+            const NSUInteger count = [g_pending_cbs count];
+            while (older < count && g_pending_cbs[older] != box_cb) {
+                if (!ds4_gpu_wait_command_buffer(g_pending_cbs[older], "selected-id readback")) ok = 0;
+                older++;
+            }
+            [g_pending_cbs removeObjectsInRange:NSMakeRange(0, older)];
+            const uint64_t done = older == count ?
+                g_stream_expert_cache_pending_max_seq : g_readback_box_cb_seq - 1u;
+            if (done > g_stream_expert_cache_done_seq) g_stream_expert_cache_done_seq = done;
+            if (!ok) ds4_gpu_invalidate_zero_prefix_prefill_block_maps();
+            [g_pending_cbs addObject:cb];
+            g_stream_expert_cache_pending_max_seq = seq;
+            g_readback_box_hits++;
+            return ok ? 2 : 0;
+        }
+        g_readback_box_fallbacks++;
+    }
     const int ok = ds4_gpu_wait_pending_command_buffers("selected-id readback");
     [g_pending_cbs addObject:cb];
     g_stream_expert_cache_pending_max_seq = seq;
@@ -11299,6 +11394,8 @@ void ds4_gpu_cleanup(void) {
         g_model_buffer_cache = nil;
         g_transient_buffers = nil;
         g_pending_cbs = nil;
+        g_readback_box_cb = nil;
+        g_readback_box = nil;
         g_library = nil;
         g_queue = nil;
         g_device = nil;
@@ -34241,6 +34338,7 @@ int ds4_gpu_routed_moe_one_tensor(
                     if (g_batch_cb != nil) {
                         double selected_boundary_t0 =
                             selected_timing ? ds4_gpu_now_ms() : 0.0;
+                        int ids_from_box = 0;
                         if (q4_selected_shared_event) {
                             if (ds4_gpu_signal_batch_and_wait_event("selected-id readback") == 0) { if (getenv("DS4_GLM_TP_DEBUG")) fprintf(stderr, "ds4: routed_moe_one silent return at line %d\n", 32942); return 0; }
                         } else {
@@ -34248,13 +34346,14 @@ int ds4_gpu_routed_moe_one_tensor(
                             if (poll < 0) poll = getenv("DS4_METAL_DISABLE_V41_READBACK_POLL") == NULL;
                             g_wait_poll_ns = poll ? 2000000u : 0u;
                             const int ended = g_readback_split_cb == g_batch_cb ?
-                                ds4_gpu_commit_split_wait_pending() :
+                                ds4_gpu_commit_split_wait_pending(selected, selected_ids, n_expert) :
                                 ds4_gpu_end_commands();
                             g_wait_poll_ns = 0;
                             if (ended == 0) {
                                 if (getenv("DS4_GLM_TP_DEBUG")) fprintf(stderr, "ds4: routed_moe_one silent return at line %d\n", 32931);
                                 return 0;
                             }
+                            ids_from_box = ended == 2;
                         }
                         if (selected_timing) {
                             selected_sync_ms +=
@@ -34262,7 +34361,8 @@ int ds4_gpu_routed_moe_one_tensor(
                         }
                         double selected_copy_t0 =
                             selected_timing ? ds4_gpu_now_ms() : 0.0;
-                        if (ds4_gpu_tensor_read(selected,
+                        if (!ids_from_box &&
+                            ds4_gpu_tensor_read(selected,
                                                 0,
                                                 selected_ids,
                                                 (uint64_t)n_expert * sizeof(selected_ids[0])) == 0) {

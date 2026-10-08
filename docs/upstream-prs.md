@@ -18,6 +18,15 @@ PR. Nothing here has been pushed or proposed upstream.
 |---|---|---|
 | `190` dual-drive prefill, approach A | `dual-ssd-prefill-v41` (`683e062`, `0aaea5a`) | not offered: bitwise identical, but prefill loses 13-38% against original ds4 (`speed-bench/perf-record.md`, Dual-drive port to upstream ds4) |
 
+## Ideas from other forks
+
+Forks of ds4 that are not upstream PRs. Their code is not ported; a change
+that takes an idea writes its own code and records the source here.
+
+| Fork | Commit | Subject | Verdict | Reason |
+|---|---|---|---|---|
+| `argonautlabsai/ds4-argodrive` | `9ad4a61` | `DS4_ARGODRIVE_FLAG_READBACK`: selected ids published to a polled shared box | idea -> `210-decode-router-mailbox` | the box is seen about 20 us after the router batch's GPU end, against 45-48 us for its status; kept with `132`'s split, since the store is published by the command buffer's end |
+
 ## Finding what changed
 
 ```sh

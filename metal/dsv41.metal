@@ -106,6 +106,22 @@ kernel void kernel_dsv41_router_one(
     }
 }
 
+// Copies the decode router's ids into a shared box the CPU polls: ids, a
+// checksum over seq and ids, then seq. The CPU sees the stores about 20 us
+// after the command buffer's GPU end, 25-30 us before its status says so.
+kernel void kernel_dsv41_selected_publish(
+        constant uint2 &args,   /* seq, n */
+        device const int32_t *selected,
+        device uint *box) {
+    uint sum = args.x * 2654435761u;
+    for (uint i = 0; i < args.y; i++) {
+        box[2 + i] = uint(selected[i]);
+        sum = (sum ^ uint(selected[i])) * 16777619u;
+    }
+    box[1] = sum;
+    box[0] = args.x;
+}
+
 struct ds4_metal_args_dsv41_norm_pair {
     uint n0, n1, ntg0, ntg1;
     float eps;

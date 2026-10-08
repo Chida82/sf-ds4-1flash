@@ -34,7 +34,7 @@ figures are in the named section.
 | Engram cross-partition dedup or a raw-row cache | Duplicates are 4-8% of rows and already read once per partition; the sweep waits 0.2-0.8 s on Engram in total. | Engram reads after 110 |
 | More Engram readers (32 or 64 instead of 16) | Exposed wait 0.37-0.40 s against 0.43 s on `cold-2500`, inside noise: the drive is shared with expert reads at full rate. | Engram reads after 110 |
 | Expert pass pre-committed behind a CPU-signalled shared event | The GPU restarts 102-105 us after the signal, like after a commit; the encode it would save is about 8 us per layer. | Expert pass submission after 131 |
-| GPU kernel spin-waiting on a CPU store (or the CPU on a GPU store) in shared memory | Neither side sees the other's store until the kernel ends. | Expert pass submission after 131 |
+| GPU kernel spin-waiting on a CPU store (or the CPU on a GPU store) in shared memory | Neither side sees the other's store while the kernel runs; the CPU sees a GPU store about 20 us after the end of its command buffer, not of its kernel (`210` gate). | Expert pass submission after 131; Selected-id mailbox after 200 |
 | Starting a decode expert's compute before all its bytes arrive (first bytes from one drive, last from the other) | One expert's decode compute is about 29 us (gate/up 18, down 11); each extra GPU restart costs about 100 us. | Decode misses after 140 |
 | Minimal decode route-prediction prefetch (CPU guess from the layer before, 1 read per layer, layers 20-39) | Catches 0.48 misses per token, but decode 2048 -2.1% and 8192 -1.7% (CIs below zero): the guess (85 us per layer, 7.9 MB of router weights) and the wasted reads cost more than the hidden reads. | Decode misses after 140 |
 | Reading part of each decode miss from the external TB5 copy (family split, up from the copy) | decode 8192 -1.7% (CI below zero): a single miss is latency-bound, and the copy's floor of about 0.6-0.7 ms for 2-3 MiB is slower than the internal drive's whole expert. | Decode misses after 140 |
@@ -991,6 +991,46 @@ never touch the copy's mapping. That is why it gains here (`180`: ttft
 +4.6..+16.8%, append +1500 +17.1%). The D4 nice-to-have, porting the
 explicit buffers of `60`/`100` and then `140`, is what would carry the gain
 to ds4. It is a much larger diff and was not started.
+
+## Selected-id mailbox after 200 (2026-10-07, `210-decode-router-mailbox`)
+
+The gate, a standalone Metal probe on `main` at `efe02ac` (a busy kernel of
+about 400 us, then a one-thread kernel storing six ids, a checksum and a
+sequence into a shared buffer; the CPU spins with `yield`; 400 iterations;
+serial encoder), medians:
+
+| Layout | flag seen after the CB's GPU end | status `Completed` after the GPU end |
+|---|---|---|
+| publish last in the CB | 20.6 us (p90 21.4) | 47.9 us |
+| publish, then 80 us more work in the same encoder | 20.7 us | 47.9 us |
+| publish, then that work in a new encoder of the same CB | 20.7 us | 48.3 us |
+| publish ends the CB, the work in the next CB | 19.5 us (p90 20.2) | 47.1 us |
+
+Without `yield` the flag times are the same and the status comes later
+(55 us). No checksum mismatch in 3200 records. A store is published by the
+end of its command buffer, not of its kernel: in the second and third rows
+the flag arrives 20 us after the end of the work that follows it. This
+corrects `132`'s reading ("visible when the kernel ends"), which came from a
+kernel that was the last of its command buffer. The mailbox therefore keeps
+`132`'s split and replaces only the wait on the router's batch. The decode
+batch's encoder is serial outside the parallel-FFN and kv-task sections,
+which do not enclose the router.
+
+A CLI decode of 64 tokens with `DS4_METAL_STREAMING_EXPERT_TIMING_SUMMARY=1`
+printed `selected-id mailbox hits=4319 fallbacks=1`. The fallback was the
+second readback of the process: the router batch sat behind about 100 ms of
+queued work, so the 20 ms poll ran out and the waited path took over at no
+extra cost.
+
+| Step (B) against the previous | Invocations | Target metrics | Other | Verdict |
+|---|---|---|---|---|
+| S1 the router batch publishes the ids to a shared box as its last dispatch; the readback polls the box instead of the batch's status, waits only the older buffers and skips the tensor read | 1 (18 pairs, thermal Heavy, 1000-1206 MHz) | decode 2048 +5.5% (+4.3..+5.8), decode 8192 +6.2% (+5.6..+7.8) | append +300 +5.8% (+5.3..+6.3), prefill 5000 +4.7% (+3.9..+5.6), append +1500 -0.8% (-1.7..+0.3); guards once: decode 2500 +7.9%, ttft 16896 +1.8%, ttft 2500 +2.7%; hit rates equal; bitwise | kept |
+
+The gain is about twice the 25 us of wake per layer (about 2.3%); as with
+`131`, a thread that spins instead of sleeping in the kernel also resumes
+the layer's CPU work sooner. Folding the publish into the router kernel
+would save one one-thread dispatch per layer, below the harness's
+resolution, and would touch a kernel shared with prefill rows; not tried.
 
 ## Adding a row
 
