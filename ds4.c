@@ -24706,6 +24706,9 @@ static DS4_MAYBE_UNUSED bool ds41_graph_step(ds41_gpu_graph *g, const ds4_model 
      * is on the GPU's critical path. */
     const int previous_fast_lookup = ds4_gpu_set_decode_pipeline_fast_lookup(
         !getenv("DS4_METAL_DISABLE_V41_DECODE_PIPELINE_FAST_LOOKUP"));
+    /* Decode tokens only: the token-major prefill tail passes no logits. */
+    const bool keepalive = logits && g->streaming && g->tp_world == 1;
+    if (keepalive) ds4_gpu_decode_keepalive(1);
     const float initial_pre[] = {1, 0, 0, 0};
     bool ok = ds4_gpu_tensor_write(g->pre, 0, initial_pre, sizeof(initial_pre)) &&
         ds4_gpu_begin_commands() && ds41_embed(g, m, w, g->residual, g->x, token, g->pos);
@@ -24756,6 +24759,7 @@ static DS4_MAYBE_UNUSED bool ds41_graph_step(ds41_gpu_graph *g, const ds4_model 
     if (g->tp_world == 2 && ds4_gpu_tp_failed()) ok = false;
     if (ok && logits) ok = ds41_graph_logits(g, m, w, logits);
     (void)ds4_gpu_set_decode_pipeline_fast_lookup(previous_fast_lookup);
+    if (keepalive) ds4_gpu_decode_keepalive(0);
     if (!ok) {
         g->valid = false;
         return false;
@@ -30624,6 +30628,7 @@ static int ds4_engine_open_internal(ds4_engine **out,
         }
         ds4_gpu_set_quality(e->quality);
         ds4_gpu_set_ssd_streaming(e->ssd_streaming);
+        ds4_gpu_set_boost(opt->boost);
         if (!ds4_engine_configure_streaming_auto_cache(e, opt->context_size)) {
             ds4_engine_close(e);
             *out = NULL;

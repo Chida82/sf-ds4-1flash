@@ -165,6 +165,8 @@ void ds4_gpu_set_ssd_streaming(bool enabled);
 int ds4_gpu_device_is_pre_m5_apple_silicon(void);
 int ds4_gpu_device_is_m5_apple_silicon(void);
 int ds4_gpu_set_decode_pipeline_fast_lookup(int enabled);
+void ds4_gpu_set_boost(bool enabled);
+void ds4_gpu_decode_keepalive(int active);
 /* Strict test oracle for the fixed decode mul_mv pipeline lookup cache. */
 int ds4_gpu_test_decode_pipeline_fast_lookup(void);
 /* Strict test oracle for the extended decode mul_mv_ext (nsg + nxpsg) cache. */

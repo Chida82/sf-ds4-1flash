@@ -147,6 +147,7 @@ typedef struct {
     bool quality;
     bool ssd_streaming;
     bool ssd_streaming_cold;
+    bool boost;   /* decode keep-alive and fanboost hint */
     bool inspect_only;
     /* Multi-GPU placement uses this to price per-layer KV storage. */
     /* Number of independently allocated session graphs/caches to reserve. */

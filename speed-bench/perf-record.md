@@ -42,6 +42,10 @@ figures are in the named section.
 | Decode route-prediction prefetch with a cheap guess (`170`: int8 router copy, one background core) | The guess alone costs decode 0.7% (CI below zero), more than a third of what the sustainable policy hides; the policy that would pay needs about 8 GB/s of wasted reads. | Route guess cost after 160 |
 | Re-warming the decode statics with `WILLNEED` at the end of a sweep (`200` S1) | On one drive the reload costs drive time wherever it is issued: synchronous, it moved the first token's wait into the sweep (ttft 10000 -8.8%, append +1500 -8.3%, CIs below zero); asynchronous, the 1.5-1.7 s of reads outlast the last layer and the first token still waits. | Static weights after a sweep |
 | Dual-drive prefill in upstream ds4 through its mmap path (`190` approach A: up warmed from the copy, GPU binds up from the copy's mapping) | Bitwise identical and the page-in waits vanish, but the routed `up` stage runs about 2x slower from the copy's mapping (cause not traced) and prefill loses 13-38% against original ds4. | Dual-drive port to upstream ds4 |
+| GPU keep-alive for the whole decode token (`220` S1: the TP keep-alive kernel, one threadgroup, 1 ms bursts back to back on its own queue) | During decode the GPU is already at its top clock and 100% active at Nominal, and at the same clock and watts as without it at Heavy: decode -1.6% at Nominal and -2.0%/-1.8% at Heavy (CIs below zero). The kernel only takes ALU time from the decode. Argodrive found the same for its continuous mode; its gain came from a keep-alive only while the CPU waits on reads. | Decode keep-alive after 210 |
+| CPU keep-alive during decode (`220` S2: one user-interactive thread spinning with `yield` for the whole token) | The decode thread already spins on the Super cluster at its top clock; the spinner lands there too and takes package power from the GPU: decode -0.4% at Nominal, -1.7%/-2.6% at Heavy (CIs below zero) with GPU 15.5 W against 16.5 W at the same clock. Argodrive's gain came from a cluster that was not at its top. | Decode keep-alive after 210 |
+| Lending the prefill reserve to the expert cache between sweeps (`230` S1: one slab of 767 slots allocated after a sweep, released before the next) | decode +0.6%/+2.3% (CIs touching zero), but the first token after an 8192 prefill went 753 -> 1208 ms (CI below zero): the 200 ms allocation sits at the end of the sweep, and the shrink drops 767 entries per sweep. A retry needs the allocation off the critical path and a slab that survives sweeps. | Expert cache growth after 225 |
+| Decode miss reads through an uncached descriptor (`240`, `F_NOCACHE` on a second fd for the pread pool) | Closed at its gate on `225`'s evidence, not run: the file cache serves 20-28% of today's decode miss reads at about half the drive's time, so the estimate is decode about -0.8% and appends worse. The memory it returns pays only if it becomes cache slots, and `230` S1, the lever that would take it, was dropped. A retry needs that consumer first. | Memory levers |
 | Judging a kernel from back-to-back single timeline runs | Thermal drift is larger than the effect: the same baseline read 29 and 39 ms per dispatch. Use the harness's sections mode. | Prefill routed experts after 80 |
 
 ## Situation 0 (2026-09-27, `main` at `a60b8ee`)
@@ -1031,6 +1035,243 @@ The gain is about twice the 25 us of wake per layer (about 2.3%); as with
 the layer's CPU work sooner. Folding the publish into the router kernel
 would save one one-thread dispatch per layer, below the harness's
 resolution, and would touch a kernel shared with prefill rows; not tried.
+
+## Decode keep-alive after 210 (2026-10-08, `220-decode-keepalive` S1)
+
+S1 runs `kernel_dsv4_tp_keepalive` (one threadgroup, ALU only) on its own
+queue for the whole of every streaming decode token, in 1 ms bursts back to
+back (duty 100; the burst is calibrated at start, about 22 iterations per us
+under decode). `DS4_METAL_V41_DECODE_KEEPALIVE=1`; bitwise with
+`make test-deepseek41-decode-switch` at duty 100, 50 and 25.
+
+Nominal, short runs from a cool machine: before every run the gate waited for
+thermal pressure Nominal and the GPU below 50 C (35-71 s), then ran one bench
+decode (frontier 2048, 256 tokens, the harness's streaming configuration),
+off and on alternating, 6 pairs. Medians over the decode window (mactop, 7
+samples per run); every run stayed Nominal and the tokens were identical:
+
+| Keep-alive | decode t/s | GPU MHz | GPU active | GPU W | CPU W | Performance cluster MHz | GPU max | fan rpm |
+|---|---|---|---|---|---|---|---|---|
+| off | 31.86 | 1620 | 100% | 47.4 | 7.8 | 2248 | 80 C | 1530 |
+| on | 31.20 | 1620 | 100% | 46.8 | 8.0 | 2347 | 80 C | 1495 |
+
+On/off per pair: 0.978 0.989 0.993 0.978 0.979 0.988, mean 0.984 (bootstrap
+95% 0.980..0.989). The idle share the proposal read from the `210` logs
+(80-87% active at Nominal) is the whole run's; inside the decode window the
+GPU has no gap a power state could close.
+
+| Step (B) against the previous | Invocations | Target metrics | Other | Verdict |
+|---|---|---|---|---|
+| S1 keep-alive for the whole decode token, duty 100, B only (`--b-env`) on one tree | 1 (12 pairs, 300 s preheat, thermal Heavy, 926-1034 MHz) | decode 2048 -2.0% (-2.7..-1.4), decode 8192 -1.8% (-2.4..-1.4) | GPU W median A 19.5, B 19.7; hit rates equal; bitwise | dropped |
+
+The duty sweep was not run: with the GPU 100% active, a lower duty can only
+lose less. CPU clusters inside the decode window, both modes alike: Super
+(6 cores, where the decode thread spins) 4.6 GHz, its top step, 95% active;
+Performance (12 cores) 2.2-2.3 GHz, 46% active (2.9 GHz seen elsewhere in
+the log). A CPU keep-alive (`220` S2) can only gain through the Performance
+cluster or the Metal driver's threads.
+
+S1b runs the same thread and kernel only while a decode token waits in
+`ds4_gpu_stream_expert_pread_pool_wait` for missing experts, in short bursts
+back to back (`DS4_METAL_V41_DECODE_KEEPALIVE_BURST_US`, default 200,
+calibrated from the fastest of the first three bursts). A 128-token decode at
+2048 waits 3.8 times and 2.5 ms per token (the `--cache-stats` line
+`decode keep-alive`), about 7% of the token. The same gate, 6 pairs per row.
+The first run of a gate session that follows other work reads slow (29.4-30.2
+t/s at 44 W) whatever the mode; it was always an `off` run, so a first pair
+that follows other work is left out below, and the gate now starts with a
+discarded warm-up run:
+
+| Burst, threadgroups | off t/s | on t/s | GPU W off/on | on/off mean (95% CI) | pairs |
+|---|---|---|---|---|---|
+| 200 us, 1 | 31.8 | 32.0 | 47.2 / 47.5 | +0.56% (+0.12..+0.98) | 5 |
+| 200 us, 8 | 31.8 | 32.0 | 47.3 / 47.6 | +0.55% (-0.75..+1.8) | 6 |
+| 100 us, 1 | 31.7 | 31.7 | 47.2 / 47.2 | +0.26% (-0.64..+1.5) | 5 |
+| 500 us, 1 | 31.7 | 31.9 | 47.4 / 47.3 | +0.38% (+0.28..+0.50) | 6 |
+
+| Step (B) against the previous | Invocations | Target metrics | Other | Verdict |
+|---|---|---|---|---|
+| S1b keep-alive only while the decode waits on miss reads, 200 us bursts, one threadgroup, B only (`--b-env`) on one tree, thermal Heavy | 1 (12 pairs, 300 s preheat, 961-1054 MHz) | decode 2048 -0.0% (-0.2..+0.5), decode 8192 +0.1% (-0.1..+0.2) | GPU W median A 19.1, B 19.4; hit rates equal; bitwise | neutral at Heavy; with the Nominal gain, kept (default on) |
+
+S2 is a CPU spinner: one thread at user-interactive QoS spins with
+`yield` for the whole decode token and blocks between tokens
+(`DS4_METAL_V41_DECODE_CPU_KEEPALIVE=1`, bitwise). The gate, after a
+discarded warm-up run (its first pair also followed a slow first `off` run
+and is left out):
+
+| Spinner | decode t/s | GPU W | CPU W | Super cluster | Performance cluster |
+|---|---|---|---|---|---|
+| off | 31.8 | 47.0 | 7.8 | 4604 MHz, 95% | 2241 MHz, 45% |
+| on | 31.7 | 47.3 | 12.9 | 4608 MHz, 100% | 1728 MHz, 42% |
+
+On/off over the last 5 pairs: 0.994 0.994 0.995 0.998 0.997 (-0.4%).
+
+| Step (B) against the previous | Invocations | Target metrics | Other | Verdict |
+|---|---|---|---|---|
+| S2 CPU spinner for the whole decode token, B only (`--b-env`) on one tree, thermal Heavy | 1 (12 pairs, 300 s preheat, 854-1026 MHz) | decode 2048 -1.7% (-3.4..-0.6), decode 8192 -2.6% (-4.1..-1.2) | GPU W median A 16.5, B 15.5; bitwise | dropped |
+
+Request-shaped sessions (task group 5). One server per configuration, the
+same 20 requests in the same order: prompts of 1.5-10K tokens, answers of
+238-1880 tokens (greedy, `ignore_eos`), idle gaps of 5-60 s, about 30
+minutes, each session started from a cool machine. "Fans" means the owner's
+`fanboost` daemon at 100% while a request runs: its lease is renewed every
+2 s and lapses 10 s after the request ends. Request time is ttft plus the
+answer's decode; the changes are paired by request, with a bootstrap 95% CI
+over the 20 pairs:
+
+| Configuration | to Heavy | Nominal / Moderate / Heavy s in requests | decode median | ttft median |
+|---|---|---|---|---|
+| base | 86 s | 79 / 318 / 540 | 26.70 | 24.1 s |
+| fans | never | 758 / 142 / 0 | 27.60 | 24.2 s |
+| keep-alive (S1b) | 104 s | 106 / 341 / 499 | 26.57 | 24.5 s |
+| keep-alive and fans | never | 771 / 136 / 0 | 27.70 | 23.6 s |
+
+| Against | Configuration | request time | decode | ttft |
+|---|---|---|---|---|
+| base | fans | +4.7% (+2.5..+6.9) | +3.9% (+2.6..+5.2) | +5.1% (+1.2..+8.9) |
+| base | keep-alive | -1.4% (-3.2..+0.3) | -0.3% (-0.9..+0.2) | -2.4% (-5.5..+0.4) |
+| base | keep-alive and fans | +3.8% (+1.3..+6.4) | +4.1% (+2.8..+5.5) | +3.0% (-1.1..+7.1) |
+| fans | keep-alive and fans | -0.8% (-2.5..+0.4) | +0.2% (+0.0..+0.4) | -1.9% (-4.6..+0.2) |
+
+Without fans the machine reaches Heavy inside the first request and stays
+between Moderate and Heavy. With them it never reaches Heavy. The keep-alive
+is idle during prefill by construction, so its ttft rows are the spread
+between sessions (one session per configuration), which bounds what a single
+session can resolve. Its decode effect under fans, +0.2%, matches the
+Nominal gate. `--boost` turns on both: the fan hint is sent from
+`ds4_gpu_begin_commands` at most every 2 s while the GPU has work. During a
+10000-token prefill and 64-token decode the lease was never older than 2 s.
+
+| Step (B) against the previous | Invocations | Target metrics | Other | Verdict |
+|---|---|---|---|---|
+| `220` default (no `--boost`, both levers off) against `main` (`ac350d8`) | 1 (20 pairs, `decode,append`, guards once, thermal Heavy, 935-1056 MHz) | decode 2048 +0.1% (-0.3..+0.5), decode 8192 +0.2% (-0.9..+0.7) | append +300 +0.5% (-0.1..+0.6), append +1500 +2.8% (-4.5..+13.4), prefill 5000 +0.4%; guards once: ttft 16896 +0.8%, decode 2500 +1.1%; GPU W A 20.8, B 20.4; bitwise | neutral, as expected: the default path is unchanged |
+
+## Memory levers (2026-10-09, `225-mac-memory-evidence`)
+
+Measurement only: the limits, a memory timeline of one run, the source of
+the decode miss reads, and a curve of misses against cache size from a
+replay of the selected expert ids.
+
+**Limits.** `iogpu.wired_limit_mb` is 0 (system default); Metal recommends
+107.52 GiB; `vm.user_wire_limit` is 108.8 GiB. Without a cache flag the
+engine prints a 76.62 GiB cache target: the binding term is
+`floor_GiB(7/8 x 107.52 - 8.07 GiB of context buffers) = 86 GiB` (model
+plus cache), less 9.37 GiB of non-routed weights; 86% of the recommended size
+(92.5 GiB) does not bind. Of the 76.62 GiB, 7.12 go to the prefill reserve
+and 69.50 to 7498 dynamic slots, so the harness's `82GB` (74.88 GiB, 8078
+slots) is above the automatic budget and about 4 GiB under the cap. The static
+weights are locked only when they fit the same 86 GiB beside the cache
+(9.37 + 82 GiB do not: "remain pageable to preserve runtime headroom"); the
+automatic budget locks them.
+
+**Timeline**, one bench run at the harness configuration (frontiers 5000 and
+10000, 256 tokens each), `vm_stat` once a second, `footprint` every 3 s,
+GiB:
+
+| Phase | s | free | file-backed | wired | compressor occupied / stored | compressed in phase | swapouts | bench footprint | available (min) |
+|---|---|---|---|---|---|---|---|---|---|
+| prefill 5000 | 43 | 1.2 | 23.0 | 88.8 | 3.9 / 8.6 | 3.8 | 0 | 90 (peak) | 18.1 |
+| decode 5000 | 9 | 1.1 | 23.5 | 88.8 | 3.8 / 8.5 | 0 | 0 | 83 | 19.0 |
+| prefill 10000 | 43 | 1.2 | 24.3 | 88.8 | 4.6 / 9.9 | 10.7 | 0 | 90 | 19.4 |
+| decode 10000 | 9 | 1.1 | 25.2 | 88.8 | 4.3 / 9.2 | 0 | 0 | 83 | 25.3 |
+| after exit | | 74.9 | 34.6 | 3.9 | 3.8 / 8.7 | | | | 64.4 |
+
+- **The engine's pages.** The bench owns no compressed or swapped page: its 82 GB are dirty `IOAccelerator` memory with 0.85 GB reclaimable. The compression during each prefill is other processes' memory, pushed out by the 7 GiB of explicit prefill buffers.
+- **The prefill-only context buffers (about 7.7 GiB) stay resident through decode.** The footprint is 83 GB in decode against 90 at the prefill peak.
+- **The real headroom is the file cache.** Free memory is about 1 GiB in every phase, and the file cache grows over the run.
+
+**Miss source.** A scratch build of `main` logged every decode read (layer,
+bytes, ms). One read is one expert, 9.5 MiB, median 0.70 ms:
+
+| Run | reads | under 14 GB/s | 14-20 GB/s | over 20 GB/s (file cache) |
+|---|---|---|---|---|
+| `decode` 2048 + 8192, 256 tokens each | 2002 | 40% | 40% | 20% |
+| `append` 5000/5300/6800 | 5076 | 38% | 34% | 28% |
+
+**Miss curve.** The same build dumped the selected ids of every decode layer
+and a cache snapshot (entries, route hotness, last use) at the start of each
+decode segment. A CPU replay of the victim policy matches the measured hit
+rate at 8078 slots exactly (decode 0.9821, append 0.9817, over 122868 and
+300468 lookups; the harness's 0.90 also counts the prefill tails); extra
+slots start empty:
+
+| Slots | decode miss layers / token | append miss layers / token |
+|---|---|---|
+| 8078 | 3.91 | 4.05 |
+| 8463 (+385) | 3.33 | 3.52 |
+| 8848 (+770) | 3.07 | 3.05 |
+| 9128 (+1050) | 3.07 | 2.81 |
+| 9678 (+1600) | 3.07 | 2.45 |
+
+Decode saturates at +770: what is left are first-time misses that no cache
+size prevents.
+
+**Ranking.** The expected decode gain is the miss-layer reduction divided by
+the miss layers per token, times the miss share of a token (about 7%):
+
+| Lever | Slots | Memory | decode | append | Note |
+|---|---|---|---|---|---|
+| `230` S1, the prefill reserve lent to the cache between sweeps | +770 | none beyond today's prefill peak | +1.5% | +1.7% | first |
+| An explicit flag at the cap (`86GB` against `82GB`) | +420 | 4 GiB of file cache | +1.0% | +0.9% | no code, but it changes the fixed measurement configuration; the owner's call |
+| `230` S2, the prefill-only context buffers lent too (with S1) | +1600 in total | none beyond the peak | +1.5% (saturated) | +2.8% | only after S1 is kept; pays on appends and long contexts |
+| `iogpu.wired_limit_mb` | | | | | does not bind with an explicit flag. For the automatic budget to reach `82GB` + 770 slots, the recommended size would need about 122 GiB (`iogpu.wired_limit_mb` about 125000), leaving about 6 GiB for macOS on a box with 1 GiB free today. Not recommended |
+| `240`, decode misses uncached | | returns the file cache the misses fill | about -0.8% | worse | the file cache serves 20-28% of today's miss reads at about half the drive's time. It pays only if the memory it returns becomes slots, so it is ranked last, after `230` |
+
+## Expert cache growth after 225 (2026-10-09, `230-expert-cache-growth`)
+
+The gate reads `225` (Memory levers):
+- **S1 (lent reserve) is sized to the full 770 slots.** The box never goes above today's prefill peak (90 GB footprint, about 18 GiB available, no swapouts), and the curve gives decode 3.91 -> 3.07 miss layers per token, append 4.05 -> 3.05.
+- **S2 (prefill-only context buffers) is admissible.** The buffers stay resident, not compressed, through decode, so lending them frees real memory; it still waits for S1 to be kept.
+
+Hotness decay, screened on the `225` replay at 8078 slots before any run
+(the snapshots carry hotness built at 16, so a longer run may drift):
+
+| Decay interval (tokens) | 4 | 8 | 16 | 32 | 64 | 128 | 256 | never |
+|---|---|---|---|---|---|---|---|---|
+| decode miss layers / token | 3.99 | 3.99 | 3.91 | 3.77 | 3.62 | 3.63 | 3.66 | 3.66 |
+| append miss layers / token | 4.07 | 4.07 | 4.05 | 3.99 | 3.91 | 3.84 | 3.68 | 4.41 |
+
+The A/B therefore runs 64 and 128 against 16, instead of 8 and 32: 8 is worse
+than 16 in the replay, and 32 sits too close to 16 for the harness to resolve.
+`DS4_METAL_STREAMING_EXPERT_HOTNESS_DECAY_TOKENS` overrides the interval per
+call. The decode-switch test is bitwise with it set to 16 and with it set to
+1 (decay every token).
+
+| Step (B) against the previous | Invocations | Target metrics | Other | Verdict |
+|---|---|---|---|---|
+| Hotness decay 128 against 16, B only (`--b-env`), `--cache-policy-change` | 1 (10 pairs, `decode,append`, thermal Heavy, 982-1018 MHz) | decode 2048 +0.6% (+0.4..+0.7), decode 8192 -0.5% (-1.0..+0.1) | first token after the 8192 prefill 1175 -> 378 ms (+128..+290%), prefill 5000 +1.1% (+0.3..+2.1), append +300 +0.1%, append +1500 +1.5%; decode hit rate 0.900 -> 0.913; reads per decode run 10.37 -> 9.56 GiB; bitwise | inconclusive on decode 8192: to repeat once, decode only, with a longer budget |
+| Repeat, decode only | 1 (20 pairs, 300 s preheat, thermal Heavy, 951-1052 MHz) | decode 2048 +0.5% (+0.1..+0.7), decode 8192 -0.8% (-1.0..-0.5) | first token after the 8192 prefill 1290 -> 342 ms (+212..+292%); decode hit rate 0.900 -> 0.913; bitwise | not kept as the default: decode 8192 below zero in both runs. The override stays as a tool |
+
+The trade is real: at an 8K context the first token comes about 0.95 s
+sooner, while a 1000-token answer decodes about 0.3 s slower. The keep rule
+judges decode alone, so the default stays 16; changing it is the owner's call.
+
+The 64-against-16 run was refused by the harness preflight (GPU at 61 C
+after the bitwise test) and was not repeated: in the replay 64 and 128 are
+equal on decode, and 128 is better on append. The first-token gain comes
+from experts that stay hot across the prefill sweep.
+
+S1 lends the prefill reserve to the cache between sweeps:
+- after a sweep frees its explicit buffers, one slab of 767 slots (7.12 GiB) is allocated, registered in the residency set, and its slots pushed on the free list, so decode misses fill it before evicting;
+- before the next sweep, the engine drains, drops every entry in that slab, removes it from the residency set and releases it.
+
+Measured with `DS4_METAL_CB_TIMES`:
+- the allocation takes 190-215 ms with one slab and 272-286 ms with two;
+- the release takes 10 ms with one slab and 39 ms with two.
+
+All S1 tests passed: `make test`, `test-metal-ssd-experts`, `test-metal-command-memory`, `--stream-decode-queue-parity`, and a two-sweep bench run with 2 grows, 1 shrink and 0 fallbacks.
+
+| Step (B) against the previous | Invocations | Target metrics | Other | Verdict |
+|---|---|---|---|---|
+| S1 one lent slab of 767 slots between sweeps, against `8d58bc5` | 1 (20 pairs, `decode,append`, guards once, thermal Heavy, 933-1115 MHz) | decode 2048 +0.6% (+0.0..+1.8), decode 8192 +2.3% (-0.1..+3.0) | first token after the 8192 prefill 753 -> 1208 ms (-47.5..-15.0%), first token 2048 132 -> 222 ms (-42.6..+7.2%), append +300 +2.0% (+1.4..+2.3), append +1500 -10.8% (-21.2..+3.0), prefill 5000 +0.7%; guards once: ttft 16896 +0.1%, decode 2500 +1.1%; decode hit rate 0.900 -> 0.903; GPU W A 21.0, B 21.7; bitwise | dropped, code removed |
+
+The decode gain is about half of what the replay predicts (+1.5%). The
+first token pays for the allocation at the end of the sweep (about 200 ms)
+and, after a long prefill, for the 767 entries the shrink drops. The tail of
+a 1500-token append mixes both costs. Over 256 tokens the decode hit rate
+moves only 0.3 points, because most of the lent slots are still empty when
+the next sweep takes them back.
+
 
 ## Adding a row
 

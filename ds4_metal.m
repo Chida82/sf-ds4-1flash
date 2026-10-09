@@ -16,8 +16,10 @@
 #include <time.h>
 #include <pthread.h>
 #include <unistd.h>
+#include <notify.h>
 #include <sys/mman.h>
 #include <sys/sysctl.h>
+#include <sys/time.h>
 #include <mach/mach.h>
 #include <mach-o/dyld.h>
 #include <objc/runtime.h>
@@ -1302,6 +1304,13 @@ static const ds4_gpu_tensor *g_readback_box_tensor;
 static uint64_t g_readback_box_cb_seq;
 static uint32_t g_readback_box_seq, g_readback_box_n;
 static uint64_t g_readback_box_hits, g_readback_box_fallbacks;
+/* --boost: the fan hint (ds4_gpu_fan_hint) and the single-box decode
+ * keep-alive, which a decode token arms and the pread pool wait runs while
+ * that token's missing experts are read. */
+static int g_boost;
+static volatile int g_decode_keepalive_armed;
+static uint64_t g_decode_keepalive_tokens, g_decode_keepalive_waits;
+static double g_decode_keepalive_wait_ms;
 
 static int ds4_gpu_wait_command_buffer(id<MTLCommandBuffer> cb, const char *label) {
     /* Waking from waitUntilCompleted takes about 70 us, paid 40 times a token
@@ -4402,6 +4411,12 @@ void ds4_gpu_print_memory_report(const char *label) {
             fprintf(stderr, "ds4:   selected-id mailbox hits=%llu fallbacks=%llu\n",
                     (unsigned long long)g_readback_box_hits,
                     (unsigned long long)g_readback_box_fallbacks);
+        }
+        if (g_decode_keepalive_tokens != 0) {
+            fprintf(stderr, "ds4:   decode keep-alive tokens=%llu read waits=%llu wait=%.1f ms\n",
+                    (unsigned long long)g_decode_keepalive_tokens,
+                    (unsigned long long)g_decode_keepalive_waits,
+                    g_decode_keepalive_wait_ms);
         }
         if (g_stream_expert_cache_mlock_bytes != 0 ||
             g_stream_expert_cache_mlock_failures != 0) {
@@ -8975,6 +8990,22 @@ int ds4_gpu_pack_slot_rows_f32_tensor(
     return 1;
 }
 
+/* --boost also asks the owner's fanboost daemon for full fans while the GPU
+ * has work: its lease is the mtime of /tmp/fanboost.lease and lasts 10 s, so
+ * a touch every 2 s holds it and an idle engine lets it lapse. Without the
+ * daemon this only touches the file. */
+static void ds4_gpu_fan_hint(double now_ms) {
+    static double last_ms;
+    if (!g_boost || now_ms - last_ms < 2000.0) return;
+    last_ms = now_ms;
+    const int fd = open("/tmp/fanboost.lease", O_WRONLY | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0644);
+    if (fd >= 0) {
+        futimes(fd, NULL);
+        close(fd);
+    }
+    notify_post("com.chida82.fanboost");
+}
+
 int ds4_gpu_begin_commands(void) {
     if (!g_initialized && !ds4_gpu_init()) return 0;
     /* A failed concurrent FFN must never affect the next command batch. */
@@ -8987,6 +9018,7 @@ int ds4_gpu_begin_commands(void) {
         ds4_gpu_device_is_pre_m5_apple_silicon() &&
         getenv("DS4_METAL_DISABLE_PRE_M5_HEAD_RMS_ROPE_PIPELINE_STATIC") == NULL;
     g_batch_cb_created_ms = ds4_gpu_now_ms();
+    ds4_gpu_fan_hint(g_batch_cb_created_ms);
     g_batch_cb = ds4_gpu_new_command_buffer();
     g_batch_has_work = NO;
     if (g_batch_cb) ds4_gpu_stream_expert_cache_note_batch_created();
@@ -9954,9 +9986,18 @@ static int g_tp_keepalive_running;
  * there, so the keep-alive is a pure parasite (~2.3ms per 5-row block
  * measured against the single-machine verify). */
 static volatile int g_tp_keepalive_paused;
+static pthread_mutex_t g_tp_keepalive_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t g_tp_keepalive_cond = PTHREAD_COND_INITIALIZER;
+/* Nonzero for the single-box decode keep-alive: bursts are calibrated to this
+ * length, so the thread stops soon after a read wait ends. Zero is TP's
+ * fixed iteration count. */
+static uint32_t g_tp_keepalive_burst_us;
 
 void ds4_gpu_tp_keepalive_pause(int paused) {
+    pthread_mutex_lock(&g_tp_keepalive_mutex);
     g_tp_keepalive_paused = paused;
+    pthread_cond_broadcast(&g_tp_keepalive_cond);
+    pthread_mutex_unlock(&g_tp_keepalive_mutex);
 }
 
 void ds4_gpu_tp_set_session_batch_mode(int enabled) {
@@ -10091,6 +10132,7 @@ static void *ds4_gpu_tp_keepalive_thread(void *arg) {
      * TP split-resident Flash runs show 1.2M is a small Q4/Q2 decode win over
      * 800k, while two threadgroups waste work. */
     uint32_t iters = 1200000;
+    if (g_tp_keepalive_burst_us) iters = 4000;   /* about 0.2 ms, to calibrate */
     const char *env = getenv("DS4_TP_KEEPALIVE_ITERS");
     if (env) iters = (uint32_t)atoi(env);
     /* One ALU-only threadgroup keeps the GPU from power-gating but does
@@ -10104,9 +10146,14 @@ static void *ds4_gpu_tp_keepalive_thread(void *arg) {
         fprintf(stderr, "ds4: TP keep-alive pipeline missing\n");
         return NULL;
     }
+    uint32_t calibrating = g_tp_keepalive_burst_us ? 3u : 0u;
+    double rate = 0.0;   /* iterations per us, best burst */
     while (!g_tp_shutdown) {
         if (g_tp_keepalive_paused) {
-            usleep(200);
+            pthread_mutex_lock(&g_tp_keepalive_mutex);
+            while (g_tp_keepalive_paused && !g_tp_shutdown)
+                pthread_cond_wait(&g_tp_keepalive_cond, &g_tp_keepalive_mutex);
+            pthread_mutex_unlock(&g_tp_keepalive_mutex);
             continue;
         }
         @autoreleasepool {
@@ -10120,9 +10167,59 @@ static void *ds4_gpu_tp_keepalive_thread(void *arg) {
             [enc endEncoding];
             [cb commit];
             [cb waitUntilCompleted];
+            /* The fastest of the first three bursts gives the kernel's rate
+             * (a new queue's first one starts late); later bursts last
+             * g_tp_keepalive_burst_us at that rate. */
+            const double gpu_us = (cb.GPUEndTime - cb.GPUStartTime) * 1e6;
+            if (calibrating && gpu_us > 0.0 && (double)iters / gpu_us > rate)
+                rate = (double)iters / gpu_us;
+            if (calibrating && --calibrating == 0) {
+                const double burst = rate * g_tp_keepalive_burst_us;
+                iters = burst < 1.0 ? 1u : (uint32_t)burst;
+                if (getenv("DS4_METAL_CB_TIMES"))
+                    fprintf(stderr, "ds4: decode keep-alive bursts of %u us: %u iterations\n",
+                            g_tp_keepalive_burst_us, iters);
+            }
         }
     }
     return NULL;
+}
+
+void ds4_gpu_set_boost(bool enabled) {
+    g_boost = enabled ? 1 : 0;
+}
+
+/* Single-box decode keep-alive (--boost): the TP keep-alive thread, started
+ * paused at the first decode token. A decode token arms it, and the pread
+ * pool wait runs it while the token's missing experts are read, when the GPU
+ * has nothing queued. It pays only on a cool machine, where the GPU would
+ * otherwise drop its clock in those gaps. DS4_METAL_V41_DECODE_KEEPALIVE=0|1
+ * overrides --boost (read per token); _BURST_US sets the burst, default 200.
+ * It writes only its own buffer. */
+void ds4_gpu_decode_keepalive(int active) {
+    const char *env = active ? getenv("DS4_METAL_V41_DECODE_KEEPALIVE") : NULL;
+    active = active && (env ? strcmp(env, "0") != 0 : g_boost);
+    if (active && !g_tp_keepalive_running) {
+        g_tp_keepalive_paused = 1;
+        g_tp_keepalive_burst_us = (uint32_t)ds4_gpu_env_u64("DS4_METAL_V41_DECODE_KEEPALIVE_BURST_US",
+                                                           200u, 10u, 5000u);
+        g_tp_keepalive_queue = [g_device newCommandQueue];
+        g_tp_keepalive_buffer = [g_device newBufferWithLength:
+                                    (NSUInteger)ds4_gpu_tp_keepalive_tgs_from_env() * 256u * sizeof(float)
+                                                      options:MTLResourceStorageModeShared];
+        if (g_tp_keepalive_queue && g_tp_keepalive_buffer &&
+            pthread_create(&g_tp_keepalive_thread, NULL, ds4_gpu_tp_keepalive_thread, NULL) == 0) {
+            g_tp_keepalive_running = 1;
+        } else {
+            fprintf(stderr, "ds4: decode keep-alive setup failed (continuing without)\n");
+            g_tp_keepalive_queue = nil;
+            g_tp_keepalive_buffer = nil;
+            g_tp_keepalive_burst_us = 0;
+            return;
+        }
+    }
+    g_decode_keepalive_armed = active && g_tp_keepalive_running;
+    if (g_decode_keepalive_armed) g_decode_keepalive_tokens++;
 }
 
 static void *ds4_gpu_tp_service_thread(void *arg) {
@@ -10468,6 +10565,7 @@ void ds4_gpu_tp_shutdown(void) {
     pthread_join(g_tp_thread, NULL);
     g_tp_thread_running = 0;
     if (g_tp_keepalive_running) {
+        ds4_gpu_tp_keepalive_pause(g_tp_keepalive_paused);   /* wakes a paused one */
         pthread_join(g_tp_keepalive_thread, NULL);
         g_tp_keepalive_running = 0;
         g_tp_keepalive_queue = nil;
@@ -11111,6 +11209,18 @@ int ds4_gpu_synchronize(void) {
 void ds4_gpu_cleanup(void) {
     if (!g_initialized) return;
     ds4_gpu_queue_keepalive_stop_thread();
+    if (g_tp_keepalive_running && !g_tp_thread_running) {
+        /* The single-box decode keep-alive; TP joins its own at shutdown. */
+        g_tp_shutdown = 1;
+        ds4_gpu_tp_keepalive_pause(1);   /* wakes it to see the shutdown */
+        pthread_join(g_tp_keepalive_thread, NULL);
+        g_tp_shutdown = 0;
+        g_tp_keepalive_running = 0;
+        g_tp_keepalive_burst_us = 0;
+        g_decode_keepalive_armed = 0;
+        g_tp_keepalive_queue = nil;
+        g_tp_keepalive_buffer = nil;
+    }
 
     @autoreleasepool {
         ds4_gpu_decode_pipeline_fast_cache_reset();
@@ -12698,9 +12808,18 @@ static int ds4_gpu_stream_expert_pread_pool_wait(void) {
     if (!g_stream_expert_pread_pool_initialized) return 0;
 
     pthread_mutex_lock(&g_stream_expert_pread_pool_mutex);
+    const bool keepalive = g_decode_keepalive_armed &&
+        g_stream_expert_pread_pool_remaining_workers != 0;
+    const double keepalive_t0 = keepalive ? ds4_gpu_now_ms() : 0.0;
+    if (keepalive) ds4_gpu_tp_keepalive_pause(0);
     while (g_stream_expert_pread_pool_remaining_workers != 0) {
         pthread_cond_wait(&g_stream_expert_pread_pool_done_cond,
                           &g_stream_expert_pread_pool_mutex);
+    }
+    if (keepalive) {
+        ds4_gpu_tp_keepalive_pause(1);
+        g_decode_keepalive_waits++;
+        g_decode_keepalive_wait_ms += ds4_gpu_now_ms() - keepalive_t0;
     }
     if (g_stream_expert_pread_pool_stat_pending) {
         const ds4_gpu_stream_expert_pread_task *st =
@@ -13666,12 +13785,14 @@ static void ds4_gpu_stream_expert_cache_maybe_decay_route_hotness(void) {
             g_stream_expert_cache_decode_tokens;
         return;
     }
+    /* Read per call so a same-engine A/B can change it between runs. */
+    const uint64_t interval = ds4_gpu_env_u64(
+            "DS4_METAL_STREAMING_EXPERT_HOTNESS_DECAY_TOKENS",
+            DS4_METAL_STREAM_EXPERT_HOTNESS_DECAY_TOKENS, 1u, 1u << 20);
     while (g_stream_expert_cache_decode_tokens -
-           g_stream_expert_cache_hotness_decay_token >=
-           DS4_METAL_STREAM_EXPERT_HOTNESS_DECAY_TOKENS) {
+           g_stream_expert_cache_hotness_decay_token >= interval) {
         ds4_gpu_stream_expert_cache_decay_route_hotness();
-        g_stream_expert_cache_hotness_decay_token +=
-            DS4_METAL_STREAM_EXPERT_HOTNESS_DECAY_TOKENS;
+        g_stream_expert_cache_hotness_decay_token += interval;
     }
 }
 

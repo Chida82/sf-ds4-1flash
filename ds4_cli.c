@@ -1981,6 +1981,8 @@ static cli_config parse_options(int argc, char **argv) {
             c.engine.ssd_streaming = true;
         } else if (!strcmp(arg, "--ssd-streaming-cold")) {
             c.engine.ssd_streaming_cold = true;
+        } else if (!strcmp(arg, "--boost")) {
+            c.engine.boost = true;
         } else if (!strcmp(arg, "--ssd-streaming-cache-experts")) {
             uint32_t experts = 0;
             uint64_t bytes = 0;

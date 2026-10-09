@@ -170,6 +170,8 @@ static void print_model_runtime(FILE *fp, const help_colors *c,
     opt(fp, c, "--power N", "GPU duty-cycle target, 1..100. Default: 100");
     opt(fp, c, "--ssd-streaming", "Metal: stream model weights from SSD instead of full residency. Needed on a 128 GB Mac: the V4.1 Q2 GGUF is 340.6 GiB.");
     opt(fp, c, "--ssd-streaming-cold", "SSD streaming: skip default popularity-based expert-cache preload.");
+    if (tool != DS4_HELP_EVAL)
+        opt(fp, c, "--boost", "Faster interactive use: asks the fanboost daemon for full fans while the GPU works, and keeps the GPU busy while a decode token reads missing experts (SSD streaming). Requests about 4-5% faster in a typical session; same output.");
     opt(fp, c, "--ssd-streaming-cache-experts N|NGB", "SSD streaming cache target. N requests dynamic expert slots; NGB also reserves two full prefill layers. Either may be reduced to fit the model, graph, context, and backend working set.");
     opt(fp, c, "--ssd-streaming-preload-experts N", "SSD streaming: upfront popularity preload count. Auto-seeded by default.");
     opt(fp, c, "--simulate-used-memory NGB", "Diagnostic: lock N GiB before model load to simulate a smaller-memory machine.");

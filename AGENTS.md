@@ -144,6 +144,25 @@ decode. The same change measured and dropped three other ideas:
 The figures are in `speed-bench/perf-record.md`, Decode misses after 140.
 Prefetch with a cheaper guess is change `170`.
 
+`--boost` (`220-decode-keepalive`, off by default) does two things:
+- **Fan hint.** It renews the owner's `fanboost` lease (`/tmp/fanboost.lease`
+  plus `notify_post("com.chida82.fanboost")`) from `ds4_gpu_begin_commands`,
+  at most every 2 s, so the fans run at 100% while the GPU has work. In
+  request-shaped sessions this kept the machine out of Heavy: requests were
+  4.7% faster.
+- **GPU keep-alive.** It runs the TP keep-alive kernel on its own queue only
+  while a decode token waits in `ds4_gpu_stream_expert_pread_pool_wait`, in
+  200 us bursts. This measured +0.5% decode at thermal pressure Nominal and 0
+  at Heavy. `DS4_METAL_V41_DECODE_KEEPALIVE=0|1` overrides the flag per
+  token, and `_BURST_US` sets the burst.
+
+Harness A/B runs never pass `--boost`: the fans of one run would cool the
+next.
+
+The same change measured and dropped a keep-alive for the whole decode token
+and a CPU spinner; the figures are in `speed-bench/perf-record.md`, Decode
+keep-alive after 210.
+
 Since `70-decode-glue-fusions`, a decode token issues fewer, larger kernels
 per layer, and its Engram rows are read on workers while the first layers
 encode. The fusions are:
@@ -176,6 +195,12 @@ identical (`make test-deepseek41-decode-switch SWITCH=<env>`):
   to a shared box the CPU polls instead of the batch's status,
   `210-decode-router-mailbox`; it rides on the split, so the split switch
   turns it off too).
+
+`DS4_METAL_STREAMING_EXPERT_HOTNESS_DECAY_TOKENS=N` (`230`) sets the
+expert cache's hotness decay interval, 16 decode tokens by default; output
+bitwise identical. 128 measured decode 2048 +0.5%, decode 8192 -0.8%, and the
+first token after an 8192 prefill 1290 -> 342 ms (`speed-bench/perf-record.md`,
+Expert cache growth after 225).
 
 The alternative to streaming is not more RAM in one box but **two 128 GB Macs
 with TP/RDMA** (`docs/DISTRIBUTED.md`), which holds about 81 GiB of main weights

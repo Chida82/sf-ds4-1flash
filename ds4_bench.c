@@ -56,6 +56,7 @@ typedef struct {
     bool quality;
     bool ssd_streaming;
     bool ssd_streaming_cold;
+    bool boost;
     bool show_output;
     bool cache_stats;
     bool teacher_forced_decode;
@@ -305,6 +306,8 @@ static bench_config parse_options(int argc, char **argv) {
             c.ssd_streaming = true;
         } else if (!strcmp(arg, "--ssd-streaming-cold")) {
             c.ssd_streaming_cold = true;
+        } else if (!strcmp(arg, "--boost")) {
+            c.boost = true;
         } else if (!strcmp(arg, "--ssd-streaming-cache-experts")) {
             uint32_t experts = 0;
             uint64_t bytes = 0;
@@ -614,6 +617,7 @@ int main(int argc, char **argv) {
         .quality = cfg.quality,
         .ssd_streaming = cfg.ssd_streaming,
         .ssd_streaming_cold = cfg.ssd_streaming_cold,
+        .boost = cfg.boost,
         .expert_profile_path = cfg.expert_profile_path,
         .distributed = cfg.dist,
         .tp = cfg.tp,

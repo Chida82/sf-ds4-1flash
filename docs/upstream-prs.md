@@ -26,6 +26,8 @@ that takes an idea writes its own code and records the source here.
 | Fork | Commit | Subject | Verdict | Reason |
 |---|---|---|---|---|
 | `argonautlabsai/ds4-argodrive` | `9ad4a61` | `DS4_ARGODRIVE_FLAG_READBACK`: selected ids published to a polled shared box | idea -> `210-decode-router-mailbox` | the box is seen about 20 us after the router batch's GPU end, against 45-48 us for its status; kept with `132`'s split, since the store is published by the command buffer's end |
+| `argonautlabsai/ds4-argodrive` | `8d992cd` | `DS4_ARGODRIVE_GAP_KEEPALIVE`: GPU keep-alive kernel while the pread pool is waited on (mode 1) | idea -> `220-decode-keepalive`, behind `--boost` | +0.5% decode at Nominal, 0 at Heavy; the whole-token variant lost 1.6-2.0% |
+| `argonautlabsai/ds4-argodrive` | `8d992cd` | `DS4_ARGODRIVE_CPU_KEEPALIVE`: user-interactive busy CPU thread | rejected (`220` S2) | the decode thread already spins on the Super cluster at its top clock; the spinner took GPU power: -0.4% Nominal, -1.7%/-2.6% Heavy |
 
 ## Finding what changed
 

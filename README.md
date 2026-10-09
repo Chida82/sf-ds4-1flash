@@ -47,8 +47,14 @@ without changing the output" below).
 > absolute numbers.
 
 On a 128 GB Mac this model always runs with `--ssd-streaming` (see
-`AGENTS.md`), so every figure here is a streaming figure, with the expert
-cache fixed at `--ssd-streaming-cache-experts 82GB` (74.88 GiB dynamic).
+`AGENTS.md`), so every figure here is a streaming figure.
+
+> **Expert cache: `--ssd-streaming-cache-experts 82GB`** (74.88 GiB dynamic,
+> 8078 slots) for every figure in this README unless a section says
+> otherwise. It is the fixed measurement configuration and the value for
+> normal use. Without the flag the engine picks less (76.62 GiB in total,
+> 7498 slots at `--ctx 32768`). The ceiling with every lever on is the
+> separate [max_performance_90](#max-performance-on-one-mac) test.
 
 **Against ds4**, same GGUF, same flags, upstream's own bench:
 
@@ -135,8 +141,8 @@ enclosures and links will give different figures.
   board, so put that cache on the replaceable drive with `--kv-disk-dir`. It
   costs about 2 ms per checkpoint, about 0.01% of a request.
 
-Measured on the tree of 2026-10-06 with `speed-bench/ab_bench.py`, internal
-SSD only against the same build with the copy, 2-4 invocations pooled per
+Measured on the tree of 2026-10-06 with `speed-bench/ab_bench.py`, expert
+cache **`82GB`**, internal SSD only against the same build with the copy, 2-4 invocations pooled per
 shape. The times are one invocation's medians; the gain is the pooled
 median.
 
@@ -185,6 +191,51 @@ written in one continuous burst, while its fast write cache is full
 never gets there; copying the 341 GiB GGUF does. The measurements are in
 [speed-bench/perf-record.md](speed-bench/perf-record.md) (Dual-drive prefill
 after 132, KV cache placement after 150).
+
+## Max performance on one Mac
+
+`max_performance_90` is a test run from time to time to see the most one Mac
+gets with every lever on at once, against the `82GB` figures above:
+- the expert cache at `--ssd-streaming-cache-experts 90GB`, with a 256K
+  context allocated;
+- Metal's working-set limit raised so that cache fits:
+  `sudo sysctl iogpu.wired_limit_mb=117500`;
+- the copy on the second drive (`DS4_METAL_PREFILL_REPLICA`);
+- `--boost`: full fans through the `fanboost` daemon (it must be running) and
+  the GPU keep-alive during decode miss reads.
+
+It is not a step of the A/B harness and changes no default: normal use and
+every measurement stay at `82GB` with the system limit. Start it on a cool
+machine, with nothing else running.
+
+```sh
+sudo sysctl iogpu.wired_limit_mb=117500
+DS4_METAL_PREFILL_REPLICA=/Volumes/<drive>/sf-ds4-1flash/DeepSeek-V4.1-Flash-Q2.gguf \
+  ./sf-ds4-1flash-bench -m deepseek-v4.1-flash.gguf \
+  --prompt-file speed-bench/promessi_sposi.txt \
+  --ssd-streaming --ssd-streaming-cache-experts 90GB --boost \
+  --ctx-start 2048 --ctx-max 32768 --step-mul 2 --gen-tokens 128 \
+  --ctx-alloc 262144 --csv max_performance_90.csv
+sudo sysctl iogpu.wired_limit_mb=0    # back to the default; a reboot does it too
+```
+
+Why these values:
+- **The cap.** The engine caps an explicit cache at 7/8 of Metal's recommended
+  working set less the context buffers. With the default limit (107.52 GiB on
+  this machine) that is 86 GiB at a 32K context and 83 GiB at 256K, so `90GB`
+  would be cut. With the limit at 117500 MiB, 90 GiB fits beside the 10.38 GiB
+  of buffers a 256K context needs. If the log still says `capped to`, the
+  limit did not take.
+- **Memory left to macOS.** The cache, the context buffers and the 9.37 GiB of
+  static weights leave about 18 GiB to macOS and other apps, against about
+  26 GiB at `82GB`.
+- **Why not more.** A replay of the decode expert ids (`speed-bench/perf-record.md`,
+  Memory levers) stops gaining decode at about 89 GiB; more cache helps only
+  appends, and every GiB comes out of the file cache, which serves 20-28% of
+  today's miss reads.
+
+Results: not run yet. The first run fills a table with the same rows as
+**Against ds4**, plus the `82GB` column for comparison.
 
 ## Supported hardware
 
@@ -320,6 +371,17 @@ The normal sampling defaults are temperature 1, top-p 1, and min-p 0.05;
 
 `--power N` trades throughput for lower sustained GPU load, but this model
 requires `--power 100`.
+
+`--boost` (CLI, server and bench) is for interactive use. The output is the
+same with and without it. It does two things:
+- It asks the owner's `fanboost` daemon, if installed, for full fans while the GPU works. The fans go back to the Apple
+  curve about 10 s after the engine goes idle. In a 30-minute session of
+  typical requests (expert cache `82GB`) the machine never reached the Heavy thermal state (without
+  it, inside the first request), and requests ran about 4-5% faster. Without
+  the daemon it only touches `/tmp/fanboost.lease`.
+- Under SSD streaming, it keeps the GPU busy while a decode token waits for
+  missing experts. That is worth a few tenths of a percent of decode on a
+  cool machine.
 
 Directional steering is present in the build and documented under
 [dir-steering/](dir-steering/README.md), but DeepSeek V4.1 Flash does not

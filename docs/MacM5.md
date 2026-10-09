@@ -69,6 +69,22 @@ upload step for a GPU reading a CPU-filled shared Metal buffer. However:
   reduce useful file-cache capacity or cause memory pressure rather than speed
   inference up. No system memory settings were changed in this exploration.
 
+Memory limits measured on 2026-10-09 (`225-mac-memory-evidence`):
+
+| Limit | Value |
+|---|---|
+| `hw.memsize` | 137438953472 (128 GiB) |
+| `iogpu.wired_limit_mb` | 0 (the system default) |
+| `vm.global_user_wire_limit`, `vm.user_wire_limit` | 116823110451 (108.8 GiB) |
+| Metal `recommendedMaxWorkingSetSize` | 107.52 GiB (84% of RAM) |
+
+The engine's cache cap follows from the recommended size, not from RAM: the
+model target is `min(86% x recommended, floor_GiB(7/8 x recommended -
+context buffers))`, 86 GiB at ctx 32768, and both the automatic budget and an
+explicit `NGB` cache flag stay under it. During a harness-shaped run the box
+has about 1 GiB free and 23-25 GiB of file cache; see
+`speed-bench/perf-record.md`, Memory levers, for the timeline.
+
 Keep three different caches separate in reasoning:
 
 1. the application's explicit expert cache in RAM;
