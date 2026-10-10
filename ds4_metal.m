@@ -16,10 +16,10 @@
 #include <time.h>
 #include <pthread.h>
 #include <unistd.h>
-#include <notify.h>
+#include <spawn.h>
 #include <sys/mman.h>
 #include <sys/sysctl.h>
-#include <sys/time.h>
+#include <sys/wait.h>
 #include <mach/mach.h>
 #include <mach-o/dyld.h>
 #include <objc/runtime.h>
@@ -8990,20 +8990,25 @@ int ds4_gpu_pack_slot_rows_f32_tensor(
     return 1;
 }
 
-/* --boost also asks the owner's fanboost daemon for full fans while the GPU
- * has work: its lease is the mtime of /tmp/fanboost.lease and lasts 10 s, so
- * a touch every 2 s holds it and an idle engine lets it lapse. Without the
- * daemon this only touches the file. */
+/* --boost also asks the owner's fanboost for full fans while the GPU has
+ * work: `fanboost max` holds them for a few seconds, so running it once a
+ * second keeps them up and an idle engine lets them lapse. How long a request
+ * lasts and how it reaches the daemon are fanboost's business, not this
+ * file's. Every command batch passes here (thousands a second in decode); the
+ * check costs a compare on the batch's own timestamp. The spawn and its wait
+ * run on a background queue, off the command path; without fanboost installed
+ * the spawn fails and nothing happens. */
 static void ds4_gpu_fan_hint(double now_ms) {
     static double last_ms;
-    if (!g_boost || now_ms - last_ms < 2000.0) return;
+    if (!g_boost || now_ms - last_ms < 1000.0) return;
     last_ms = now_ms;
-    const int fd = open("/tmp/fanboost.lease", O_WRONLY | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0644);
-    if (fd >= 0) {
-        futimes(fd, NULL);
-        close(fd);
-    }
-    notify_post("com.chida82.fanboost");
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        char *argv[] = {"fanboost", "max", NULL};
+        char *envp[] = {NULL};
+        pid_t pid;
+        if (posix_spawn(&pid, "/usr/local/bin/fanboost", NULL, NULL, argv, envp) == 0)
+            waitpid(pid, NULL, 0);
+    });
 }
 
 int ds4_gpu_begin_commands(void) {

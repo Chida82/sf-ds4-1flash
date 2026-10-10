@@ -158,9 +158,10 @@ The figures are in `speed-bench/perf-record.md`, Decode misses after 140.
 Prefetch with a cheaper guess is change `170`.
 
 `--boost` (`220-decode-keepalive`, off by default) does two things:
-- **Fan hint.** It renews the owner's `fanboost` lease (`/tmp/fanboost.lease`
-  plus `notify_post("com.chida82.fanboost")`) from `ds4_gpu_begin_commands`,
-  at most every 2 s, so the fans run at 100% while the GPU has work. In
+- **Fan hint.** It runs the owner's `fanboost max` (`/usr/local/bin/fanboost`,
+  on a background queue) from `ds4_gpu_begin_commands`, at most once a second, so
+  the fans run at 100% while the GPU has work. The engine never touches
+  fanboost's lease itself: how a request reaches the daemon is fanboost's. In
   request-shaped sessions this kept the machine out of Heavy: requests were
   4.7% faster.
 - **GPU keep-alive.** It runs the TP keep-alive kernel on its own queue only
