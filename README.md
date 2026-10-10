@@ -60,30 +60,33 @@ On a 128 GB Mac this model always runs with `--ssd-streaming` (see
 
 | Measurement | ds4 t/s | sf t/s | sf vs ds4 |
 |---|---:|---:|---:|
-| prefill, first 2048 tokens | 124.6 | 172.4 | +38.4% |
-| prefill, +2048 to context 4096 | 115.8 | 182.4 | +57.5% |
-| prefill, +4096 to context 8192 | 205.1 | 285.0 | +39.0% |
-| prefill, +8192 to context 16384 | 364.4 | 463.4 | +27.2% |
-| prefill, +16384 to context 32768 | 404.3 | 636.5 | +57.4% |
-| generation, context 2048 | 12.1 | 24.4 | +100.5% |
-| generation, context 8192 | 12.9 | 20.3 | +58.2% |
-| generation, context 32768 | 11.6 | 20.7 | +79.2% |
-| steady decode, context 2048 | 15.7 | 25.7 | +63.4% |
-| steady decode, context 8192 | 16.8 | 24.4 | +45.9% |
-| steady decode, context 32768 | 15.7 | 22.0 | +40.3% |
+| prefill, first 2048 tokens | 124.6 | 187.1 | +50.1% |
+| prefill, +2048 to context 4096 | 115.8 | 226.8 | +95.8% |
+| prefill, +4096 to context 8192 | 205.1 | 403.7 | +96.8% |
+| prefill, +8192 to context 16384 | 364.4 | 567.6 | +55.8% |
+| prefill, +16384 to context 32768 | 404.3 | 716.8 | +77.3% |
+| generation, context 2048 | 12.1 | 28.8 | +136.6% |
+| generation, context 8192 | 12.9 | 28.6 | +122.5% |
+| generation, context 32768 | 11.6 | 26.6 | +130.1% |
+| steady decode, context 2048 | 15.7 | 29.5 | +87.9% |
+| steady decode, context 8192 | 16.8 | 29.3 | +74.7% |
+| steady decode, context 32768 | 15.7 | 27.1 | +72.9% |
 
-The first token after a prefill took 2.1-3.0 s on ds4 and 0.3-1.1 s here.
+The first token after a prefill took 2.1-3.0 s on ds4 and 0.11-0.16 s here.
 Greedy output is token-identical to ds4 (parity oracle, ten prompts).
 
-**How it was measured** on 2026-10-05. The builds compared are ds4 at the
-merge-base `0aaea5a` and this child at `132-gpu-all-hit-continuation`, on
-DeepSeek V4.1 Flash Q2.
+**How it was measured.** The builds compared are ds4 at the merge-base
+`0aaea5a`, measured on 2026-10-05, and this child at
+`268-aligned-uncached-reads`, measured on 2026-10-10, on DeepSeek V4.1 Flash
+Q2, with the GGUF on the internal drive only (no second-drive copy).
 - Both run `ds4-bench` (here `sf-ds4-1flash-bench`) on *I Promessi Sposi* with
   `--ssd-streaming --ssd-streaming-cache-experts 82GB`, context frontiers from
   2048 to 32768 doubling, and 128 generated tokens per frontier. Each frontier
   prefills the new tokens on top of the previous context.
-- Each value is the mean of two runs per build, in the order ds4, sf, sf, ds4,
-  with 180 s between runs.
+- Each value is the mean of two runs per build, 180 s apart. ds4 ran on
+  2026-10-05 in the order ds4, sf, sf, ds4; this child's two runs are from
+  2026-10-10. The CSVs are in `speed-bench/v41-q2-vs-ds4-20261005` (ds4) and
+  `speed-bench/v41-q2-sf-20261010` (sf).
 - "Generation" counts all 128 tokens, including the first one after the
   prefill; "steady decode" leaves that first token out.
 

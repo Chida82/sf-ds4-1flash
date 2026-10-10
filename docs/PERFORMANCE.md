@@ -45,15 +45,15 @@ A single sweep with the command above is a picture of one build, not a verdict.
 
 ## Recorded baselines
 
-DeepSeek V4.1 Flash Q2 against ds4 at the merge-base `0aaea5a`, 2026-10-05,
-this child at `132-gpu-all-hit-continuation`: the sweep above with
-`--ssd-streaming --ssd-streaming-cache-experts 82GB --ctx-start 2048
---ctx-max 32768 --step-mul 2 --gen-tokens 128`, two runs per build in the
-order ds4, sf, sf, ds4. The CSVs are in
-[speed-bench/v41-q2-vs-ds4-20261005](../speed-bench/v41-q2-vs-ds4-20261005)
-and the table in the README's "Speed" section: prefill +27% to +58%, steady
-decode +40% to +63%, the first token after a prefill 0.3-1.1 s against
-2.1-3.0 s.
+DeepSeek V4.1 Flash Q2 against ds4 at the merge-base `0aaea5a`: the sweep
+above with `--ssd-streaming --ssd-streaming-cache-experts 82GB --ctx-start 2048
+--ctx-max 32768 --step-mul 2 --gen-tokens 128`, two runs per build, GGUF on the
+internal drive only. ds4 ran on 2026-10-05
+([speed-bench/v41-q2-vs-ds4-20261005](../speed-bench/v41-q2-vs-ds4-20261005)),
+this child at `268-aligned-uncached-reads` on 2026-10-10
+([speed-bench/v41-q2-sf-20261010](../speed-bench/v41-q2-sf-20261010)). The
+table is in the README's "Speed" section: prefill +50% to +97%, steady decode
++73% to +88%, the first token after a prefill 0.11-0.16 s against 2.1-3.0 s.
 
 ## What to compare next
 
