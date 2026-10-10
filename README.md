@@ -60,7 +60,7 @@ On a 128 GB Mac this model always runs with `--ssd-streaming` (see
 
 | Measurement | ds4 t/s | sf t/s | sf vs ds4 |
 |---|---:|---:|---:|
-| *commit* | `0aaea5a` | `220dd7d` | |
+| *commit* | `0aaea5a` | `220dd7d` | *+ is better* |
 | prefill, first 2048 tokens | 124.9 | 187.1 | +49.8% |
 | prefill, +2048 to context 4096 | 116.2 | 226.8 | +95.2% |
 | prefill, +4096 to context 8192 | 203.9 | 403.7 | +98.0% |
@@ -75,14 +75,14 @@ On a 128 GB Mac this model always runs with `--ssd-streaming` (see
 
 First token after each prefill, same runs:
 
-| Context | ds4 ms | sf ms |
-|---|---:|---:|
-| *commit* | `0aaea5a` | `220dd7d` |
-| 2048 | 2412 | 145 |
-| 4096 | 2158 | 112 |
-| 8192 | 2301 | 131 |
-| 16384 | 2560 | 129 |
-| 32768 | 3016 | 131 |
+| Context | ds4 ms | sf ms | sf vs ds4 |
+|---|---:|---:|---:|
+| *commit* | `0aaea5a` | `220dd7d` | *- is better* |
+| 2048 | 2412 | 145 | -94.0% |
+| 4096 | 2158 | 112 | -94.8% |
+| 8192 | 2301 | 131 | -94.3% |
+| 16384 | 2560 | 129 | -95.0% |
+| 32768 | 3016 | 131 | -95.7% |
 
 Greedy output is token-identical to ds4 (parity oracle, ten prompts).
 
