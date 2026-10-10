@@ -430,6 +430,49 @@ static int check_prefill_expert_stream(void) {
         REQUIRE(!none.has_replica);
         REQUIRE(ds41_prefill_replica_open(&none, &weights, replica_path, true, true, false, false));
         REQUIRE(none.has_replica && none.replica_fd >= 0 && (fcntl(none.replica_fd, F_GETFD) & FD_CLOEXEC));
+        /* 265: a passed comparison leaves a stamp, and the next open trusts it:
+         * a byte changed behind a restored mtime is admitted (the documented
+         * blind spot), a forced check refuses it and removes the stamp, a new
+         * mtime or a truncated copy compares again. */
+        {
+            ds41_replica_stamp have;
+            struct stat cs;
+            REQUIRE(getxattr(replica_path, DS41_REPLICA_STAMP, &have, sizeof(have), 0, 0) == (ssize_t)sizeof(have));
+            REQUIRE(fstat(replica, &cs) == 0 && have.mtime_s[1] == (int64_t)cs.st_mtimespec.tv_sec &&
+                    have.mtime_ns[1] == (int64_t)cs.st_mtimespec.tv_nsec);
+            const off_t at = (off_t)l->ffn_up_exps->abs_offset;
+            const struct timespec kept[2] = {cs.st_atimespec, cs.st_mtimespec};
+            REQUIRE(pwrite(replica, junk, 1, at) == 1 && futimens(replica, kept) == 0);
+            ds4_model again = model;
+            REQUIRE(ds41_prefill_replica_open(&again, &weights, replica_path, true, true, false, false));
+            close(again.replica_fd);
+            fprintf(stderr, "replica stamp: second open skipped the comparison PASS\n");
+            setenv("DS4_METAL_PREFILL_REPLICA_FULL_CHECK", "1", 1);
+            again = model;
+            REQUIRE(!ds41_prefill_replica_open(&again, &weights, replica_path, true, true, false, false));
+            unsetenv("DS4_METAL_PREFILL_REPLICA_FULL_CHECK");
+            REQUIRE(getxattr(replica_path, DS41_REPLICA_STAMP, &have, sizeof(have), 0, 0) < 0);
+            fprintf(stderr, "replica stamp: forced check refused a changed copy and removed the stamp PASS\n");
+            REQUIRE(pwrite(replica, (const uint8_t *)map + at, 1, at) == 1);
+            again = model;
+            REQUIRE(ds41_prefill_replica_open(&again, &weights, replica_path, true, true, false, false));
+            close(again.replica_fd);
+            REQUIRE(getxattr(replica_path, DS41_REPLICA_STAMP, &have, sizeof(have), 0, 0) == (ssize_t)sizeof(have));
+            const struct timespec later[2] = {cs.st_atimespec, {cs.st_mtimespec.tv_sec + 7, 0}};
+            REQUIRE(futimens(replica, later) == 0);
+            again = model;
+            REQUIRE(ds41_prefill_replica_open(&again, &weights, replica_path, true, true, false, false));
+            close(again.replica_fd);
+            REQUIRE(getxattr(replica_path, DS41_REPLICA_STAMP, &have, sizeof(have), 0, 0) == (ssize_t)sizeof(have));
+            REQUIRE(have.mtime_s[1] == (int64_t)cs.st_mtimespec.tv_sec + 7);
+            fprintf(stderr, "replica stamp: a new mtime compared again and restamped PASS\n");
+            REQUIRE(ftruncate(replica, (off_t)end - 16384) == 0);
+            again = model;
+            REQUIRE(!ds41_prefill_replica_open(&again, &weights, replica_path, true, true, false, false));
+            REQUIRE(getxattr(replica_path, DS41_REPLICA_STAMP, &have, sizeof(have), 0, 0) < 0);
+            REQUIRE(pwrite(replica, (const uint8_t *)map + end - 16384, 16384, (off_t)end - 16384) == 16384);
+            fprintf(stderr, "replica stamp: a truncated copy was refused and unstamped PASS\n");
+        }
         /* The admitted descriptor keeps the checked file if the path is replaced. */
         REQUIRE(unlink(replica_path) == 0);
         int replacement = open(replica_path, O_CREAT | O_EXCL | O_RDWR, 0600);

@@ -43,4 +43,4 @@ A tool that rewrites bytes and restores the mtime (`touch -r`, some copy tools) 
 
 ## Migration Plan
 
-Branch `sf/280-replica-check-stamp` from `main`; independent of `250` and `260`. No commit or push without a request.
+Branch `sf/265-replica-check-stamp` from `main`; independent of `250` and `260`. No commit or push without a request.

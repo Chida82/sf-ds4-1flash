@@ -8,7 +8,7 @@ expert slabs, model storage), compared with the internal SSD.
 |---|---|---|
 | Drive | Apple SSD AP2048Z, 2 TB | Samsung SSD 9100 PRO 1 TB in an ACASIS TB501Pro enclosure |
 | Link | Apple Fabric | Thunderbolt 5 (80 Gb/s); the drive negotiates **PCIe 16 GT/s x4 (Gen4)** inside the enclosure |
-| File system | APFS, 4 KiB blocks | ExFAT, 128 KiB clusters, 93% full (69 GiB free) |
+| File system | APFS, 4 KiB blocks | ExFAT, 128 KiB clusters, 93% full (69 GiB free); APFS since 2026-10-08, see below |
 | Random-read span | `DeepSeek-V4.1-Flash-Q2.gguf`, 341 GiB | `DeepSeek-V4-Pro-...-imatrix.gguf`, 433 GiB |
 
 ## Method
@@ -194,20 +194,40 @@ them was measured end to end with the model.
    the copy. After an 8192-token context, the first token comes 1.2 s sooner
    and the steady rate is 1.9% lower (not traced). The copy costs about
    7 s of checking at every engine open (`speed-bench/perf-record.md`,
-   External SSD evidence after 170; the README has the table). Decode misses
-   read only the internal drive. `145` measured reading their up part from
-   the copy: decode 8192 -1.7%. A single miss is latency-bound, and the
-   copy's floor (about 0.6-0.7 ms for 2-3 MiB) is slower than the internal
-   drive reading the whole expert.
+   External SSD evidence after 170). With the drive on APFS (2026-10-09,
+   newer tree) the prompt gains are the same, the first token after 8192
+   comes only 0.36 s sooner and the steady cost is 0.6%; the README has that
+   table. Decode misses read only the internal drive. `145` measured reading
+   their up part from the copy on ExFAT: decode 8192 -1.7%. On APFS the copy
+   delivers up's 2.9 MiB in 0.634 ms (4.6 GB/s) and a probe takes 30% off a
+   miss read; `260` retests the split.
 4. **Model storage and transfers.** Good as an archive for GGUFs:
    copying 341 GiB from it to the internal SSD is bounded by the 6.4 GB/s read,
    about 1 minute of pure I/O (`cp` or `hf` will be slower). Symlinks work on
    macOS ExFAT, so the Hugging Face cache (`HF_HOME`) can live there, and
    `download.sh` symlinks in `gguf/` can point to it.
-5. **ExFAT caveats.** No journal, and `F_FULLFSYNC` returned in 0.00 s: eject
+5. **ExFAT caveats** (the drive is APFS since 2026-10-08). No journal, and `F_FULLFSYNC` returned in 0.00 s: eject
    before unplugging, or a copy in flight can be lost. macOS writes `._*`
    AppleDouble files next to each file. Writes past ~45-50 GiB fall to
    about 1-1.3 GB/s (see Long writes); reads are unaffected.
 6. **Running a model directly from the external drive** (all of it on the
    external drive) works, but every bandwidth-bound path runs at half speed:
    only an option when the internal SSD has no room.
+
+## APFS (2026-10-09)
+
+The drive was reformatted to APFS on 2026-10-08; on this macOS, ExFAT runs
+in user space (FSKit) and APFS in the kernel. `250-external-apfs-evidence`
+re-measured the copy (`speed-bench/perf-record.md`, External drive on APFS):
+- uncached reads of the copy run at the enclosure's bandwidth, as on ExFAT:
+  up's 2.9 MiB in 4 pieces in 0.634 ms, a cold page-in at 5.5 GB/s;
+- the prefill gains of the copy are unchanged;
+- a KV checkpoint stores faster than on the internal SSD (16.0 against
+  22.5 ms) and loads a little slower (13.6 against 9.8 ms).
+- an `F_NOCACHE` read that does not start on a 16 KiB page leaves about a
+  quarter of its pages in the page cache, on the internal drive and on the
+  copy alike; ExFAT leaves none. That is why the first token after a long
+  sweep is 0.88 s with the copy on APFS and 0.18-0.20 s on ExFAT.
+- On the same tree with the copy back on ExFAT (2026-10-09 evening), the
+  prompt gains match; ExFAT is ahead on the first token, ttft 10000 and
+  append +1500, APFS on steady decode at 8192 (-0.6% against -2.3%).

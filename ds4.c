@@ -33,6 +33,9 @@
 #include <sys/file.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#if defined(__APPLE__)
+#include <sys/xattr.h>
+#endif
 #include <sys/param.h>
 #include <dispatch/dispatch.h>
 #include <sys/sysctl.h>
@@ -25134,9 +25137,17 @@ static int ds41_prefill_expert_open_nocache_fd(int source_fd) {
 #endif
 }
 
+/* On APFS an F_NOCACHE read that does not start on a 16 KiB page leaves about
+ * a quarter of its range in the page cache, and expert ranges start every
+ * 3041280 bytes. The partial first page is read on its own; the rest then
+ * starts on a page, and so does its destination, which mirrors the file's
+ * layout from a page-aligned buffer. A partial last page does not leak. */
 static bool ds41_prefill_expert_pread(int fd, uint8_t *dst, uint64_t offset, uint64_t len) {
+    const uint64_t page = UINT64_C(16) << 10;
     while (len) {
-        const size_t bytes = len < (UINT64_C(16) << 20) ? (size_t)len : (size_t)(UINT64_C(16) << 20);
+        size_t bytes = len < (UINT64_C(16) << 20) ? (size_t)len : (size_t)(UINT64_C(16) << 20);
+        const uint64_t head = (page - (offset & (page - 1))) & (page - 1);
+        if (head && head < bytes) bytes = (size_t)head;
         ssize_t n;
         do { n = pread(fd, dst, bytes, (off_t)offset); } while (n < 0 && errno == EINTR);
         if (n <= 0) return false;
@@ -25214,6 +25225,55 @@ static bool ds41_prefill_replica_unchanged(const ds4_model *m) {
         st.st_mtimespec.tv_nsec == m->replica_mtime.tv_nsec;
 }
 
+/* A passed comparison is recorded on the copy as an extended attribute, so the
+ * next open with the same two files skips the 43 GiB read (265). It binds both
+ * files' device, inode, size and mtime and the compared total; a rewritten
+ * copy or model changes one of them. DS4_METAL_PREFILL_REPLICA_FULL_CHECK=1
+ * compares anyway, for a rewrite that kept the mtime. */
+#define DS41_REPLICA_STAMP "com.starforge.sf-ds4-1flash.replica"
+typedef struct {
+    uint64_t version, compared;
+    uint64_t dev[2], ino[2], size[2];
+    int64_t mtime_s[2], mtime_ns[2];
+} ds41_replica_stamp;
+
+static ds41_replica_stamp ds41_replica_stamp_make(const struct stat *model, const struct stat *copy,
+                                                  uint64_t compared) {
+    ds41_replica_stamp st;
+    memset(&st, 0, sizeof(st));
+    st.version = 1;
+    st.compared = compared;
+    const struct stat *f[2] = {model, copy};
+    for (int i = 0; i < 2; i++) {
+        st.dev[i] = (uint64_t)f[i]->st_dev;
+        st.ino[i] = (uint64_t)f[i]->st_ino;
+        st.size[i] = (uint64_t)f[i]->st_size;
+        st.mtime_s[i] = (int64_t)f[i]->st_mtimespec.tv_sec;
+        st.mtime_ns[i] = (int64_t)f[i]->st_mtimespec.tv_nsec;
+    }
+    return st;
+}
+
+static bool ds41_replica_stamp_matches(int fd, const ds41_replica_stamp *want) {
+#if defined(__APPLE__)
+    ds41_replica_stamp have;
+    return fgetxattr(fd, DS41_REPLICA_STAMP, &have, sizeof(have), 0, 0) == (ssize_t)sizeof(have) &&
+        memcmp(&have, want, sizeof(have)) == 0;
+#else
+    (void)fd; (void)want;
+    return false;
+#endif
+}
+
+static void ds41_replica_stamp_store(int fd, const ds41_replica_stamp *st, bool passed) {
+#if defined(__APPLE__)
+    if (passed) (void)fsetxattr(fd, DS41_REPLICA_STAMP, st, sizeof(*st), 0, 0);
+    else (void)fremovexattr(fd, DS41_REPLICA_STAMP, 0);
+#else
+    (void)fd; (void)st; (void)passed;
+#endif
+}
+
 /* DS4_METAL_PREFILL_REPLICA names a copy of the model on another drive. The
  * explicit prefill buffers read routed up from it and gate/down from the
  * model; decode and every other read keep the model file. */
@@ -25235,10 +25295,32 @@ static bool ds41_prefill_replica_open(ds4_model *m, const ds4_weights *w, const 
         if (fd < 0) err = strerror(errno);
         else if (fcntl(fd, F_NOCACHE, 1) != 0 || fcntl(fd, F_RDAHEAD, 0) != 0) err = "cannot disable caching";
     }
-    uint64_t compared = 0;
+    uint64_t compared = 0, total = 0;
     const double t0 = now_sec();
-    if (!err) err = ds41_prefill_replica_check(m->fd, fd, (const uint64_t (*)[2])ranges,
-                                               1 + DS4_N_LAYER, &compared);
+    struct stat model_st, copy_st;
+    ds41_replica_stamp stamp;
+    bool stamped = false;
+    if (!err) {
+        for (uint32_t i = 0; i < 1 + DS4_N_LAYER; i++) total += ranges[i][1];
+        if (fstat(m->fd, &model_st) != 0 || fstat(fd, &copy_st) != 0) err = strerror(errno);
+    }
+    if (!err) {
+        stamp = ds41_replica_stamp_make(&model_st, &copy_st, total);
+        const char *full = getenv("DS4_METAL_PREFILL_REPLICA_FULL_CHECK");
+        stamped = !(full && full[0] && strcmp(full, "0") != 0) && ds41_replica_stamp_matches(fd, &stamp);
+    }
+    if (!err && stamped) {
+        compared = total;
+    } else if (!err) {
+        err = ds41_prefill_replica_check(m->fd, fd, (const uint64_t (*)[2])ranges,
+                                         1 + DS4_N_LAYER, &compared);
+        /* The comparison reads the file it fstat'ed above; recheck before vouching. */
+        struct stat after;
+        if (!err && (fstat(fd, &after) != 0 || after.st_size != copy_st.st_size ||
+                     after.st_mtimespec.tv_sec != copy_st.st_mtimespec.tv_sec ||
+                     after.st_mtimespec.tv_nsec != copy_st.st_mtimespec.tv_nsec)) err = "changed during the check";
+        ds41_replica_stamp_store(fd, &stamp, err == NULL);
+    }
     if (err) {
         if (fd >= 0) close(fd);
         fprintf(stderr, "ds4: DS4_METAL_PREFILL_REPLICA %s: %s\n", path, err);
@@ -25249,9 +25331,15 @@ static bool ds41_prefill_replica_open(ds4_model *m, const ds4_weights *w, const 
     m->has_replica = true;
     m->replica_fd = fd;
     m->replica_mtime = st.st_mtimespec;
-    fprintf(stderr, "ds4: V4.1 prefill reads routed up from %s (device %d, inode %llu), "
-            "%.2f GiB checked against the model in %.1f s\n", path, (int)st.st_dev,
-            (unsigned long long)st.st_ino, compared / 1073741824.0, now_sec() - t0);
+    if (stamped) {
+        fprintf(stderr, "ds4: V4.1 prefill reads routed up from %s (device %d, inode %llu), "
+                "replica check: stamp matches, comparison skipped\n", path, (int)st.st_dev,
+                (unsigned long long)st.st_ino);
+    } else {
+        fprintf(stderr, "ds4: V4.1 prefill reads routed up from %s (device %d, inode %llu), "
+                "%.2f GiB checked against the model in %.1f s\n", path, (int)st.st_dev,
+                (unsigned long long)st.st_ino, compared / 1073741824.0, now_sec() - t0);
+    }
     return true;
 }
 

@@ -174,7 +174,7 @@ results and confirmation runs.
 | Device | Apple SSD AP2048Z, 2 TB, per local report | Samsung 9100 PRO 1 TB |
 | Connection | Internal Apple storage | ACASIS TB501 Pro, TB5 / USB4 v2 at 80 Gbit/s |
 | SSD-side link | Not established here | PCIe 4.0 x4 at 16 GT/s, per local report |
-| Filesystem during reported tests | APFS | ExFAT, 128 KiB clusters |
+| Filesystem during reported tests | APFS | ExFAT, 128 KiB clusters, to 2026-10-07; APFS from 2026-10-08 (`250`, `speed-bench/perf-record.md`, External drive on APFS) |
 
 The 9100 PRO is a PCIe 5.0 x4 SSD, rated at up to 14.7/13.3 GB/s read/write
 for the 1 TB model on a suitable native interface [9]. That is not its rate

@@ -111,8 +111,10 @@ Quantization variants may share compatible prefixes. Add
 
 The cache directory can live on an external drive, which takes the cache's
 writes off the soldered internal SSD. The README gives the command and the
-one-time move. Its measured cost on a TB5 drive is about 2 ms per stored 36 MiB
-checkpoint (`speed-bench/perf-record.md`, KV cache placement after 150). If the
+one-time move. On the TB5 drive formatted APFS, a 36 MiB checkpoint stores
+6.5 ms faster than on the internal SSD and loads 4 ms slower; on ExFAT it
+stored about 2 ms slower (`speed-bench/perf-record.md`, KV cache placement
+after 150, External drive on APFS). If the
 directory cannot be created, for example because the drive is not mounted, the
 server logs it and runs without a disk cache.
 Cache files contain prompt text and model state: treat the directory as

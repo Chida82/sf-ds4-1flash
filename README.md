@@ -124,7 +124,8 @@ approximate kernel, no route that changes a single logit.
 ## A second drive
 
 An external SSD has two uses here. The one measured is a Samsung 9100 PRO
-1 TB (ExFAT) in an ACASIS TB501 Pro enclosure on Thunderbolt 5, 80 Gbit/s.
+1 TB (APFS since 2026-10-08, ExFAT before) in an ACASIS TB501 Pro enclosure
+on Thunderbolt 5, 80 Gbit/s.
 Inside, the enclosure runs the drive at PCIe 4.0 x4, which caps reads at
 about 6.4 GB/s, half the internal SSD ([docs/ssd.md](docs/ssd.md)). Other
 enclosures and links will give different figures.
@@ -132,45 +133,55 @@ enclosures and links will give different figures.
 - **Faster prompts.** Put a byte-identical copy of the GGUF on it, for example
   with `cp`, and pass it as `DS4_METAL_PREFILL_REPLICA`. Long prompts then read
   part of each layer's weights from each drive at once (table below). The
-  engine compares the copy with the model at every start (about 7 s on that
-  drive) and refuses to start on any difference. A long-running server earns
-  that back after 3-4 long prompts; a one-shot CLI command does not.
+  first start compares the copy with the model (about 7 s on that drive) and
+  refuses to start on any difference. A pass is stamped on the copy, so later
+  starts skip the comparison until either file changes.
+  `DS4_METAL_PREFILL_REPLICA_FULL_CHECK=1` forces it, for example after
+  copying the GGUF with a tool that keeps the old modification time.
 - **Less wear on the internal SSD.** Reading does not wear an SSD; writing
   does. During inference the server writes only its disk KV cache, 1-2
   checkpoints of 23-49 MiB per request. A Mac's internal SSD is soldered to the
-  board, so put that cache on the replaceable drive with `--kv-disk-dir`. It
-  costs about 2 ms per checkpoint, about 0.01% of a request.
+  board, so put that cache on the replaceable drive with `--kv-disk-dir`. On
+  APFS it costs nothing: a store takes 6.5 ms less than on the internal SSD,
+  a load 4 ms more.
 
-Measured on the tree of 2026-10-06 with `speed-bench/ab_bench.py`, expert
-cache **`82GB`**, internal SSD only against the same build with the copy, 2-4 invocations pooled per
-shape. The times are one invocation's medians; the gain is the pooled
-median.
+Measured on 2026-10-09 (`main` at `8e9a954`) with `speed-bench/ab_bench.py`,
+expert cache **`82GB`**, copy on APFS, internal SSD only against the same
+build with the copy, two invocations pooled. The times are the second
+invocation's medians; the gain is the pooled median.
 
 | Shape | Internal SSD only | With the copy | Gain |
 |---|---|---|---|
-| 2500-token prompt, time to first token | 30.9 s | 28.2 s | +10.2% |
-| 3500-token prompt | 13.2 s | 11.2 s | +16.8% |
-| 5000-token prompt | 53.3 s | 50.9 s | +4.6% |
-| 7500-token prompt | 19.5 s | 17.1 s | +14.2% |
-| 10000-token prompt | 29.0 s | 25.0 s | +15.3% |
-| append 1500 tokens to a 5300-token conversation | 8.6 s | 7.0 s | +17.1% |
-| append 300 tokens | 13.2 s | 13.0 s | +0.8% (within noise) |
-| decode after 2048 tokens | 22.0 tokens/s | 22.2 tokens/s | +1.1% |
-| first token after an 8192-token context | 1.38 s | 0.18 s | 1.2 s sooner |
-| decode after 8192 tokens, steady | 22.3 tokens/s | 21.9 tokens/s | -1.9% |
-| 256 tokens after an 8192-token context, first included | 12.8 s | 11.9 s | +7.5% |
-| typical mix (harness estimate) | | | +3.2% |
+| 2500-token prompt, time to first token | 30.8 s | 27.9 s | +10.4% |
+| 3500-token prompt | 13.7 s | 11.4 s | +19.7% |
+| 5000-token prompt | 52.5 s | 50.4 s | +4.5% |
+| 7500-token prompt | 20.0 s | 17.8 s | +12.8% |
+| 10000-token prompt | 28.5 s | 26.2 s | +6.5% |
+| append 1500 tokens to a 5300-token conversation | 10.0 s | 7.9 s | +12.0% |
+| append 300 tokens | 12.9 s | 12.7 s | +0.4% (within noise) |
+| decode after 2048 tokens | 23.0 tokens/s | 23.0 tokens/s | -0.2% (within noise) |
+| first token after an 8192-token context | 1.24 s | 0.88 s | 0.36 s sooner |
+| decode after 8192 tokens, steady | 23.4 tokens/s | 23.1 tokens/s | -0.6% |
+| 256 tokens after an 8192-token context, first included | 12.1 s | 11.9 s | +1.9% |
+| typical mix (harness estimate) | | | +3.0% |
 
 The copy speeds up the layer sweeps of a prompt, not the tokens read one at
 a time after them. The 5000-token prompt spends most of its time in a
 904-token tail at decode speed, so it gains least; 3500, 7500 and 10000 are
-almost all sweeps. Decode never reads the copy. After an 8192-token context
-with the copy, the first token comes 1.2 s sooner and the steady rate is 2%
-lower, so the copy is ahead for answers up to about 1300 tokens there. The
-first token is slower without the copy because about 7 GiB of model pages
-are read back from the internal drive after the prompt's sweep; with the
-copy, half of them are still in memory. Why that differs, and what causes
-the steady -2%, is not yet known.
+almost all sweeps. Decode never reads the copy.
+
+In this table the first token after an 8192-token context is slow in both
+columns. The prompt's sweep pushed model pages out of memory: its reads are
+meant to bypass the page cache, but on APFS a read that does not start on a
+16 KiB page leaves about a quarter of its pages there. Since
+`268-aligned-uncached-reads` (2026-10-10) the sweep reads from a page
+boundary, and that first token takes about 0.15 s with or without the copy
+(harness: 1230 -> 150 ms on the internal SSD only, 1049 -> 132 ms with the
+copy). The copy's 0.6% lower steady rate fits what `268` traced, although it
+was not measured on that run: a GPU that waited longer for the first token
+runs the next 256 tokens at a higher clock
+([speed-bench/perf-record.md](speed-bench/perf-record.md), Uncached reads from
+a page boundary).
 
 Both together:
 
@@ -190,7 +201,7 @@ written in one continuous burst, while its fast write cache is full
 ([docs/ssd.md](docs/ssd.md)). The KV cache writes 23-49 MiB at a time, so it
 never gets there; copying the 341 GiB GGUF does. The measurements are in
 [speed-bench/perf-record.md](speed-bench/perf-record.md) (Dual-drive prefill
-after 132, KV cache placement after 150).
+after 132, KV cache placement after 150, External drive on APFS).
 
 ## Max performance on one Mac
 

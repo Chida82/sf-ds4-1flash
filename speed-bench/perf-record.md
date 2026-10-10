@@ -37,10 +37,11 @@ figures are in the named section.
 | GPU kernel spin-waiting on a CPU store (or the CPU on a GPU store) in shared memory | Neither side sees the other's store while the kernel runs; the CPU sees a GPU store about 20 us after the end of its command buffer, not of its kernel (`210` gate). | Expert pass submission after 131; Selected-id mailbox after 200 |
 | Starting a decode expert's compute before all its bytes arrive (first bytes from one drive, last from the other) | One expert's decode compute is about 29 us (gate/up 18, down 11); each extra GPU restart costs about 100 us. | Decode misses after 140 |
 | Minimal decode route-prediction prefetch (CPU guess from the layer before, 1 read per layer, layers 20-39) | Catches 0.48 misses per token, but decode 2048 -2.1% and 8192 -1.7% (CIs below zero): the guess (85 us per layer, 7.9 MB of router weights) and the wasted reads cost more than the hidden reads. | Decode misses after 140 |
-| Reading part of each decode miss from the external TB5 copy (family split, up from the copy) | decode 8192 -1.7% (CI below zero): a single miss is latency-bound, and the copy's floor of about 0.6-0.7 ms for 2-3 MiB is slower than the internal drive's whole expert. | Decode misses after 140 |
+| Reading part of each decode miss from the external TB5 copy (family split, up from the copy) | decode 8192 -1.7% (CI below zero): a single miss is latency-bound, and the copy's floor of about 0.6-0.7 ms for 2-3 MiB is slower than the internal drive's whole expert. On APFS (`250`) the copy delivers up in 0.634 ms and a probe takes 30% off a miss read against a 0.971 ms internal-only baseline (the `145` baseline included page-cache hits): `260` retested it: up from the copy with its advice on the copy, in pieces or whole, on ExFAT and APFS, decode +0.2..+0.3% with CIs across zero; the engine's advice cost grows as the read shrinks. | Decode misses after 140; Decode misses split across drives after 250 |
+| Decode misses in `PREAD_SPLIT` pieces (`260` S1a: the early-load path splits each family in 4) | decode 2048 -0.2%, 8192 -0.7% (CIs across zero): the read shrinks 4% and preparation grows as much. | Decode misses split across drives after 250 |
 | Engram rows from a copy on the external drive (`150`) | With the `140` copy admitted the sweeps wait 0.00-0.03 s on Engram, 0.37 s at 10000; checking both tables (188.83 GiB) costs about 30 s per engine open. | Engram placement after 145 |
 | Decode route-prediction prefetch with a cheap guess (`170`: int8 router copy, one background core) | The guess alone costs decode 0.7% (CI below zero), more than a third of what the sustainable policy hides; the policy that would pay needs about 8 GB/s of wasted reads. | Route guess cost after 160 |
-| Re-warming the decode statics with `WILLNEED` at the end of a sweep (`200` S1) | On one drive the reload costs drive time wherever it is issued: synchronous, it moved the first token's wait into the sweep (ttft 10000 -8.8%, append +1500 -8.3%, CIs below zero); asynchronous, the 1.5-1.7 s of reads outlast the last layer and the first token still waits. | Static weights after a sweep |
+| Re-warming the decode statics with `WILLNEED` at the end of a sweep (`200` S1) | On one drive the reload costs drive time wherever it is issued: synchronous, it moved the first token's wait into the sweep (ttft 10000 -8.8%, append +1500 -8.3%, CIs below zero); asynchronous, the 1.5-1.7 s of reads outlast the last layer and the first token still waits. The eviction came from unaligned uncached reads, which `268` removes at the source. | Static weights after a sweep; Uncached reads from a page boundary |
 | Dual-drive prefill in upstream ds4 through its mmap path (`190` approach A: up warmed from the copy, GPU binds up from the copy's mapping) | Bitwise identical and the page-in waits vanish, but the routed `up` stage runs about 2x slower from the copy's mapping (cause not traced) and prefill loses 13-38% against original ds4. | Dual-drive port to upstream ds4 |
 | GPU keep-alive for the whole decode token (`220` S1: the TP keep-alive kernel, one threadgroup, 1 ms bursts back to back on its own queue) | During decode the GPU is already at its top clock and 100% active at Nominal, and at the same clock and watts as without it at Heavy: decode -1.6% at Nominal and -2.0%/-1.8% at Heavy (CIs below zero). The kernel only takes ALU time from the decode. Argodrive found the same for its continuous mode; its gain came from a keep-alive only while the CPU waits on reads. | Decode keep-alive after 210 |
 | CPU keep-alive during decode (`220` S2: one user-interactive thread spinning with `yield` for the whole token) | The decode thread already spins on the Super cluster at its top clock; the spinner lands there too and takes package power from the GPU: decode -0.4% at Nominal, -1.7%/-2.6% at Heavy (CIs below zero) with GPU 15.5 W against 16.5 W at the same clock. Argodrive's gain came from a cluster that was not at its top. | Decode keep-alive after 210 |
@@ -1272,6 +1273,478 @@ a 1500-token append mixes both costs. Over 256 tokens the decode hit rate
 moves only 0.3 points, because most of the lent slots are still empty when
 the next sweep takes them back.
 
+
+## External drive on APFS (2026-10-09, `250-external-apfs-evidence`)
+
+The TB5 drive was reformatted from ExFAT to APFS on 2026-10-08. On this
+macOS, ExFAT runs in user space (an FSKit extension) and APFS runs in the
+kernel. The copy is now at `/Volumes/ExtSSD/sf-ds4-1flash/`.
+
+The two probes (tasks 1.1 and 3.2) ran with the machine in light use, at
+thermal pressure Nominal. The harness rows and the KV diagnostic ran later
+the same day on an otherwise idle machine.
+
+**Copy latency** (`missbench`, rebuilt in the scratchpad from the `145`
+description):
+- random layer and experts, read as decode reads them: 3 family ranges, 4
+  pieces each aligned to 16 KiB, all 12 concurrent on GCD;
+- `F_NOCACHE` and `F_RDAHEAD 0` on both files;
+- 300 alternated iterations per cell.
+
+"Internal done" and "copy done" are the medians of the moment each drive's
+last piece lands. Two runs agreed within 1%; run 1, ms:
+
+| Missing experts | Pieces from the copy | Wall median (p10, p90) | Internal done | Copy done |
+|---|---|---|---|---|
+| 1 | none (today) | 0.971 (0.935, 1.103) | 0.971 | |
+| 1 | up 1/4 | 0.851 | 0.851 | 0.237 |
+| 1 | up 2/4 | 0.790 | 0.790 | 0.351 |
+| 1 | up 3/4 | 0.737 | 0.737 | 0.502 |
+| 1 | up 4/4 (family) | 0.684 (0.641, 0.824) | 0.676 | 0.634 |
+| 1 | 2 of 12, spread | 0.806 | 0.806 | 0.386 |
+| 1 | 3 of 12, spread | 0.746 | 0.746 | 0.470 |
+| 1 | 4 of 12, spread | 0.675 (0.640, 0.729) | 0.674 | 0.607 |
+| 1 | 6 of 12, spread | 0.815 | 0.544 | 0.815 |
+| 2 | none (today) | 1.722 | 1.722 | |
+| 2 | up 4/4 | 1.206 | 1.206 | 1.068 |
+| 2 | 4 of 12, spread | 1.189 | 1.189 | 1.056 |
+| 2 | the second expert whole | 1.595 | 1.009 | 1.594 |
+| 3 | none (today) | 2.471 | 2.471 | |
+| 3 | up 4/4 | 1.727 | 1.727 | 1.555 |
+| 3 | 4 of 12, spread | 1.697 | 1.697 | 1.522 |
+| 3 | the third expert whole | 2.353 | 1.732 | 2.352 |
+
+The rows left out (up 1/4 to 3/4, and 2-3 spread pieces, at 2 and 3
+missing experts) fall between the rows shown, in the same pattern.
+
+**The baseline check fails, and the old figure was the wrong one.** The
+internal-only column reads 0.971 ms against `145`'s 0.772. `145`'s p10 of
+0.335 ms for 9.49 MiB is 29.7 GB/s, twice the internal drive's peak. Part of
+its reads came from the page cache: `F_NOCACHE` bypasses the cache, but it
+does not evict pages already there. This run's p10 is 10.6 GB/s, the drive's
+speed. The ExFAT split columns were compared against that optimistic
+baseline.
+
+**Was the floor the file system?** Mostly not:
+- On APFS the copy delivers up's 2.9 MiB in 4 pieces at 0.634 ms. On ExFAT
+  the family split measured 0.736 (p10 0.693).
+- That is 4.6 GB/s, a bandwidth figure close to the enclosure's 6.4 GB/s
+  cap, not a latency floor.
+- One 0.73 MiB piece lands at 0.237 ms.
+
+**D3 verdict per row.** The copy lands before the internal drive's
+remaining pieces for up 1/4 to 4/4 and for 2-4 spread pieces, at every
+count, so those splits shorten a miss. With 6 spread pieces or a whole
+expert, the copy lands last.
+
+The best rows (up 4/4, or 4 of 12 spread) take 30% off a miss read at 1, 2
+and 3 missing experts: 0.97 -> 0.68, 1.72 -> 1.19 and 2.47 -> 1.70 ms.
+
+**For `260`, the gate opens.** In decode, 20-28% of miss reads come from
+the file cache (`225`) and gain nothing. On the rest, 30% of the 7% of a
+token spent in `pread` puts the ceiling at about 1.5% of decode, before the
+split's own costs. The harness decides.
+
+**mmap from the copy** (`mapprobe`, scratchpad):
+- one layer's routed up (384 experts, 1.11 GiB) is bound with
+  `newBufferWithBytesNoCopy` straight from a `MAP_SHARED` mapping;
+- a kernel reads it, either sequentially or expert by expert in a random
+  permutation;
+- cold means 0% resident by `mincore`; warm means `pread`-filled first,
+  median of 7 dispatches.
+
+| Source | State | Order | Wall ms | GPU ms |
+|---|---|---|---|---|
+| model (internal) | cold, 3 layers | rand, seq, rand | 123.7, 107.7, 109.0 | 3.3, 3.5, 3.4 |
+| copy (ExtSSD) | cold, 3 layers | rand, seq, rand | 213.8, 210.3, 210.8 | 2.8, 3.4, 3.2 |
+| model | warm | seq / rand | 8.2 / 6.9 | 3.1 / 2.0 |
+| copy | warm | seq / rand | 7.4 / 6.8 | 2.6 / 2.0 |
+
+What the table shows:
+- **Warm, the two mappings are equal**, as `190` found on ExFAT with its own
+  read kernel.
+- **Cold, binding pages the layer in before the GPU starts, at each drive's
+  speed:** the model at 9.4-10.9 GB/s, the copy at 5.5 GB/s.
+- **Neither probe reproduces `190`'s 2x in the in-engine routed `up` stage.**
+  That slowdown happened with the pages resident. Checking it on APFS needs
+  the `190` port rerun with its stage profile, which was not done here.
+
+**Note, deferred-decoder sweeps.** These sweeps (prompts from about 24.5K)
+page each layer in through the model mapping: 3.64 GiB of experts, about
+0.35 s at 10.5 GB/s. Paging up from the copy (1.11 GiB at 5.5 GB/s, 0.21 s)
+alongside gate and down from the model (2.53 GiB, 0.24 s) would cut that to
+about 0.24 s, a third less. It holds only if the two page-ins overlap and
+the GPU reads the copy's resident pages as fast as the model's: the
+standalone probe says yes, `190` in-engine said no, cause open. It stays a
+note, not a proposal.
+
+**With and without the copy, harness** (tasks 2.1 and 2.2):
+- A and B are the same tree (`main` at `8e9a954` plus this change's
+  documents); B adds `--b-env DS4_METAL_PREFILL_REPLICA=/Volumes/ExtSSD/...`.
+- Kinds `cold,append,decode`, `--bitwise`, 3600 s, two invocations, 30 + 35
+  pairs, 3 dropped by the clock check.
+- Both started at Nominal and ran their timed rounds at Heavy (GPU median
+  995 and 1013 MHz).
+- Bitwise in both; hit rates equal.
+
+Pooled, with the ExFAT figures of `180` (External SSD evidence after 170)
+beside them. That run was on an older tree, before `200`-`230`:
+
+| Metric | APFS gain | 95% CI | n | ExFAT (`180`) |
+|---|---|---|---|---|
+| ttft 2500 | +10.42% | +9.81..+11.43 | 12 | +10.16% |
+| ttft 3500 | +19.73% | +16.72..+20.12 | 9 | +16.81% |
+| ttft 5000 | +4.52% | +3.35..+5.91 | 10 | +4.58% |
+| ttft 7500 | +12.77% | +11.95..+13.06 | 10 | +14.18% |
+| ttft 10000 | +6.52% | +3.35..+11.44 | 8 | +15.26% |
+| prefill 5000 | +4.03% | +2.70..+6.51 | 8 | +5.07% |
+| append +300 | +0.41% | -1.04..+1.20 | 8 | +0.76% |
+| append +1500 | +11.97% | +4.56..+37.69 | 8 | +17.08% |
+| decode 2048 | -0.20% | -0.83..+0.13 | 8 | +1.08% |
+| decode 8192 | -0.56% | -0.98..-0.26 | 8 | -1.94% |
+| first token after 8192 | +40.43% | +26.09..+43.47 | 8 | 1300-1426 -> 180-190 ms |
+| e2e (estimate) | +2.5%, +3.0% | | | +3.2% |
+
+The first token after the 8192 frontier: medians of 1278 and 1237 ms
+without the copy, 920 and 875 ms with it. On ExFAT the copy took it to
+180-190 ms. Over 256 tokens after 8192 that is +1.9% and +2.5% (the two
+invocations), against +7.5% on ExFAT. At the pooled figures the
+break-even moves from about 1300 to about 1500 tokens of answer.
+
+What moved and what did not:
+- The sweep-bound shapes (2500, 3500, 5000, 7500) gain what they gained on
+  ExFAT: the enclosure's bandwidth sets them, not the file system.
+- 10000 and append +1500 read lower, but with 8 pairs and wide intervals.
+- The steady decode cost at 8192 shrank from -1.9% to -0.6% and is still
+  below zero.
+- Most of the first-token gain after a long sweep is gone. The copy is
+  opened with `F_NOCACHE` and `F_RDAHEAD 0` (`ds4.c`, replica check), so its
+  reads do not fill the page cache. The cause is not traced, and the tree
+  changed since `180`, so the file system is not proven to be it.
+
+**Decode misses with the copy admitted** (task 2.2): single runs of the
+decode shape with `DS4_METAL_STREAMING_EXPERT_TIMING_SUMMARY`, alternated,
+two per mode. The 8192 segment has 970 miss layers in every run, the same
+as on ExFAT.
+
+| Run | `load_pread_avg`, 8192 segment | First token after 8192 |
+|---|---|---|
+| without, 1 | 0.710 ms | 1117 ms |
+| with, 1 | 0.794 ms | 947 ms |
+| without, 2 | 0.739 ms | 1149 ms |
+| with, 2 | 0.805 ms | 1025 ms |
+
+The misses read only the model file in both modes, yet take about
+0.08 ms more each with the copy admitted. That is 970 x 0.08 ms over
+256 tokens, about 0.3 ms of a 44 ms token (0.7%), the size of the harness
+figure. `180` saw the same direction on ExFAT (0.76 against 0.73 ms).
+Still open: what the copy leaves behind that slows the internal drive's
+later reads.
+
+**KV cache on the APFS drive** (task 3.1), `160`'s method:
+- the server with the copy admitted in both arms, `--ctx 32768
+  --kv-disk-space-mb 4096`;
+- only `--kv-disk-dir` differs: `~/.sf/ds4-1flash/kv-bench250` against
+  `/Volumes/ExtSSD/sf-ds4-1flash/kv-bench250`;
+- ABBA order, `serve_concurrency_bench.py` at concurrency 1, 4096-token
+  prompts, 256 tokens;
+- cold: 2 fresh-nonce requests per block, a restart per block;
+- hit: the shared prompt, a restart before every request, 8 `kv cache hit`
+  lines per arm.
+
+| Figure | Internal | APFS drive | ExFAT drive (`160`) |
+|---|---|---|---|
+| Checkpoint stores, median size / save | 36.6 MiB / 22.5 ms (max 39.4) | 36.5 MiB / 16.0 ms (max 32.6) | 36.5 MiB / 21.9 ms |
+| Disk hits, median load | 9.8 ms | 13.6 ms | 16.4 ms |
+| cold, E2EL median | 31.5 s | 34.3 s | |
+| hit, E2EL median | 31.1 s | 30.5 s | |
+
+Request times move by more than 10% between runs of the same arm, as in
+`160`, so the end-to-end figures are noise. The work moved is measured
+directly:
+- a store on the APFS drive takes 6.5 ms less than on the internal one;
+- a load takes 3.8 ms more.
+
+At 1-2 stores and at most one load per request, the drive costs nothing,
+and the `160` placement stands.
+
+**The same tree with the copy on ExFAT** (2026-10-09, evening):
+- The drive was reformatted to ExFAT after the APFS rows, the GGUF copied
+  and `cmp`-checked, and the harness rerun on the same tree and the same
+  kinds.
+- Two invocations, 31 + 36 pairs, bitwise, timed at Heavy.
+- Pooled:
+
+| Metric | APFS | ExFAT, same tree | ExFAT 95% CI |
+|---|---|---|---|
+| ttft 2500 | +10.42% | +10.20% | +9.64..+10.44 |
+| ttft 3500 | +19.73% | +19.67% | +15.89..+21.32 |
+| ttft 5000 | +4.52% | +4.71% | +4.09..+5.13 |
+| ttft 7500 | +12.77% | +13.18% | +9.76..+14.30 |
+| ttft 10000 | +6.52% | +12.90% | +10.86..+15.04 |
+| prefill 5000 | +4.03% | +5.21% | +3.65..+5.41 |
+| append +300 | +0.41% | +0.90% | -0.09..+1.56 |
+| append +1500 | +11.97% | +16.37% | +10.77..+42.05 |
+| decode 2048 | -0.20% | -0.35% | -2.31..+1.14 |
+| decode 8192 | -0.56% | -2.32% | -4.13..-0.57 |
+| first token after 8192 | 1237-1278 -> 875-920 ms | 1140-1350 -> 180-200 ms | |
+| e2e (estimate) | +2.5%, +3.0% | +3.3%, +2.7% | |
+
+The `180` ExFAT figures reproduce on the current tree, so the file system
+causes the differences, not the tree:
+- ExFAT is ahead on the first token after a long sweep (0.7 s), ttft 10000
+  and append +1500.
+- APFS is ahead on steady decode at 8192 (1.8 points).
+- The sweep-bound shapes are equal.
+
+Decode misses, single runs as in task 2.2, 8192 segment (970 miss layers
+in every run):
+
+| Run | `load_pread_avg`, APFS | `load_pread_avg`, ExFAT |
+|---|---|---|
+| without, 1 / 2 | 0.710 / 0.739 ms | 0.719 / 0.714 ms |
+| with, 1 / 2 | 0.794 / 0.805 ms | 0.709 / 0.772 ms |
+
+On ExFAT the misses' extra cost with the copy admitted is smaller and
+noisier. It does not explain the 1.8 points.
+
+**Why the first token differs** (2026-10-10). A residency probe
+(`residency`, scratchpad) sampled every 100 ms during single runs of the
+decode shape:
+- `mincore` over the 8.79 GiB of decode statics in the model file;
+- the routed up of layers 0, 10, 20 and 30 in the copy;
+- the system's page-in count.
+
+| Run, 8192 segment | Statics minimum | Copy up resident | Page-ins | First token after 8192 |
+|---|---|---|---|---|
+| no copy (ExFAT session, 2 runs) | 5.72, 6.97 GiB | | 1.82 M, 1.29 M | 2365, 1029 ms |
+| copy on ExFAT (2 runs) | 8.49, 8.27 GiB | 0.00-0.03 GiB | 0.56 M, 0.60 M | 248, 245 ms |
+| copy on APFS | 8.09 GiB | 0.72 of 4.44 GiB | 1.61 M | 477 ms |
+| no copy (APFS session) | 6.60 GiB | | 1.87 M | 929 ms |
+
+The explicit prefill buffers read through descriptors with `F_NOCACHE`, so
+neither drive's reads should stay in the page cache. On APFS they do, when
+a read does not start on a 16 KiB page (`nocacheprobe2`, 20 routed-up
+ranges, each evicted first):
+- as the engine addresses them (every 3041280 bytes): 26% of the pages stay;
+- with the partial first page read on its own: none;
+- with an unaligned end only: none.
+
+The internal drive is APFS too. Its reads fill the cache during a sweep and
+push the statics out, and the first token pages them back: `200`'s
+untraced eviction. With the copy on ExFAT, whose user-space file system
+leaves nothing behind, the third of the reads that moves there stops
+leaking. With the copy on APFS it still leaks. `268` (open) reads the
+partial first page on its own.
+
+KV cache on the ExFAT drive, the same method as task 3.1:
+- a store takes 32.8 ms against 20.9 internal;
+- a load takes 9.1 ms against 8.9.
+
+At 1-2 stores per request that is about 10-25 ms a request: noise, but in
+the other direction from APFS.
+
+## Decode misses split across drives after 250 (2026-10-10, `260-dual-drive-split-retune`)
+
+`145` read routed up of a decode miss from the copy and measured -1.7%.
+Reading the code showed it had tested one variant:
+- the decode miss path (`ds4_gpu_stream_expert_cache_begin_selected_load`)
+  advises each family range with `F_RDADVISE` on the model's cached
+  descriptor, then hands the pool three whole-family reads;
+- the 4-piece split only applies in `ds4_gpu_stream_expert_pread_tasks`,
+  which this path skips (3.3 tasks per dispatch in the summary);
+- `145` moved up's `pread` to the copy but left its advice on the model.
+
+`260` added two switches, read per load and bitwise by construction
+(`make test-deepseek41-decode-switch`, 65 exact tokens at prefixes 511 and
+2047):
+- `DS4_METAL_V41_DECODE_PIECES=1` splits each family of a miss into
+  `PREAD_SPLIT` pieces;
+- `DS4_METAL_V41_DECODE_REPLICA_UP=1` reads routed up from the copy, through
+  a second, cached descriptor, with its advice on the copy.
+
+**Probes** (scratchpad):
+- Each sample is evicted first with `msync(MS_INVALIDATE)`. Without that,
+  the internal side read partly from the page cache: a p10 of 0.37 ms for
+  9.5 MiB.
+- `missbench`: 12 uncached pieces at once.
+- `enginebench`: the engine's path, with cached descriptors and serial
+  advice.
+- Two runs each, agreeing within 1%. One missing expert, ms:
+
+| Mode | ExFAT | APFS |
+|---|---|---|
+| `missbench` internal only | 0.963 | 0.958 |
+| `missbench` up 4/4 from the copy | 0.673 | 0.672 |
+| `enginebench` today | 0.981 | 0.959 |
+| `enginebench` 145 S1 (advice on the model) | 0.964 | 0.956 |
+| `enginebench` up from the copy, advice on the copy | 0.732 | 0.727 |
+| `enginebench` pieces, model only | 0.952 | 0.947 |
+| `enginebench` advice in the tasks / no advice | | 0.961 / 0.951 |
+
+The file system does not change these reads. In isolation, up from the
+copy takes 25% off a miss; pieces alone take 3%.
+
+**In the engine** (single runs, decode shape, 256 tokens, 8192 segment,
+970 miss layers, ExFAT):
+
+| Mode | prepare | pread | sum | last landing (model / copy) |
+|---|---|---|---|---|
+| off | 0.404 | 0.732 | 1.136 ms | |
+| up | 0.487 | 0.615 | 1.102 ms | 661 / 364 |
+| pieces | 0.468 | 0.699 | 1.167 ms | |
+| both | 0.522 | 0.580 | 1.102 ms | 719 / 306 |
+
+The read shrinks as the probe says, but preparation grows:
+- `F_RDADVISE` costs 0.108-0.140 ms per call in the engine, against 0.045
+  in the probe;
+- it grows when the copy or the pieces add requests.
+
+The net is 3% of a miss layer, about 0.3% of a token.
+
+**Harness** (`decode,append`, bitwise, 3600 s, the copy admitted on both
+sides, A = the same tree with the switches off):
+
+| B | FS | decode 2048 | decode 8192 | append +300 | append +1500 |
+|---|---|---|---|---|---|
+| up | ExFAT | +0.2% (-0.7..+1.4) | +0.3% (-0.4..+1.4) | +0.9% (+0.7..+1.1) | -0.1% |
+| both | ExFAT | +0.2% (-0.6..+0.8) | +0.2% (-0.3..+0.6) | +0.8% (+0.6..+1.0) | +1.2% |
+| pieces | ExFAT | -0.2% (-1.3..+2.8) | -0.7% (-1.0..+0.3) | +0.3% | +0.3% |
+| up | APFS | +0.1% (-0.8..+6.2) | +0.0% (-0.9..+1.3) | +0.9% (+0.4..+1.5) | +5.3% (-2.2..+7.2) |
+
+No step meets the keep rule (a decode CI above zero). The switches and the
+second descriptor are not landed. During the first APFS single run with up
+from the copy, the drive dropped. The miss read failed, and the engine
+stopped decode with an error.
+
+## Replica check stamp (2026-10-10, `265-replica-check-stamp`)
+
+The `140` check compares the header and 43.51 GiB of routed up at every
+engine open. `265` records a pass in an extended attribute on the copy and
+skips the comparison while both files' device, inode, size and mtime match.
+
+Two consecutive CLI opens (`-n 1 -p "Hi"`, `--ctx 4096`), the copy on the
+TB5 drive as APFS, wall time:
+
+| Tree | First open | Second open |
+|---|---|---|
+| `main` | 13.07 s (compared in 6.7 s) | 10.86 s (compared in 6.7 s) |
+| `265` | 10.88 s (compared in 6.7 s, stamped) | 4.14 s (stamp matches, comparison skipped) |
+
+The fixture cases (`make test`) cover the rest:
+- the stamp is written after a pass;
+- a byte changed with its mtime restored is admitted by the stamp;
+- the forced check refuses it and removes the stamp;
+- a new mtime compares again and restamps;
+- a truncated copy is refused and unstamped.
+
+## Uncached reads from a page boundary (2026-10-10, `268-aligned-uncached-reads`)
+
+`250` traced the first token after a long sweep to the page cache. The
+explicit prefill buffers read through `F_NOCACHE` descriptors, but on APFS a
+read that does not start on a 16 KiB page leaves part of its range cached.
+Every routed expert starts at `family_offset + e * 3041280` (or `3870720`),
+so almost every run of experts starts mid-page.
+
+`nocacheprobe2` (scratchpad), the internal drive. Each variant reads 20 random
+routed-up ranges; every range is evicted first (`msync(MS_INVALIDATE)`) and
+counted after the read by `mincore`:
+
+| Read | Pages left in the cache |
+|---|---|
+| as the engine addresses it | 982 of 3731 |
+| partial first page alone, then from the page boundary, partial last page alone | 0 of 3731 |
+| page-aligned start, unaligned end | 0 of 3717 |
+| unaligned start, page-aligned end | 976 of 3713 |
+| page-aligned start, destination off by 2 KiB | 2419 of 3699 |
+
+Only the start matters, in the file and in memory. Every expert tensor
+starts on 16 KiB, and the slot buffers are page-aligned. A read from a page
+boundary therefore lands on one in memory too.
+
+`268` changes `ds41_prefill_expert_pread`, which every uncached read goes
+through (explicit buffers from the model and from the copy, and the replica
+check). The partial first page is read on its own, so the rest starts on a
+page. Output is bitwise identical: the same bytes land at the same
+addresses.
+
+**Residency runs**: the decode shape, `-n 32`, `main` and `268` alternated,
+with the residency probe on the statics. 8192 segment:
+
+| Run | Prefill 8192 | First token | Page-ins | Statics minimum |
+|---|---|---|---|---|
+| `main`, internal only (2 runs) | 341, 312 tok/s | 984, 725 ms | 1.72 M | 6.64 GiB |
+| `268`, internal only (2 runs) | 574, 532 tok/s | 102, 353 ms | 0.14 M | 8.01 GiB |
+| `main`, copy on APFS (2 runs) | 354, 348 tok/s | 811, 584 ms | 1.75 M | 7.34 GiB |
+| `268`, copy on APFS (2 runs) | 457, 432 tok/s | 122, 269 ms | 0.14 M | 8.39 GiB |
+
+With `268` the copy's pages stop growing in the cache: 0.72 -> 0.50 GiB,
+left over from the run before, against 0.75 -> 1.02 GiB with `main`. The
+2048 segment depends on the page cache that the previous process left
+behind, so single runs cannot judge it.
+
+**Requests after a full memory** (internal only, two repetitions): an 8192
+prompt and 64 tokens, then two appends of 1100 tokens, each a sweep, with 64
+tokens after each:
+
+| | `main` | `268` |
+|---|---|---|
+| prefill, first / second append | 135-146 / 119-129 tok/s | 168-169 / 160-161 tok/s |
+| first token, first / second append | 177-240 / 539-597 ms | 105-137 / 132-139 ms |
+
+Appends under 1024 tokens run token by token: the warm minimum of
+`ds41_prefill_count` with the cache at least half full. They read nothing
+uncached, and `268` leaves them equal (1000-token appends: 24-25 tok/s,
+40-48 ms on both).
+
+**Harness**, `cold,append,decode`, `--bitwise`, 3600 s, A = `main`,
+B = `268`:
+
+| Metric | internal only | copy on APFS (`--env` on both) |
+|---|---|---|
+| pairs, thermal | 38, Heavy | 32, Heavy/Moderate |
+| first token 8192 | 1230 -> 150 ms | 1049 -> 132 ms |
+| first token 10000 | 295 -> 110 ms | 193 -> 123 ms |
+| ttft 10000 | +5.7% (+2.9..+7.4) | +2.2% (+0.8..+4.7) |
+| append +1500 | +12.5% (+10.0..+29.6) | +16.6% (+14.5..+18.3) |
+| prefill 5000 | +0.5% (-2.8..+3.0) | +2.3% (+0.2..+3.4) |
+| decode 2048 | +3.3% (-0.0..+8.4) | +2.3% (-1.4..+6.4) |
+| decode 8192 | -0.6% (-16.0..+0.3) | -1.2% (-1.8..-0.7) |
+| other rows | within 0.6%, CIs across zero | within 1.3%, CIs across zero |
+| e2e (estimate) | +1.0% | +1.1% |
+
+The keep rule asks for a gain on first token 8192, ttft 10000 or append +1500
+with its CI above zero, and no headline below -0.2% with its CI below zero.
+One row fails it: decode 8192 with the copy. The follow-up traces that row to
+the GPU clock, not to the reads, and the change is kept.
+
+**Decode after 8192, follow-up** (copy on both builds):
+- Single runs, `--frontiers 8192 -n 2500`, timing summary, alternated.
+  - Misses and their bytes are equal: 9985 misses, hit rate 0.984. The greedy
+    output repeats, so this shape is kinder than a real answer.
+  - Decode miss wait totals: 67.0 and 67.5 s for `main`, 67.4 and 68.0 s for
+    `268`.
+  - Steady rate: 32.12 and 31.73 tok/s for `main`, 31.78 and 31.54 for `268`.
+- Harness `--kinds decode`, 1800 s, 14 pairs, bitwise:
+  - decode 2048 +0.0% (-0.5..+0.6);
+  - decode 8192 -1.6% (-2.1..-0.7);
+  - first token 8192 844 -> 150 ms.
+- The same harness's GPU samples (`gpu.json`) for the last 9 s of each run,
+  the decode 8192 window, median of 14 runs per build:
+  - `main` runs at 1099 MHz and `268` at 1077 MHz (-2.0%);
+  - in the 6 s before that window, the lowest GPU activity is 38% against
+    83%, and the GPU is at 71.4 against 72.8 C.
+
+  `main`'s first token leaves the GPU waiting about 0.7 s for the statics. The
+  GPU cools, and the next 256 tokens run at a higher clock.
+- Harness `--kinds guard-decode` (8192, then 2500 tokens), 2700 s, 10 pairs,
+  Heavy, bitwise: guard decode -0.1% (-0.4..+0.4), first token 311 / 317 ms.
+  Starting at 8192 with no 2048 segment, `main` does not pause either, and
+  the clock is equal through the decode: 1027/1024 MHz in its first 10 s,
+  1012/1009 in the next 30 s, 1012/1012 after that.
+
+After the 2048 segment, the first token and 255 more take 10.94 s with
+`main` and 10.51 s with `268`.
 
 ## Adding a row
 

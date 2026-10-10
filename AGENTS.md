@@ -58,9 +58,9 @@ V4.1 static context buffers 8073.52 MiB (ctx=32768), Engram disk-only
 and steady decode runs at about 20 tokens/s (harness `decode 2048` and
 `decode 8192`, 256 tokens; 17-18 before the layer queue of
 `30-decode-layer-queue`), with the first token after a layer sweep costing
-about 1.3 s (2 s before the slab residency set of `40-ssd-expert-reads`) and
-the CLI's `generation:` figure, which includes it, reading 12-17 tokens/s
-depending on the prompt. Performance is measured only with a fixed
+about 0.15 s (1.3 s before `268-aligned-uncached-reads`, 2 s before the slab
+residency set of `40-ssd-expert-reads`). The CLI's `generation:` figure
+includes that first token. Performance is measured only with a fixed
 expert cache, `--ssd-streaming-cache-experts 82GB` (74.88 GiB dynamic, 8078
 slots on this machine), by `speed-bench/ab_bench.py`; the conditions behind
 each figure are in `speed-bench/perf-record.md`. The throughput is bounded by
@@ -89,9 +89,11 @@ Without it both binaries fail to load and every prompt is reported as "a binary
 produced no output", which reads like an ablation bug rather than a missing
 flag. The knobs worth knowing: `--ssd-streaming-cache-experts N|NGB` sets the
 expert cache target (auto by default) and `--ssd-streaming-cold` skips the
-popularity preload. Expert reads are split in four 16 KiB-aligned pieces on
-an 18-thread pool (`DS4_METAL_STREAMING_EXPERT_PREAD_SPLIT`, `_PREAD_THREADS`)
-and the owned cache slabs sit in a Metal residency set attached to the queue
+popularity preload. Expert reads go to an 18-thread pool
+(`DS4_METAL_STREAMING_EXPERT_PREAD_THREADS`). The synchronous paths split each
+in four 16 KiB-aligned pieces (`DS4_METAL_STREAMING_EXPERT_PREAD_SPLIT`). A decode miss starts early
+and reads each family whole: three requests, which `260` measured to be no
+slower than pieces. The owned cache slabs sit in a Metal residency set attached to the queue
 (`DS4_METAL_DISABLE_STREAMING_SLAB_RESIDENCY=1` turns it off; it saves about
 1 s on the first token after a prefill sweep); all three were measured on this
 machine by `40-ssd-expert-reads`. `--ssd-streaming-full-layers` is gone: it only ever applied
@@ -114,7 +116,11 @@ batched and token-major kernels round differently. Since
   buffers"). Wide sweeps joined in `100-prefill-weight-delivery`; only
   the deferred-decoder sweeps (a 16384-row sweep with 8192 or more tokens
   still to come, so prompts from about 24.5K) page their layers in through
-  mmap.
+  mmap. These reads use `F_NOCACHE`, which on APFS still leaves about a
+  quarter of a read in the page cache unless it starts on a 16 KiB page.
+  Expert ranges start every 3041280 bytes. A leaking sweep pushed the decode
+  statics out, so `ds41_prefill_expert_pread` reads the partial first page on
+  its own (`268-aligned-uncached-reads`).
 
 `DS4_METAL_DISABLE_V41_SHORT_SWEEP=1` restores the plain schedule and
 `DS4_METAL_DISABLE_V41_DECODER_SUFFIX=1` turns the suffix off. The explicit
@@ -130,6 +136,13 @@ and the 43.51 GiB of routed up against the model (about 7 s with the copy on
 the TB5 drive) and refuses to start on a difference, a missing file, the model
 file itself, or anything but single-box Metal SSD streaming with the Q2
 experts. A later change to the copy stops the next prefill with an error.
+Since `265-replica-check-stamp`, a pass is recorded in an extended attribute
+on the copy (`com.starforge.sf-ds4-1flash.replica`: both files' device,
+inode, size and mtime). The next open skips the comparison while they match
+("replica check: stamp matches, comparison skipped").
+`DS4_METAL_PREFILL_REPLICA_FULL_CHECK=1` forces it. A tool that rewrites the
+copy and restores its mtime defeats the stamp: after such a copy, force the
+check once or run `xattr -d com.starforge.sf-ds4-1flash.replica <copy>`.
 Output stays bitwise identical (`make test-deepseek41-prefill-replica
 REPLICA=<path>`); measured gains are in `speed-bench/perf-record.md`.
 
