@@ -157,43 +157,44 @@ enclosures and links will give different figures.
   APFS it costs nothing: a store takes 6.5 ms less than on the internal SSD,
   a load 4 ms more.
 
-Measured on 2026-10-09 (`main` at `8e9a954`) with `speed-bench/ab_bench.py`,
-expert cache **`82GB`**, copy on APFS, internal SSD only against the same
-build with the copy, two invocations pooled. The times are the second
-invocation's medians; the gain is the pooled median.
+Measured on 2026-10-10 (`main` at `1c052a0`, after `268-aligned-uncached-reads`)
+with `speed-bench/ab_bench.py`, expert cache **`82GB`**, copy on APFS, internal
+SSD only against the same build with the copy, two invocations pooled (40 + 38
+pairs, bitwise, thermal Heavy). The times are the second invocation's medians;
+the gain is the pooled median.
 
 | Shape | Internal SSD only | With the copy | Gain |
 |---|---|---|---|
-| 2500-token prompt, time to first token | 30.8 s | 27.9 s | +10.4% |
-| 3500-token prompt | 13.7 s | 11.4 s | +19.7% |
-| 5000-token prompt | 52.5 s | 50.4 s | +4.5% |
-| 7500-token prompt | 20.0 s | 17.8 s | +12.8% |
-| 10000-token prompt | 28.5 s | 26.2 s | +6.5% |
-| append 1500 tokens to a 5300-token conversation | 10.0 s | 7.9 s | +12.0% |
-| append 300 tokens | 12.9 s | 12.7 s | +0.4% (within noise) |
-| decode after 2048 tokens | 23.0 tokens/s | 23.0 tokens/s | -0.2% (within noise) |
-| first token after an 8192-token context | 1.24 s | 0.88 s | 0.36 s sooner |
-| decode after 8192 tokens, steady | 23.4 tokens/s | 23.1 tokens/s | -0.6% |
-| 256 tokens after an 8192-token context, first included | 12.1 s | 11.9 s | +1.9% |
-| typical mix (harness estimate) | | | +3.0% |
+| 2500-token prompt, time to first token | 30.1 s | 28.0 s | +7.4% |
+| 3500-token prompt | 13.5 s | 12.4 s | +7.9% |
+| 5000-token prompt | 51.1 s | 50.0 s | +1.3% |
+| 7500-token prompt | 19.4 s | 18.5 s | +4.8% |
+| 10000-token prompt | 27.1 s | 25.2 s | +7.9% |
+| append 1500 tokens to a 5300-token conversation | 7.41 s | 6.51 s | +13.9% |
+| append 300 tokens | 12.3 s | 12.3 s | +0.5% (within noise) |
+| decode after 2048 tokens | 24.0 tokens/s | 23.6 tokens/s | -0.7% (within noise) |
+| first token after an 8192-token context | 0.13 s | 0.14 s | same (within noise) |
+| decode after 8192 tokens, steady | 23.9 tokens/s | 23.9 tokens/s | 0.0% |
+| 256 tokens after an 8192-token context, first included | 10.8 s | 10.8 s | -0.2% (within noise) |
+| typical mix (harness estimate) | | | +1.3% |
 
 The copy speeds up the layer sweeps of a prompt, not the tokens read one at
 a time after them. The 5000-token prompt spends most of its time in a
 904-token tail at decode speed, so it gains least; 3500, 7500 and 10000 are
-almost all sweeps. Decode never reads the copy.
+almost all sweeps. Decode never reads the copy, so it runs at the same rate
+with and without it.
 
-In this table the first token after an 8192-token context is slow in both
-columns. The prompt's sweep pushed model pages out of memory: its reads are
-meant to bypass the page cache, but on APFS a read that does not start on a
-16 KiB page leaves about a quarter of its pages there. Since
-`268-aligned-uncached-reads` (2026-10-10) the sweep reads from a page
-boundary, and that first token takes about 0.15 s with or without the copy
-(harness: 1230 -> 150 ms on the internal SSD only, 1049 -> 132 ms with the
-copy). The copy's 0.6% lower steady rate fits what `268` traced, although it
-was not measured on that run: a GPU that waited longer for the first token
-runs the next 256 tokens at a higher clock
-([speed-bench/perf-record.md](speed-bench/perf-record.md), Uncached reads from
-a page boundary).
+The 2026-10-09 table, before `268`, showed larger gains (3500 +19.7%, 7500
++12.8%, mix +3.0%) and a first token after 8192 that came 0.36 s sooner with
+the copy. `268` made the internal-only column faster: its sweeps no longer
+leave a quarter of their reads in the page cache and push the model's pages
+out. The copy column is also slower on 3500 and 7500 than it was then (12.4
+against 11.4 s, 18.5 against 17.8 s). One candidate, not traced: before `265`
+and `268`, its start-up check compared 43.51 GiB of routed up in both files
+and left about a quarter of what it read in the page cache, which the next
+prompt could reuse
+([speed-bench/perf-record.md](speed-bench/perf-record.md), External drive
+after 268).
 
 Both together:
 

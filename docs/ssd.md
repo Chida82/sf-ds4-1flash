@@ -194,10 +194,11 @@ them was measured end to end with the model.
    the copy. After an 8192-token context, the first token comes 1.2 s sooner
    and the steady rate is 1.9% lower (not traced). The copy costs about
    7 s of checking at every engine open (`speed-bench/perf-record.md`,
-   External SSD evidence after 170). With the drive on APFS (2026-10-09,
-   newer tree) the prompt gains are the same, the first token after 8192
-   comes only 0.36 s sooner and the steady cost is 0.6%; the README has that
-   table. Decode misses read only the internal drive. `145` measured reading
+   External SSD evidence after 170). With the drive on APFS and `268`
+   (2026-10-10, `1c052a0`) the prompt gains are smaller (ttft 2500 +7.4%,
+   3500 +7.9%, 7500 +4.8%, 10000 +7.9%, append +1500 +13.9%), the first
+   token after 8192 takes about 0.13 s with or without the copy, and decode
+   is unchanged; the README has that table. Decode misses read only the internal drive. `145` measured reading
    their up part from the copy on ExFAT: decode 8192 -1.7%. On APFS the copy
    delivers up's 2.9 MiB in 0.634 ms (4.6 GB/s) and a probe takes 30% off a
    miss read; `260` retests the split.

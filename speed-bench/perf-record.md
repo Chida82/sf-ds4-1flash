@@ -1746,6 +1746,44 @@ the GPU clock, not to the reads, and the change is kept.
 After the 2048 segment, the first token and 255 more take 10.94 s with
 `main` and 10.51 s with `268`.
 
+## External drive after 268 (2026-10-10, README remeasure)
+
+The README's second-drive table rerun on `main` at `1c052a0`, the method of
+`250` (External drive on APFS): A and B the same tree, B adds
+`--b-env DS4_METAL_PREFILL_REPLICA=/Volumes/ExtSSD/...`, kinds
+`cold,append,decode`, `--bitwise`, 3600 s, two invocations, 40 + 38 pairs,
+none dropped, thermal Heavy (GPU medians 1073 and 1063 MHz), hit rates equal.
+
+| Metric | Gain | 95% CI | n | `250` (APFS, `8e9a954`) |
+|---|---|---|---|---|
+| ttft 2500 | +7.44% | +6.91..+7.90 | 12 | +10.42% |
+| ttft 3500 | +7.93% | +6.72..+8.25 | 12 | +19.73% |
+| ttft 5000 | +1.28% | +0.70..+2.02 | 12 | +4.52% |
+| ttft 7500 | +4.79% | +4.43..+5.30 | 12 | +12.77% |
+| ttft 10000 | +7.86% | +6.76..+9.02 | 12 | +6.52% |
+| prefill 5000 | +2.43% | +1.69..+3.60 | 10 | +4.03% |
+| append +300 | +0.53% | -0.04..+0.94 | 10 | +0.41% |
+| append +1500 | +13.92% | +13.64..+25.35 | 10 | +11.97% |
+| decode 2048 | -0.68% | -2.84..+0.12 | 8 | -0.20% |
+| decode 8192 | +0.00% | -0.46..+1.00 | 8 | -0.56% |
+| first token after 8192 | 124/132 and 127/136 ms (A/B medians) | | 8 | 1237-1278 -> 875-920 ms |
+| 256 tokens after 8192, first included | -0.19% | | 8 | +1.9%, +2.5% |
+| e2e (estimate) | +1.8%, +1.3% | | | +2.5%, +3.0% |
+
+Second invocation's medians, A / B: ttft 2500 30.1 / 28.0 s, 3500 13.5 / 12.4,
+5000 51.1 / 50.0, 7500 19.4 / 18.5, 10000 27.1 / 25.2, append +300 12.3 /
+12.3, append +1500 7.41 / 6.51, decode 2048 24.0 / 23.6, decode 8192 23.9 /
+23.9 tokens/s.
+
+The first-token and steady-decode costs of the copy are gone, as `268`
+predicted. The sweep gains are smaller. Against `250`, the internal-only
+column is faster (3500 13.7 -> 13.5 s, 7500 20.0 -> 19.4, append +1500
+10.0 -> 7.41) and the copy column is slower on 3500 and 7500 (11.4 -> 12.4,
+17.8 -> 18.5). Not traced; one candidate is that before `265` every B run
+compared 43.51 GiB of routed up in both files at engine open, and before
+`268` about a quarter of those reads stayed in the page cache for the run
+that followed.
+
 ## Adding a row
 
 1. `SF_PARITY_FLAGS=--ssd-streaming tools/parity-check.sh sf-ds4-1flash` from
