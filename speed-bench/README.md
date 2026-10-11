@@ -202,6 +202,74 @@ next to the measured misses of the same run; `--self-test` checks the two
 replays on a known sequence. It answers whether a cache-policy change is
 worth opening (see the Situation 0 section of the record).
 
+### README tables
+
+The two speed tables in the top-level README are measured by `readme_bench.py`,
+never by hand, so every column comes from one session and every run starts
+from the same temperature:
+
+```sh
+python3 speed-bench/readme_bench.py sweep --ds4 <ds4 tree at the merge-base> \
+  --replica /Volumes/<drive>/sf-ds4-1flash/DeepSeek-V4.1-Flash-Q2.gguf
+python3 speed-bench/readme_bench.py shapes \
+  --replica /Volumes/<drive>/sf-ds4-1flash/DeepSeek-V4.1-Flash-Q2.gguf
+```
+
+- `sweep` is "Against ds4": the bench sweep above (`--ctx-start 2048
+  --ctx-max 32768 --step-mul 2 --gen-tokens 128`, cache `82GB`) for ds4, sf,
+  sf `--boost`, sf with the second-drive copy, and the copy with `--boost`.
+- `shapes` is the second-drive table: the harness's `cold-*`, `append` and
+  `decode` shapes for the internal drive only, the copy, and the copy with
+  `--boost`. The typical mix is the harness's own estimate.
+
+The protocol, and why each step is there (measured on 2026-10-10,
+`speed-bench/perf-record.md`, `--boost` in a short sweep):
+- **Stock fans for plain runs.** fanboost's thermal protection must be paused
+  (`fanboost pause`); the script refuses otherwise. `--boost` runs ask fanboost
+  for full fans themselves.
+- **One block per build, each after a discarded warm-up.** The first frontier
+  of a run depends on the page cache the previous process left: a run after an
+  idle period read 199 tokens/s on the first 2048 tokens, a run after another
+  sf run 175. ds4 leaves more there: after a ds4 sweep 33.3 GiB of the GGUF
+  was resident against 20.5 GiB after an sf sweep (its prefill reads still
+  leak, which `268` fixed here). The sf run that follows read 165-168 tokens/s
+  on the first 2048 tokens and took 230-256 ms for the first token there,
+  against 174-179 and 106-190 after another sf run, and a ds4 run after
+  another ds4 read 122 against 129. So the script measures ds4 first, then
+  every sf column, and warms each block up with a run of its own build: every
+  measured run follows a run of the same build.
+- **Same start temperature, one the machine can reach.** Right after the
+  warm-up the script holds the fans at their maximum for 60 s and takes the
+  chip's lowest reading; the target is that plus 2 °C. Before every measured
+  run it renews `fanboost max` until the chip is at or below the target
+  **and** macOS reports thermal pressure Nominal, then releases and waits for
+  the Apple curve. The chip alone is not enough: after a hot run macOS stays
+  at Moderate or Heavy for 20-120 s more, even with the chip back at 50 °C,
+  and a plain sf run that started that way after a ds4 run lost 7-10% on
+  decode and prefill. A floor read on an idle machine
+  is the wrong reference: at night it was 35.9 °C, and after a sweep that
+  took the chip to 100 °C, five minutes of full fans did not get back to
+  39.9 °C.
+- **Columns rotated, medians.** Inside a block, `--runs` (3) runs per column
+  in the order A B C, C B A, A B C; every value is the median, which drops a
+  lone outlier.
+  The summary also prints each column's worst spread.
+- **Conditions recorded.** For every run: start temperature and thermal
+  state, cool-down time (and whether it hit the 420 s limit),
+  peak chip temperature and lowest fan speed (`fanboost status` every 2 s),
+  fan modes, thermal states and median GPU clock (mactop every second).
+
+Short runs from a cool chip stay at thermal pressure Nominal, so these
+tables show what one request on a rested machine gets. ds4's sweep is the
+exception: it runs 160-175 s and spends about its last 30 s at Heavy, which is
+its 32768 frontier. Sustained load is the
+A/B harness's job: it runs for an hour at Heavy on purpose, and its figures
+are lower (decode about 24 tokens/s against 29).
+
+Output goes to `$TMPDIR/sf-ds4-1flash-readme/<table>-<time>/`: `summary.md`,
+`runs.json` and the per-run CSV and stderr logs. Copy the CSVs and the
+summary into `speed-bench/` next to the table they feed.
+
 ### Metal decode schedule A/B
 
 Build the balanced, same-engine Metal decode comparison with:

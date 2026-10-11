@@ -45,15 +45,23 @@ A single sweep with the command above is a picture of one build, not a verdict.
 
 ## Recorded baselines
 
-DeepSeek V4.1 Flash Q2 against ds4 at the merge-base `0aaea5a`, 2026-10-10,
-this child at `268-aligned-uncached-reads`: the sweep above with
+DeepSeek V4.1 Flash Q2 against ds4 at the merge-base `0aaea5a`, 2026-10-11,
+this child at `fa51b38`: the sweep above with
 `--ssd-streaming --ssd-streaming-cache-experts 82GB --ctx-start 2048
---ctx-max 32768 --step-mul 2 --gen-tokens 128`, two runs per build in the
-order sf, sf, ds4, ds4, GGUF on the internal drive only. The CSVs are in
-[speed-bench/v41-q2-vs-ds4-20261010](../speed-bench/v41-q2-vs-ds4-20261010)
-and the table in the README's "Speed" section: prefill +40% to +98%, steady
-decode +63% to +72%, the first token after a prefill 0.11-0.15 s against
-2.2-3.0 s. The 2026-10-05 sweep at `132-gpu-all-hit-continuation` is in
+--ctx-max 32768 --step-mul 2 --gen-tokens 128`, measured by
+`speed-bench/readme_bench.py` (three runs per column from the same cool chip,
+ds4 and sf in separate blocks; protocol in `speed-bench/README.md`, "README
+tables"), GGUF on the internal drive only. The CSVs are in
+[speed-bench/readme-20261011](../speed-bench/readme-20261011)
+and the table in the README's "Speed" section: prefill +45% to +99%, steady
+decode +62% to +78%, the first token after a prefill 0.14-0.20 s against
+2.1-3.0 s. With `--boost` (fans at their maximum through fanboost) the same
+sweep gains +6% and +9% on the two long prefill rows and about +2% on steady
+decode; the chip peaks at 92-94 °C, against 101 °C without it. The same
+session measured the second-drive copy (README, "A second drive"). The
+2026-10-10 sweep (two runs per build, no cool-down) is in
+[speed-bench/v41-q2-vs-ds4-20261010](../speed-bench/v41-q2-vs-ds4-20261010).
+The 2026-10-05 sweep at `132-gpu-all-hit-continuation` is in
 [speed-bench/v41-q2-vs-ds4-20261005](../speed-bench/v41-q2-vs-ds4-20261005).
 
 ## What to compare next

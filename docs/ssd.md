@@ -195,10 +195,13 @@ them was measured end to end with the model.
    and the steady rate is 1.9% lower (not traced). The copy costs about
    7 s of checking at every engine open (`speed-bench/perf-record.md`,
    External SSD evidence after 170). With the drive on APFS and `268`
-   (2026-10-10, `1c052a0`) the prompt gains are smaller (ttft 2500 +7.4%,
-   3500 +7.9%, 7500 +4.8%, 10000 +7.9%, append +1500 +13.9%), the first
-   token after 8192 takes about 0.13 s with or without the copy, and decode
-   is unchanged; the README has that table. Decode misses read only the internal drive. `145` measured reading
+   (2026-10-10, `1c052a0`), in an hour-long harness run at thermal pressure
+   Heavy, the prompt gains are smaller (ttft 2500 +7.4%, 3500 +7.9%, 7500
+   +4.8%, 10000 +7.9%, append +1500 +13.9%), the first token after 8192 takes
+   about 0.13 s with or without the copy, and decode is unchanged. Short runs
+   on a rested machine (2026-10-11, `fa51b38`, Nominal) gain more: ttft 2500
+   +11.0%, 3500 +12.9%, 7500 +6.3%, 10000 +19.2%, append +1500 +27.8%; the
+   README has that table. Decode misses read only the internal drive. `145` measured reading
    their up part from the copy on ExFAT: decode 8192 -1.7%. On APFS the copy
    delivers up's 2.9 MiB in 0.634 ms (4.6 GB/s) and a probe takes 30% off a
    miss read; `260` retests the split.

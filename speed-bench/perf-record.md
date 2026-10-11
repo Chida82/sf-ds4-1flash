@@ -1784,6 +1784,98 @@ compared 43.51 GiB of routed up in both files at engine open, and before
 `268` about a quarter of those reads stayed in the page cache for the run
 that followed.
 
+## `--boost` in a short sweep (2026-10-10)
+
+The README's ds4 table got a `--boost` column (bench sweep 2048-32768, two
+runs). Against the plain column, measured 3.5 h earlier, it read +4.7% and
++6.6% on prefill to 16384 and 32768, -7.0% on the first 2048 tokens and about
+-1% at 8192. `fanboost status` every 2 s: plain, the chip reached 100.9 °C with
+the fans at 3136 rpm; `--boost`, fans at their maximum throughout (5321/5708
+rpm or more), chip 92-95 °C.
+
+The first-2048 row is run position: the first run after an idle period reads
+198-200 tokens/s, a run that follows another 174-176, with or without the flag.
+
+Controlled rerun of the first three frontiers (`--ctx-max 8192`,
+`--ctx-alloc 32897`): before every run `fanboost max` until the chip was at
+most 43 °C (floor 38.7 °C after 60 s at full fans, plus 4), then release and
+wait for the Apple curve; one discarded warm-up, then P B F F B P P B F
+(P plain, B `--boost`, F `--boost` with `DS4_METAL_V41_DECODE_KEEPALIVE=0`);
+mactop every second.
+
+| Metric | P (3 runs, sd) | B | F |
+|---|---|---|---|
+| prefill 2048 | 173.7 (1.6) | -0.4% | +0.2% |
+| prefill +2048 to 4096 | 224.3 (1.5) | +0.5% | +0.7% |
+| prefill +4096 to 8192 | 396.6 (0.7) | +0.2% | -0.0% |
+| steady decode 2048 | 29.76 (0.07) | +0.4% | -0.3% |
+| steady decode 4096 | 30.27 (0.20) | +0.4% | +0.1% |
+| steady decode 8192 | 29.16 (0.04) | +0.2% | -0.0% |
+
+Every run stayed at thermal pressure Nominal, GPU median 1486-1538 MHz. The
+chip peaked at 95.3-95.6 °C plain and 79.3-81.5 °C with the fans. In the first
+45 s of a sweep the fans lower the chip by 15 °C and change nothing; the
+`--boost` column's -1% at 8192 is run-to-run noise (a plain full sweep the same
+evening read 401.8 there, `--boost` 398.7 and 398.9). This shorter sweep reads
+about 1.5% lower at 8192 in all three arms (plain 396.6), for a reason not
+traced. The keep-alive makes no difference at Nominal in this shape.
+
+## README sweep protocol (2026-10-11)
+
+The first `readme_bench.py sweep` (00:28-01:14, `main` at `fa51b38`) rotated
+all five columns in one sequence, ds4 included: ds4, sf, sf `--boost`, copy,
+copy `--boost`, then reversed. Every run started at thermal pressure Nominal
+and at most 47.4 °C. Two sf runs out of three followed a ds4 run, and both
+lost on the first frontier: 165.3 and 167.1 tokens/s on the first 2048 tokens
+against 175.9 for the sf run that followed `--boost`, first token there 242
+and 231 ms against 152. The ds4 run that followed another ds4 run read 122.4
+against 129.6 and 129.3.
+
+Follow-up, same cool-down, thermal pressure from `notifyutil -g
+com.apple.system.thermalpressurelevel` every 2 s, page-cache residency of
+the GGUF (`mincore` over a read-only mapping) after every run:
+
+| Run | Before it | prefill 2048 | first token by frontier, ms | resident after |
+|---|---|---|---|---|
+| sf, mactop | sf (harness shapes) | 179.4 | 190 103 133 109 138 | 20.5 GiB |
+| sf | sf | 174.4 | 114 106 107 102 122 | 20.8 GiB |
+| sf | sf | 175.0 | 106 130 114 139 137 | 20.5 GiB |
+| sf, mactop | sf | 174.3 | 110 115 110 121 120 | 20.4 GiB |
+| ds4 | sf | 129.4 | 2089 1999 2028 2174 2686 | 33.3 GiB |
+| sf | ds4 | 168.1 | 256 139 149 188 209 | 20.5 GiB |
+| sf | sf | 175.6 | 185 176 146 207 202 | 20.6 GiB |
+| sf, mactop + `fanboost status` | sf | 174.7 | 184 148 159 161 207 | 20.7 GiB |
+| sf | sf | 175.5 | 148 147 156 204 188 | 20.7 GiB |
+| sf | sf | 175.6 | 147 152 145 188 204 | 20.7 GiB |
+| sf, mactop + `fanboost status` | sf | 175.7 | 149 177 153 189 196 | 20.7 GiB |
+
+- A ds4 sweep leaves 12.8 GiB more of the GGUF in the page cache than an sf
+  sweep: its prefill reads still leak the part `268` fixed here. The next run
+  of either build loses 4-6% on the first 2048 tokens. The sf run after
+  ds4 also went to Moderate for 36 s and Heavy for 4 s although it started
+  Nominal at 43.6 °C. So `readme_bench.py` now measures one block per build,
+  ds4 first, each after a discarded warm-up of its own build.
+- mactop and `fanboost status` sampling change nothing.
+- The first token moved from 102-139 ms to 146-207 ms after the ds4 run and
+  stayed there for the following sf runs, with the same residency. sf reads
+  experts uncached, so pages a ds4 run evicted do not come back; the first
+  token then depends on which expert pages earlier processes left in the
+  page cache, and three-run medians of it move by tens of milliseconds.
+  Against ds4's 2-3 s the comparison holds; between sf columns it is noise.
+- ds4 runs 164 s and spends about its last 30 s at Heavy (19-27 of 126-132
+  mactop samples; 16 of 82 `notifyutil` samples in the follow-up), which is
+  its 32768 frontier: 402-431 tokens/s
+  there against 499-524 on 2026-10-10, when the runs were 180 s apart with no
+  cool-down and the thermal state was not recorded. sf finishes in 90-95 s at
+  Nominal.
+
+The sweep with one block per build (03:15-04:04, data in
+`speed-bench/readme-20261011/sweep`) gives the README tables. The sf
+warm-up right after the ds4 block read 166.5 tokens/s on the first 2048
+tokens and was discarded; the three measured plain sf runs read 175.2-175.9,
+the three ds4 runs 119.0-123.0. The worst spread of any column, first token
+aside, is 4.9% (sf, steady decode 8192); `--boost` 2.0%.
+
 ## Adding a row
 
 1. `SF_PARITY_FLAGS=--ssd-streaming tools/parity-check.sh sf-ds4-1flash` from

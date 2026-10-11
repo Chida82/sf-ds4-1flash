@@ -17,6 +17,12 @@ We test things in integration: model loading, prompt rendering,
 tool calls, KV state, and the HTTP server are built and tested together.
 The repository also includes tools and data for quality and speed measurement.
 
+> **Use at your own risk.** This project, including the bundled `fanboost`
+> fan daemon, is provided as is, without warranty of any kind (see
+> `LICENSE`). Whoever builds, runs or changes it does so at their own risk
+> and is solely responsible for the consequences. The author accepts no
+> liability for any damage to hardware, data or anything else.
+
 ## Why this fork exists
 
 ds4 is built around a few models rather than as a general GGUF runner, and it
@@ -58,44 +64,78 @@ On a 128 GB Mac this model always runs with `--ssd-streaming` (see
 
 **Against ds4**, same GGUF, same flags, upstream's own bench:
 
-| Measurement | ds4 t/s | sf t/s | sf vs ds4 |
-|---|---:|---:|---:|
-| *commit* | `0aaea5a` | `220dd7d` | *+ is better* |
-| prefill, first 2048 tokens | 124.9 | 187.1 | +49.8% |
-| prefill, +2048 to context 4096 | 116.2 | 226.8 | +95.2% |
-| prefill, +4096 to context 8192 | 203.9 | 403.7 | +98.0% |
-| prefill, +8192 to context 16384 | 357.6 | 567.6 | +58.7% |
-| prefill, +16384 to context 32768 | 511.1 | 716.8 | +40.2% |
-| generation, context 2048 | 13.0 | 28.8 | +120.7% |
-| generation, context 8192 | 13.4 | 28.6 | +113.2% |
-| generation, context 32768 | 12.0 | 26.6 | +120.8% |
-| steady decode, context 2048 | 17.1 | 29.5 | +72.4% |
-| steady decode, context 8192 | 17.6 | 29.3 | +66.7% |
-| steady decode, context 32768 | 16.6 | 27.1 | +63.4% |
+| Measurement | ds4 t/s | sf t/s | sf vs ds4 | sf `--boost` t/s | sf `--boost` vs ds4 |
+|---|---:|---:|---:|---:|---:|
+| *commit* | `0aaea5a` | `fa51b38` | *+ is better* | `fa51b38` | *+ is better* |
+| prefill, first 2048 tokens | 121.1 | 175.7 | +45.0% | 175.6 | +45.0% |
+| prefill, +2048 to context 4096 | 113.9 | 227.0 | +99.4% | 226.7 | +99.1% |
+| prefill, +4096 to context 8192 | 202.8 | 398.5 | +96.4% | 400.8 | +97.6% |
+| prefill, +8192 to context 16384 | 354.2 | 559.5 | +58.0% | 591.9 | +67.1% |
+| prefill, +16384 to context 32768 | 397.7 | 702.8 | +76.7% | 765.1 | +92.4% |
+| generation, context 2048 | 12.5 | 28.7 | +129.2% | 29.0 | +131.8% |
+| generation, context 8192 | 13.3 | 27.8 | +109.3% | 28.3 | +113.3% |
+| generation, context 32768 | 11.7 | 25.7 | +118.8% | 26.4 | +124.9% |
+| steady decode, context 2048 | 16.6 | 29.6 | +78.3% | 30.1 | +81.3% |
+| steady decode, context 8192 | 17.7 | 28.6 | +61.7% | 29.1 | +64.8% |
+| steady decode, context 32768 | 16.1 | 26.3 | +63.1% | 27.1 | +68.0% |
 
 First token after each prefill, same runs:
 
-| Context | ds4 ms | sf ms | sf vs ds4 |
-|---|---:|---:|---:|
-| *commit* | `0aaea5a` | `220dd7d` | *- is better* |
-| 2048 | 2412 | 145 | -94.0% |
-| 4096 | 2158 | 112 | -94.8% |
-| 8192 | 2301 | 131 | -94.3% |
-| 16384 | 2560 | 129 | -95.0% |
-| 32768 | 3016 | 131 | -95.7% |
+| Context | ds4 ms | sf ms | sf vs ds4 | sf `--boost` ms | sf `--boost` vs ds4 |
+|---|---:|---:|---:|---:|---:|
+| *commit* | `0aaea5a` | `fa51b38` | *- is better* | `fa51b38` | *- is better* |
+| 2048 | 2565 | 185 | -92.8% | 182 | -92.9% |
+| 4096 | 2139 | 144 | -93.3% | 146 | -93.2% |
+| 8192 | 2439 | 152 | -93.8% | 152 | -93.8% |
+| 16384 | 2538 | 196 | -92.3% | 187 | -92.6% |
+| 32768 | 3007 | 194 | -93.5% | 166 | -94.5% |
+
+**Every run starts from the same cool chip, and the long ones end hot.**
+Before each run the fans cool the chip to 46.5 °C and macOS back to thermal
+pressure Nominal; then plain runs follow Apple's fan curve. An sf sweep takes
+90-94 s: the chip reaches 101 °C and macOS stays at Nominal (one Moderate
+sample in three runs). ds4's takes
+about 170 s and spends its last 30 s or so, the 32768 frontier, at Heavy,
+which is why sf's lead on that row is larger than on the one before. With
+`--boost` the fans run at their maximum and the chip peaks at 92-94 °C. In a
+sweep this short that buys +6% and +9% on the two long prefill rows, which
+come last when the chip is hottest, about +2% on steady decode, and nothing
+on the first three frontiers; in a 30-minute session of requests it is worth
+about 4-5% (see `--boost` below).
+
+The first token is the noisiest figure. sf reads experts uncached, so its
+first token depends on which expert pages earlier processes left in the page
+cache: the same build read 0.10-0.14 s in one series of runs and 0.15-0.21 s
+in the next, after a ds4 run had passed through
+([speed-bench/perf-record.md](speed-bench/perf-record.md), README sweep
+protocol). Against ds4's 2-3 s the comparison holds; between the two sf
+columns the differences are within that noise.
 
 Greedy output is token-identical to ds4 (parity oracle, ten prompts).
 
-**How it was measured** on 2026-10-10. The builds compared are ds4 at the
-merge-base `0aaea5a` and this child at `268-aligned-uncached-reads`, on
-DeepSeek V4.1 Flash Q2, with the GGUF on the internal drive only (no
-second-drive copy).
+**How it was measured** on 2026-10-11 by `speed-bench/readme_bench.py sweep`.
+The builds compared are ds4 at the merge-base `0aaea5a` and this child at
+`fa51b38`, on DeepSeek V4.1 Flash Q2, with the GGUF on the internal drive
+only (the second-drive columns of the same session are in
+[A second drive](#a-second-drive)).
 - Both run `ds4-bench` (here `sf-ds4-1flash-bench`) on *I Promessi Sposi* with
   `--ssd-streaming --ssd-streaming-cache-experts 82GB`, context frontiers from
   2048 to 32768 doubling, and 128 generated tokens per frontier. Each frontier
   prefills the new tokens on top of the previous context.
-- Each value is the mean of two runs per build, 180 s apart, in the order
-  sf, sf, ds4, ds4. The CSVs are in `speed-bench/v41-q2-vs-ds4-20261010`.
+- Each value is the median of three runs. ds4's three runs come first, then
+  the sf columns, rotated; each block starts with a discarded warm-up run of
+  its own build. A run that follows a ds4 run loses 4-6% on the first 2048
+  tokens, sf or ds4 alike, because ds4's prefill leaves 13 GiB more of the
+  GGUF in the page cache; ds4's figures are therefore runs that follow ds4
+  (after an sf run it reads 129 tokens/s on the first 2048 tokens, not 121).
+- Before every run `fanboost max` until the chip is at or below 46.5 °C (its
+  lowest reading in 60 s of full fans after the warm-up, plus 2 °C) and macOS
+  reports Nominal, then back to Apple's curve, with fanboost's own thermal
+  protection paused. Chip and fans are sampled every 2 s with
+  `fanboost status`, thermal pressure and GPU clock every second with mactop.
+  The CSVs, medians and per-run conditions are in
+  `speed-bench/readme-20261011/sweep`; the protocol is in
+  `speed-bench/README.md`, "README tables".
 - "Generation" counts all 128 tokens, including the first one after the
   prefill; "steady decode" leaves that first token out.
 
@@ -157,44 +197,68 @@ enclosures and links will give different figures.
   APFS it costs nothing: a store takes 6.5 ms less than on the internal SSD,
   a load 4 ms more.
 
-Measured on 2026-10-10 (`main` at `1c052a0`, after `268-aligned-uncached-reads`)
-with `speed-bench/ab_bench.py`, expert cache **`82GB`**, copy on APFS, internal
-SSD only against the same build with the copy, two invocations pooled (40 + 38
-pairs, bitwise, thermal Heavy). The times are the second invocation's medians;
-the gain is the pooled median.
+Measured on 2026-10-11 (`main` at `fa51b38`) by
+`speed-bench/readme_bench.py shapes`: the A/B harness's prompt, append and
+decode shapes, expert cache **`82GB`**, copy on APFS, three runs per column
+in rotated order, each started once the fans had cooled the chip to 43.2 °C
+or below and macOS reported Nominal, plain columns on Apple's fan curve. Each run lasts 13-63 s
+and stays at Nominal, so this is one request on a rested machine. Times are
+medians; the gain is against the internal SSD only, + is better. *Within
+noise*: the three runs of that column overlap those of the internal SSD.
 
-| Shape | Internal SSD only | With the copy | Gain |
-|---|---|---|---|
-| 2500-token prompt, time to first token | 30.1 s | 28.0 s | +7.4% |
-| 3500-token prompt | 13.5 s | 12.4 s | +7.9% |
-| 5000-token prompt | 51.1 s | 50.0 s | +1.3% |
-| 7500-token prompt | 19.4 s | 18.5 s | +4.8% |
-| 10000-token prompt | 27.1 s | 25.2 s | +7.9% |
-| append 1500 tokens to a 5300-token conversation | 7.41 s | 6.51 s | +13.9% |
-| append 300 tokens | 12.3 s | 12.3 s | +0.5% (within noise) |
-| decode after 2048 tokens | 24.0 tokens/s | 23.6 tokens/s | -0.7% (within noise) |
-| first token after an 8192-token context | 0.13 s | 0.14 s | same (within noise) |
-| decode after 8192 tokens, steady | 23.9 tokens/s | 23.9 tokens/s | 0.0% |
-| 256 tokens after an 8192-token context, first included | 10.8 s | 10.8 s | -0.2% (within noise) |
-| typical mix (harness estimate) | | | +1.3% |
+| Shape | Internal SSD only | With the copy | Gain | Copy and `--boost` | Gain |
+|---|---|---|---|---|---|
+| 2500-token prompt, time to first token | 26.5 s | 23.9 s | +11.0% | 23.7 s | +11.6% |
+| 3500-token prompt | 11.9 s | 10.5 s | +12.9% | 10.5 s | +13.8% |
+| 5000-token prompt | 42.0 s | 40.5 s | +3.7% | 40.4 s | +4.1% |
+| 7500-token prompt | 15.7 s | 14.8 s | +6.3% | 14.8 s | +6.5% |
+| 10000-token prompt | 23.5 s | 19.7 s | +19.2% | 20.1 s | +16.9% |
+| append 1500 tokens to a 5300-token conversation | 7.25 s | 5.68 s | +27.8% | 5.40 s | +34.4% |
+| append 300 tokens | 10.1 s | 10.1 s | -0.3% (within noise) | 9.9 s | +1.3% |
+| decode after 2048 tokens | 29.8 tokens/s | 29.4 tokens/s | -1.2% (within noise) | 29.4 tokens/s | -1.2% (within noise) |
+| first token after an 8192-token context | 0.14 s | 0.13 s | same (within noise) | 0.11 s | same (within noise) |
+| decode after 8192 tokens, steady | 29.4 tokens/s | 29.4 tokens/s | 0.0% | 29.7 tokens/s | +0.7% |
+| 256 tokens after an 8192-token context, first included | 8.8 s | 8.8 s | 0.0% | 8.7 s | +0.9% |
+| typical mix (harness estimate) | 59.9 s | 58.1 s | +3.1% | 58.0 s | +3.3% |
 
 The copy speeds up the layer sweeps of a prompt, not the tokens read one at
 a time after them. The 5000-token prompt spends most of its time in a
 904-token tail at decode speed, so it gains least; 3500, 7500 and 10000 are
 almost all sweeps. Decode never reads the copy, so it runs at the same rate
-with and without it.
+with and without it. `--boost` adds little to runs this short: they stay at
+Nominal either way.
 
-The 2026-10-09 table, before `268`, showed larger gains (3500 +19.7%, 7500
-+12.8%, mix +3.0%) and a first token after 8192 that came 0.36 s sooner with
-the copy. `268` made the internal-only column faster: its sweeps no longer
-leave a quarter of their reads in the page cache and push the model's pages
-out. The copy column is also slower on 3500 and 7500 than it was then (12.4
-against 11.4 s, 18.5 against 17.8 s). One candidate, not traced: before `265`
-and `268`, its start-up check compared 43.51 GiB of routed up in both files
-and left about a quarter of what it read in the page cache, which the next
-prompt could reuse
+Under sustained load the copy gains less. The 2026-10-10 harness run, an hour
+at thermal pressure Heavy with the GPU at 1030-1070 MHz and decode at about
+24 tokens/s, read +7.4% on the 2500-token prompt, +13.9% on the 1500-token
+append and +1.3% on the typical mix, against +11.0%, +27.8% and +3.1% here:
+when the GPU clock is the limit, faster reads matter less
 ([speed-bench/perf-record.md](speed-bench/perf-record.md), External drive
 after 268).
+
+Upstream's bench sweep from [Speed](#speed), same session and protocol, with
+the copy (gain against the internal SSD only, + is better, *within noise* as
+above):
+
+| Measurement | sf t/s | sf + copy t/s | Gain | sf + copy `--boost` t/s | Gain |
+|---|---:|---:|---:|---:|---:|
+| prefill, first 2048 tokens | 175.7 | 234.6 | +33.5% | 229.4 | +30.6% |
+| prefill, +2048 to context 4096 | 227.0 | 301.6 | +32.9% | 302.1 | +33.1% |
+| prefill, +4096 to context 8192 | 398.5 | 454.3 | +14.0% | 457.1 | +14.7% |
+| prefill, +8192 to context 16384 | 559.5 | 593.3 | +6.0% | 647.3 | +15.7% |
+| prefill, +16384 to context 32768 | 702.8 | 732.8 | +4.3% | 795.5 | +13.2% |
+| generation, context 2048 | 28.7 | 29.0 | +1.0% | 28.6 | -0.3% (within noise) |
+| generation, context 8192 | 27.8 | 28.3 | +1.7% (within noise) | 28.4 | +2.1% (within noise) |
+| generation, context 32768 | 25.7 | 25.8 | +0.4% (within noise) | 26.5 | +3.1% |
+| steady decode, context 2048 | 29.6 | 29.9 | +1.3% (within noise) | 29.6 | +0.2% (within noise) |
+| steady decode, context 8192 | 28.6 | 29.1 | +1.8% (within noise) | 29.2 | +2.2% (within noise) |
+| steady decode, context 32768 | 26.3 | 26.6 | +1.1% (within noise) | 27.2 | +3.5% |
+
+The copy adds a third on the first two frontiers and 4-6% on the long ones;
+with `--boost` the long ones gain 13-16%, which makes copy and `--boost`
+together the fastest configuration measured at the `82GB` cache. The first
+token after each prefill is 0.14-0.20 s in all three columns. The CSVs are in
+`speed-bench/readme-20261011`.
 
 Both together:
 
@@ -225,7 +289,8 @@ gets with every lever on at once, against the `82GB` figures above:
 - Metal's working-set limit raised so that cache fits:
   `sudo sysctl iogpu.wired_limit_mb=117500`;
 - the copy on the second drive (`DS4_METAL_PREFILL_REPLICA`);
-- `--boost`: full fans through the `fanboost` daemon (it must be running) and
+- `--boost`: full fans through the `fanboost` daemon (it must be installed,
+  see [fanboost/](fanboost/README.md)) and
   the GPU keep-alive during decode miss reads.
 
 It is not a step of the A/B harness and changes no default: normal use and
@@ -263,9 +328,11 @@ Results: not run yet. The first run fills a table with the same rows as
 
 ## Supported hardware
 
-* **Metal**, the primary target, on Macs with 96 GB or more. Smaller machines
-  can use SSD streaming. SSD streaming is also needed in order to run very
-  larger quantizations on 128 GB systems.
+* **Metal** on Apple Silicon, the only backend. The Q2 GGUF needs
+  `--ssd-streaming` on a 128 GB Mac, the only machine this fork is measured
+  on. A Mac with room for the ~152 GiB of main weights plus the context can
+  run it resident (not measured here), and so can two 128 GB Macs with TP/RDMA.
+  The Engram tables stay on disk in every mode.
 
 This project would not exist without **llama.cpp and GGML**, make sure to read
 the acknowledgements section, a big thank you to Georgi Gerganov and all the
@@ -276,7 +343,7 @@ other contributors.
 
 * You can run a very capable models in your consumer hardware, a MacBook for example. Even if you have not enough RAM, with SSD streaming, you can run it at a decent speed.
 * Using two 128 GB Macs connected with RDMA, you can run this model resident with tensor parallelism.
-* You can also use pipeline paralellism to glue together multiple systems to sum their RAM and run larger models.
+* Pipeline (layer-slice) parallelism across several machines is in the tree but does not work for DeepSeek V4.1 yet ([docs/DISTRIBUTED.md](docs/DISTRIBUTED.md)).
 
 ## Motivations
 
@@ -331,7 +398,7 @@ and hardware-specific setups:
 | --- | --- |
 | [Metal on Apple Silicon](docs/METAL.md) | `make` |
 
-For a first run on a 96 or 128 GB machine, download the Q2 release:
+Download the Q2 release, the only one offered here:
 
 ```sh
 ./download.sh q2
@@ -339,19 +406,22 @@ For a first run on a 96 or 128 GB machine, download the Q2 release:
 
 The model itself lives once in the shared Hugging Face cache; `gguf/` holds
 symlinks to it and `./deepseek-v4.1-flash.gguf` points at the main model.
-Repeat the command to verify or resume. Leave memory for the context and
-runtime buffers as well as the model. See [the model guide](docs/MODELS.md)
-or use [SSD streaming](docs/SSD_STREAMING.md) on a smaller Mac.
+Repeat the command to verify or resume. On a 128 GB Mac it runs only with
+`--ssd-streaming`; see [the model guide](docs/MODELS.md) and
+[SSD streaming](docs/SSD_STREAMING.md).
 
 ## Everyday Use
 
 Once built and with a model downloaded:
 
 ```sh
-./sf-ds4-1flash
-./sf-ds4-1flash -p "Explain Redis streams in one paragraph."
-./sf-ds4-1flash-server --ctx 32768
+./sf-ds4-1flash --ssd-streaming
+./sf-ds4-1flash --ssd-streaming -p "Explain Redis streams in one paragraph."
+./sf-ds4-1flash-server --ssd-streaming --ctx 32768
 ```
+
+These use the automatic expert cache; every figure in [Speed](#speed) adds
+`--ssd-streaming-cache-experts 82GB`.
 
 The default model is `deepseek-v4.1-flash.gguf`, a link updated by
 `./download.sh q2`. Pass `-m FILE` to choose explicitly. Commands normally run
@@ -398,16 +468,31 @@ requires `--power 100`.
 
 `--boost` (CLI, server and bench) is for interactive use. The output is the
 same with and without it. It does two things:
-- It asks the owner's `fanboost` daemon, if installed, for full fans while the GPU works. The fans go back to the Apple
-  curve a few seconds after the engine goes idle, when fanboost's request
-  lapses. In a 30-minute session of
-  typical requests (expert cache `82GB`) the machine never reached the Heavy thermal state (without
-  it, inside the first request), and requests ran about 4-5% faster. It does
-  so by running `fanboost max` once a second; without `/usr/local/bin/fanboost`
-  it does nothing.
+- It asks the `fanboost` daemon, if installed, for full fans while the GPU
+  works. The fans go back to the Apple curve a few seconds after the engine
+  goes idle, when fanboost's request lapses. In a 30-minute session of
+  typical requests (expert cache `82GB`) the machine never reached the Heavy
+  thermal state (without it, inside the first request), and requests ran
+  about 4-5% faster. It does so by running `fanboost max` once a second;
+  without `/usr/local/bin/fanboost` it does nothing.
 - Under SSD streaming, it keeps the GPU busy while a decode token waits for
   missing experts. That is worth a few tenths of a percent of decode on a
   cool machine.
+
+`fanboost` ships in [fanboost/](fanboost/README.md); install it with
+`./fanboost/install.sh` and remove it with `./fanboost/install.sh uninstall`.
+The script builds it, runs its self-test, lists the risks and installs only
+after you type `yes`. **Know what it does before installing:**
+- it is a root daemon that writes the Mac's fan controller (the SMC) through
+  an interface Apple does not document, so a macOS update can break it;
+- it only ever sets the fans to their maximum or hands them back to Apple's
+  curve, so it cannot cool less than macOS would, and a crash while boosting
+  leaves the fans at full speed (noise, not heat). That limits the danger of
+  changing the fans; it does not remove it;
+- full fans are loud and wear the fans faster;
+- any local process can ask it for full fans without `sudo`.
+
+Using it, like the rest of this project, is your own responsibility.
 
 Directional steering is present in the build and documented under
 [dir-steering/](dir-steering/README.md), but DeepSeek V4.1 Flash does not
