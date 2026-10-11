@@ -60,20 +60,6 @@ int ds4_gpu_commands_active(void);
 #include "ds4_deepseek41_gpu.h"
 int ds4_gpu_parallel_ffn_finish(void);
 void ds4_gpu_parallel_ffn_abort(void);
-int ds4_gpu_parallel_ffn_start(
-        ds4_gpu_tensor       *gate,
-        ds4_gpu_tensor       *up,
-        ds4_gpu_tensor       *mid,
-        ds4_gpu_tensor       *shared_out,
-        const void           *model_map,
-        uint64_t              model_size,
-        uint64_t              gate_offset,
-        uint64_t              up_offset,
-        uint64_t              down_offset,
-        uint32_t              model_dim,
-        uint32_t              shared_dim,
-        const ds4_gpu_tensor *x,
-        float                 clamp);
 int ds4_gpu_parallel_ffn_start_sliced(
         ds4_gpu_tensor       *gate,
         ds4_gpu_tensor       *up,
@@ -501,8 +487,7 @@ int ds4_gpu_router_shared_gate_up_q8_0_tensor(
         uint64_t              router_out_dim,
         uint64_t              out_dim,
         const ds4_gpu_tensor *x,
-        float                 clamp,
-        bool                  router_only);
+        float                 clamp);
 int ds4_gpu_router_project_select_fused_tensor(
         ds4_gpu_tensor       *router_logits,
         ds4_gpu_tensor       *probs,
@@ -1461,7 +1446,6 @@ int ds4_gpu_hc_split_weighted_sum_norm_tensor(
         float                   eps,
         float                   norm_eps);
 
-int ds4_gpu_hc_rms_norm_mix_f16_available(void);
 int ds4_gpu_hc_rms_norm_mix_f16_tensor(
         ds4_gpu_tensor       *out,
         const ds4_gpu_tensor *x,
@@ -1486,52 +1470,6 @@ int ds4_gpu_hc_rms_scale_project_f16_tensor(
         const ds4_gpu_tensor *x,
         uint32_t                n_rows,
         float                   eps);
-
-int ds4_gpu_hc_rms_norm_mix_split_norm_f16_tensor(
-        ds4_gpu_tensor       *mix,
-        ds4_gpu_tensor       *out,
-        ds4_gpu_tensor       *norm_out,
-        ds4_gpu_tensor       *split,
-        const ds4_gpu_tensor *residual_hc,
-        const void           *model_map,
-        uint64_t              model_size,
-        uint64_t              mix_weight_offset,
-        uint64_t              scale_offset,
-        uint64_t              base_offset,
-        uint64_t              norm_weight_offset,
-        uint32_t              n,
-        uint32_t              mix_dim,
-        uint32_t              n_embd,
-        uint32_t              n_hc,
-        uint32_t              sinkhorn_iters,
-        float                 eps,
-        float                 hc_eps,
-        float                 norm_eps);
-int ds4_gpu_hc_expand_add_rms_norm_mix_split_norm_f16_tensor(
-        ds4_gpu_tensor       *mix,
-        ds4_gpu_tensor       *out,
-        ds4_gpu_tensor       *norm_out,
-        ds4_gpu_tensor       *split,
-        const ds4_gpu_tensor *residual_hc,
-        const ds4_gpu_tensor *block_out,
-        const ds4_gpu_tensor *block_add,
-        const ds4_gpu_tensor *residual_prev,
-        const ds4_gpu_tensor *post,
-        const ds4_gpu_tensor *comb,
-        const void           *model_map,
-        uint64_t              model_size,
-        uint64_t              mix_weight_offset,
-        uint64_t              scale_offset,
-        uint64_t              base_offset,
-        uint64_t              norm_weight_offset,
-        uint32_t              n,
-        uint32_t              mix_dim,
-        uint32_t              n_embd,
-        uint32_t              n_hc,
-        uint32_t              sinkhorn_iters,
-        float                 eps,
-        float                 hc_eps,
-        float                 norm_eps);
 
 int ds4_gpu_output_hc_weights_tensor(
         ds4_gpu_tensor       *out,

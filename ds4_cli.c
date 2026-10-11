@@ -35,37 +35,6 @@
 #error "build through the Makefile"
 #endif
 
-static bool cli_env_flag_enabled(const char *name, bool defval) {
-    const char *v = getenv(name);
-    if (!v || !v[0]) return defval;
-    return strcmp(v, "0") != 0;
-}
-
-static bool cli_splitkv_spec_requested(void) {
-    if (cli_env_flag_enabled("DS4_CUDA_NO_SPLITKV_SPEC", false)) return false;
-    return cli_env_flag_enabled("DS4_CUDA_SPLITKV_SPEC", false);
-}
-
-static bool cli_greedy_fast_attention_requested(void) {
-    if (!cli_env_flag_enabled("DS4_CUDA_NO_GREEDY_SPLITKV", false) &&
-        cli_env_flag_enabled("DS4_CUDA_GREEDY_SPLITKV", false))
-    {
-        return true;
-    }
-    if (!cli_env_flag_enabled("DS4_CUDA_NO_GREEDY_VEC4", false) &&
-        cli_env_flag_enabled("DS4_CUDA_GREEDY_VEC4", false))
-    {
-        return true;
-    }
-    return false;
-}
-
-static bool cli_greedy_argmax_requested(bool speculative_requested) {
-    if (cli_greedy_fast_attention_requested()) return true;
-    if (speculative_requested) return false;
-    return cli_env_flag_enabled("DS4_CUDA_GREEDY_TOP1", true);
-}
-
 typedef struct {
     const char *prompt;
     const char *system;
@@ -568,62 +537,31 @@ static int run_sampled_generation(ds4_engine *engine, const cli_config *cfg, con
     uint64_t rng = cfg->gen.seed ? cfg->gen.seed :
         ((uint64_t)time(NULL) ^ ((uint64_t)getpid() << 32) ^ (uint64_t)clock());
     int generated = 0;
-    const bool speculative_argmax = cfg->gen.temperature <= 0.0f &&
-        cli_splitkv_spec_requested();
-    const bool greedy_argmax = cfg->gen.temperature <= 0.0f &&
-        cli_greedy_argmax_requested(speculative_argmax);
-    bool have_greedy_next = false;
-    int greedy_next = -1;
+    /* sf-ablate(specdec): the greedy look-ahead and multi-token batches (DS4_CUDA_*SPLITKV*, *_GREEDY_VEC4, *_GREEDY_TOP1) only replayed tokens a draft engine produced; none here, so every token is sampled */
     const double t_decode0 = cli_now_sec();
     while (generated < max_tokens && !cli_interrupt_requested()) {
-        int token;
-        if (greedy_argmax && have_greedy_next) {
-            token = greedy_next;
-            have_greedy_next = false;
-        } else {
-            token = ds4_session_sample(session, cfg->gen.temperature, 0,
+        int token = ds4_session_sample(session, cfg->gen.temperature, 0,
                                        cfg->gen.top_p, cfg->gen.min_p, &rng);
-        }
         if (ds4_token_is_stop_for_think_mode(engine, token, think_mode)) break;
 
-        int toks[17];
-        int ntok = 0;
-        {
-            size_t piece_len = 0;
-            char *piece = ds4_token_text(engine, token, &piece_len);
-            token_printer_write_text(&printer, piece, piece_len);
-            fflush(stdout);
-            free(piece);
-            generated++;
-            if (generated >= max_tokens || cli_interrupt_requested()) {
-                continue;
-            }
-
-            cli_dist_busy_set(cfg, true);
-            int eval_rc = ds4_session_eval(session, token, err, sizeof(err));
-            cli_dist_busy_set(cfg, false);
-            if (eval_rc != 0) {
-                fprintf(stderr, "ds4: decode failed: %s\n", err);
-                ds4_session_free(session);
-                return 1;
-            }
+        size_t piece_len = 0;
+        char *piece = ds4_token_text(engine, token, &piece_len);
+        token_printer_write_text(&printer, piece, piece_len);
+        fflush(stdout);
+        free(piece);
+        generated++;
+        if (generated >= max_tokens || cli_interrupt_requested()) {
             continue;
         }
-        bool stop = false;
-        for (int j = 0; j < ntok; j++) {
-            if (ds4_token_is_stop_for_think_mode(engine, toks[j], think_mode)) {
-                stop = true;
-                break;
-            }
-            size_t piece_len = 0;
-            char *piece = ds4_token_text(engine, toks[j], &piece_len);
-            token_printer_write_text(&printer, piece, piece_len);
-            fflush(stdout);
-            free(piece);
-            generated++;
-            if (generated >= max_tokens) break;
+
+        cli_dist_busy_set(cfg, true);
+        int eval_rc = ds4_session_eval(session, token, err, sizeof(err));
+        cli_dist_busy_set(cfg, false);
+        if (eval_rc != 0) {
+            fprintf(stderr, "ds4: decode failed: %s\n", err);
+            ds4_session_free(session);
+            return 1;
         }
-        if (stop) break;
     }
     const double t_decode1 = cli_now_sec();
     generation_done(&printer);
@@ -1559,66 +1497,33 @@ static int run_chat_turn(ds4_engine *engine, cli_config *cfg, repl_chat *chat,
     uint64_t rng = cfg->gen.seed ? cfg->gen.seed :
         ((uint64_t)time(NULL) ^ ((uint64_t)getpid() << 32) ^ (uint64_t)clock());
     int generated = 0;
-    const bool speculative_argmax = cfg->gen.temperature <= 0.0f &&
-        cli_splitkv_spec_requested();
-    const bool greedy_argmax = cfg->gen.temperature <= 0.0f &&
-        cli_greedy_argmax_requested(speculative_argmax);
-    bool have_greedy_next = false;
-    int greedy_next = -1;
+    /* sf-ablate(specdec): the greedy look-ahead and multi-token batches (DS4_CUDA_*SPLITKV*, *_GREEDY_VEC4, *_GREEDY_TOP1) only replayed tokens a draft engine produced; none here, so every token is sampled */
     const double t_decode0 = cli_now_sec();
     while (generated < max_tokens && !cli_interrupt_requested()) {
-        int token;
-        if (greedy_argmax && have_greedy_next) {
-            token = greedy_next;
-            have_greedy_next = false;
-        } else {
-            token = ds4_session_sample(chat->session,
+        int token = ds4_session_sample(chat->session,
                                        cfg->gen.temperature,
                                        0,
                                        cfg->gen.top_p,
                                        cfg->gen.min_p,
                                        &rng);
-        }
         if (ds4_token_is_stop_for_think_mode(engine, token, think_mode)) break;
 
-        int toks[17];
-        int ntok = 0;
-        {
-            size_t piece_len = 0;
-            char *piece = ds4_token_text(engine, token, &piece_len);
-            ds4_tokens_push(&chat->transcript, token);
-            token_printer_write_text(&printer, piece, piece_len);
-            fflush(stdout);
-            free(piece);
-            generated++;
+        size_t piece_len = 0;
+        char *piece = ds4_token_text(engine, token, &piece_len);
+        ds4_tokens_push(&chat->transcript, token);
+        token_printer_write_text(&printer, piece, piece_len);
+        fflush(stdout);
+        free(piece);
+        generated++;
 
-            cli_dist_busy_set(cfg, true);
-            int eval_rc = ds4_session_eval(chat->session, token, err, sizeof(err));
-            cli_dist_busy_set(cfg, false);
-            if (eval_rc != 0) {
-                fprintf(stderr, "ds4: decode failed: %s\n", err);
-                ds4_session_invalidate(chat->session);
-                return 1;
-            }
-            if (generated >= max_tokens) break;
-            continue;
+        cli_dist_busy_set(cfg, true);
+        int eval_rc = ds4_session_eval(chat->session, token, err, sizeof(err));
+        cli_dist_busy_set(cfg, false);
+        if (eval_rc != 0) {
+            fprintf(stderr, "ds4: decode failed: %s\n", err);
+            ds4_session_invalidate(chat->session);
+            return 1;
         }
-        bool stop = false;
-        for (int j = 0; j < ntok; j++) {
-            if (ds4_token_is_stop_for_think_mode(engine, toks[j], think_mode)) {
-                stop = true;
-                break;
-            }
-            size_t piece_len = 0;
-            char *piece = ds4_token_text(engine, toks[j], &piece_len);
-            ds4_tokens_push(&chat->transcript, toks[j]);
-            token_printer_write_text(&printer, piece, piece_len);
-            fflush(stdout);
-            free(piece);
-            generated++;
-            if (generated >= max_tokens) break;
-        }
-        if (stop) break;
     }
     const double t_decode1 = cli_now_sec();
     generation_done(&printer);

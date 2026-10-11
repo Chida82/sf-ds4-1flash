@@ -63,19 +63,16 @@ static void test_restore_env(const char *name, char *saved) {
 }
 
 typedef struct {
-    char *cold_decode;
+    /* sf-ablate(streaming): DS4_METAL_DISABLE_STREAMING_COLD_DECODE_PREFILL went with the generic ds4_gpu_graph cold prefill; nothing reads it */
     char *batch_selected_addr;
 } test_streaming_prefill_env;
 
 static test_streaming_prefill_env test_force_canonical_streaming_prefill(void) {
     test_streaming_prefill_env saved = {
-        .cold_decode =
-            test_save_env("DS4_METAL_DISABLE_STREAMING_COLD_DECODE_PREFILL"),
         .batch_selected_addr =
             test_save_env("DS4_METAL_DISABLE_STREAMING_PREFILL_BATCH_SELECTED_ADDR"),
     };
     if (test_env_bool("DS4_TEST_SSD_STREAMING")) {
-        setenv("DS4_METAL_DISABLE_STREAMING_COLD_DECODE_PREFILL", "1", 1);
         setenv("DS4_METAL_DISABLE_STREAMING_PREFILL_BATCH_SELECTED_ADDR", "1", 1);
     }
     return saved;
@@ -83,8 +80,6 @@ static test_streaming_prefill_env test_force_canonical_streaming_prefill(void) {
 
 static void test_restore_canonical_streaming_prefill(
         test_streaming_prefill_env saved) {
-    test_restore_env("DS4_METAL_DISABLE_STREAMING_COLD_DECODE_PREFILL",
-                     saved.cold_decode);
     test_restore_env("DS4_METAL_DISABLE_STREAMING_PREFILL_BATCH_SELECTED_ADDR",
                      saved.batch_selected_addr);
 }
@@ -5497,7 +5492,6 @@ static void test_streaming_decode_prefill_correctness(void) {
     }
     ds4_engine_close(ref_engine);
 
-    unsetenv("DS4_METAL_DISABLE_STREAMING_COLD_DECODE_PREFILL");
     unsetenv("DS4_METAL_DISABLE_STREAMING_PREFILL_BATCH_SELECTED_ADDR");
 
     ds4_engine *cand_engine = test_open_engine(false);
@@ -5930,7 +5924,6 @@ static void test_print_help(const char *prog) {
     puts("  DS4_TEST_SSD_STREAMING_CACHE_GB=N  Streaming routed expert cache in GiB.");
     puts("  DS4_TEST_SSD_STREAMING_CACHE_EXPERTS=N  Streaming routed expert cache count.");
     puts("  DS4_TEST_SSD_STREAMING_COLD=1  Skip streaming hot expert preload.");
-    puts("  DS4_METAL_DISABLE_STREAMING_COLD_DECODE_PREFILL=1  Force canonical streamed cold prefill.");
     puts("  DS4_TEST_SNAPSHOT_PROMPT=FILE  Prompt for the session snapshot round trip.");
     puts("  DS4_TEST_SNAPSHOT_CTX=N        Context for the session snapshot round trip.");
     puts("  DS4_TEST_LONG_PROMPT=FILE  Rendered long-context story fact prompt.");

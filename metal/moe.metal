@@ -1940,157 +1940,7 @@ kernel void kernel_mul_mv_id_iq2_xxs_pair_swiglu_f32(
     (void)tiitg;
 }
 
-kernel void kernel_mul_mv_id_iq2_xxs_pair_swiglu_pack2_overlap_f32(
-        constant ds4_metal_args_mul_mv_id & args,
-        constant ds4_metal_dsv4_moe_swiglu_weight_args & act,
-        device const char * src0_gate,
-        device const char * src0_up,
-        device const char * src1,
-        device       char * dst_gate,
-        device       char * dst_up,
-        device       char * dst_mid,
-        device const char * ids,
-        device const char * weights,
-        threadgroup  char * shmem [[threadgroup(0)]],
-        uint3  tgpig[[threadgroup_position_in_grid]],
-        ushort tiitg[[thread_index_in_threadgroup]],
-        ushort tiisg[[thread_index_in_simdgroup]],
-        ushort sgitg[[simdgroup_index_in_threadgroup]]) {
-    constexpr short NSG = 4;
-    const int iid1 = tgpig.z / args.nei0;
-    const int idx  = tgpig.z % args.nei0;
-
-    tgpig.z = 0;
-
-    const int32_t i02 = ((device const int32_t *) (ids + iid1 * args.nbi1))[idx];
-    if (!ds4_tp_owns_expert(i02, args.ne02, args.tp_rank, args.tp_world)) return;
-    const int i02b = i02 - args.tp_expert_base;
-    const int64_t i11 = idx % args.ne11;
-    const int64_t i12 = iid1;
-
-    const int nb = args.ne00 / QK_K;
-    const int first_row = (tgpig.x * NSG + sgitg) * N_R0_IQ2_XXS;
-    const int nb32 = nb * (QK_K / 32);
-
-    device const block_iq2_xxs *xg =
-        (device const block_iq2_xxs *)(src0_gate + (int64_t)i02b * args.nb02 + (uint64_t)first_row * args.nb01);
-    device const block_iq2_xxs *xu =
-        (device const block_iq2_xxs *)(src0_up + (int64_t)i02b * args.nb02 + (uint64_t)first_row * args.nb01);
-    device const float *y =
-        (device const float *)(src1 + i11 * args.nb11 + i12 * args.nb12);
-
-    float yl[32];
-    float sumg[N_R0_IQ2_XXS] = {0.f};
-    float sumu[N_R0_IQ2_XXS] = {0.f};
-
-    const int ix = tiisg;
-    device const float *y4 = y + 32 * ix;
-    bool yl_preloaded = sgitg >= 2;
-    if (yl_preloaded) {
-        for (short i = 0; i < 32; ++i) {
-            yl[i] = y4[i];
-        }
-    }
-
-    threadgroup uint64_t *svalues = (threadgroup uint64_t *)(shmem);
-    threadgroup uint8_t  *ssigns  = (threadgroup uint8_t *)(svalues + 256);
-    if (sgitg < 2) {
-        int nval = 4;
-        int pos = (32 * sgitg + tiisg) * nval;
-        for (int i = 0; i < nval; ++i) svalues[pos + i] = ds4_metal_iq2xxs_grid[pos + i];
-        nval = 2;
-        pos = (32 * sgitg + tiisg) * nval;
-        for (int i = 0; i < nval; ++i) ssigns[pos + i] = ds4_metal_ksigns_iq2xs[pos + i];
-    }
-    threadgroup_barrier(mem_flags::mem_threadgroup);
-
-    for (int ib32 = ix; ib32 < nb32; ib32 += 32) {
-        if (!yl_preloaded) {
-            for (short i = 0; i < 32; ++i) {
-                yl[i] = y4[i];
-            }
-        }
-        yl_preloaded = false;
-
-        const int ibl = ib32 / (QK_K / 32);
-        const int ib  = ib32 % (QK_K / 32);
-
-        device const block_iq2_xxs *xgr = xg + ibl;
-        device const block_iq2_xxs *xur = xu + ibl;
-        device const uint16_t *qg = xgr->qs + 4 * ib;
-        device const uint16_t *qu = xur->qs + 4 * ib;
-        device const half *dhg = &xgr->d;
-        device const half *dhu = &xur->d;
-
-        for (short row = 0; row < N_R0_IQ2_XXS; row++) {
-            device const uint8_t *aux8g = (device const uint8_t *)qg;
-            device const uint8_t *aux8u = (device const uint8_t *)qu;
-            const uint32_t aux32g = qg[2] | (qg[3] << 16);
-            const uint32_t aux32u = qu[2] | (qu[3] << 16);
-            const float dg = (float)dhg[0] * (0.5f + (aux32g >> 28));
-            const float du = (float)dhu[0] * (0.5f + (aux32u >> 28));
-
-            float sg = 0;
-            float su = 0;
-            for (short l = 0; l < 4; ++l) {
-                const threadgroup uint8_t *gridg = (const threadgroup uint8_t *)(svalues + aux8g[l]);
-                const threadgroup uint8_t *gridu = (const threadgroup uint8_t *)(svalues + aux8u[l]);
-                const uint8_t signg = ssigns[(aux32g >> 7 * l) & 127];
-                const uint8_t signu = ssigns[(aux32u >> 7 * l) & 127];
-                for (short j = 0; j < 8; ++j) {
-                    const float v = yl[8 * l + j];
-                    sg += v * gridg[j] * (signg & ds4_metal_kmask_iq2xs[j] ? -1.f : 1.f);
-                    su += v * gridu[j] * (signu & ds4_metal_kmask_iq2xs[j] ? -1.f : 1.f);
-                }
-            }
-            sumg[row] += dg * sg;
-            sumu[row] += du * su;
-
-            dhg += args.nb01 / 2;
-            dhu += args.nb01 / 2;
-            qg  += args.nb01 / 2;
-            qu  += args.nb01 / 2;
-        }
-
-        y4 += 32 * 32;
-    }
-
-    device float *dst_gate_f32 =
-        (device float *)dst_gate + (uint64_t)i12 * args.ne0 * args.ne1 + (uint64_t)i11 * args.ne0;
-    device float *dst_up_f32 =
-        (device float *)dst_up + (uint64_t)i12 * args.ne0 * args.ne1 + (uint64_t)i11 * args.ne0;
-    const uint64_t pair_row = (uint64_t)i12 * (uint64_t)args.nei0 + (uint64_t)idx;
-    device float *dst_mid_f32 =
-        (device float *)(dst_mid + pair_row * act.mid_row_stride);
-    device const float *route_w =
-        (device const float *)(weights + pair_row * act.weight_stride);
-
-    const float c = act.clamp_value;
-    const float route_weight = route_w[0];
-    float4 reduced_gate;
-    float4 reduced_up;
-    for (int row = 0; row < N_R0_IQ2_XXS; ++row) {
-        reduced_gate[row] = simd_sum(sumg[row]);
-        reduced_up[row] = simd_sum(sumu[row]);
-    }
-    if (tiisg < N_R0_IQ2_XXS && first_row + tiisg < args.ne0) {
-        const uint out_row = first_row + tiisg;
-        const float gate = reduced_gate[tiisg] * 0.25f;
-        const float up = reduced_up[tiisg] * 0.25f;
-        float g = gate;
-        float u = up;
-        if (c > 1.0e-6f) {
-            g = min(g, c);
-            u = clamp(u, -c, c);
-        }
-        dst_gate_f32[out_row] = gate;
-        dst_up_f32[out_row] = up;
-        const float silu = g / (1.0f + exp(-g));
-        dst_mid_f32[out_row] = silu * u * route_weight;
-    }
-
-    (void)tiitg;
-}
+/* sf-ablate(moe): kernel_mul_mv_id_iq2_xxs_pair_swiglu_pack2_overlap_f32 served 256 experts of width 4096 only */
 
 kernel void kernel_mul_mv_slots6_iq2_xxs_pair_swiglu_f32(
         constant ds4_metal_args_mul_mv_id & args,
@@ -2843,42 +2693,9 @@ kernel void kernel_mul_mv_id_mxfp4_pair_swiglu_f32(
     (void)tiitg;
 }
 
-kernel void kernel_mul_mv_id_mxfp4_pair_swiglu_fixed_route_f32(
-        constant ds4_metal_args_mul_mv_id &args,
-        constant ds4_metal_dsv4_moe_swiglu_weight_args &act,
-        device const char *src0_gate,
-        device const char *src0_up,
-        device const char *src1,
-        device char *dst_gate,
-        device char *dst_up,
-        device char *dst_mid,
-        device const char *ids,
-        device const char *weights,
-        threadgroup char *shmem [[threadgroup(0)]],
-        uint3 tgpig [[threadgroup_position_in_grid]],
-        ushort tiitg [[thread_index_in_threadgroup]],
-        ushort tiisg [[thread_index_in_simdgroup]],
-        ushort sgitg [[simdgroup_index_in_threadgroup]]) {
-    const int idx = (int)tgpig.z;
-    const int32_t expert = ((device const int32_t *)ids)[idx];
-    const uint64_t pair_row = (uint64_t)idx;
-    device const float *route =
-        (device const float *)(weights + pair_row * act.weight_stride);
-    device char *gate_cur = dst_gate + pair_row * args.ne0 * sizeof(float);
-    device char *up_cur = dst_up + pair_row * args.ne0 * sizeof(float);
-    device char *mid_cur = dst_mid + pair_row * act.mid_row_stride;
-    device const char *gate_expert =
-        src0_gate + (int64_t)expert * args.nb02;
-    device const char *up_expert =
-        src0_up + (int64_t)expert * args.nb02;
-    tgpig.z = 0;
-    kernel_mul_mv_mxfp4_pair_swiglu_impl(args, act, gate_expert, up_expert,
-                                         src1, gate_cur, up_cur, mid_cur,
-                                         route[0], shmem, tgpig, tiisg, sgitg);
-    (void)tiitg;
-}
+/* sf-ablate(moe): the pre-M5 MXFP4 fixed-route decode kernels served 256 experts of width 4096 only; V4.1 has 384 of 5120 */
 
-/* Exact-shape sibling of the fixed-route decode pair-SwiGLU kernel.  The host
+/* Exact-shape pair-SwiGLU walk for the TP static kernel.  The host
  * selects it only after proving expert_in_dim == 4096 and gate/up row bytes ==
  * 2176, so the per-lane K walk has a compile-time trip count (128 blocks / 16
  * lane pairs = 8 steps) and the row stride is a literal.  That lets the
@@ -2982,52 +2799,6 @@ void kernel_mul_mv_mxfp4_pair_swiglu_static_impl(
             }
         }
     }
-}
-
-kernel void kernel_mul_mv_id_mxfp4_pair_swiglu_fixed_route_static_f32(
-        constant ds4_metal_args_mul_mv_id &args,
-        constant ds4_metal_dsv4_moe_swiglu_weight_args &act,
-        device const char *src0_gate,
-        device const char *src0_up,
-        device const char *src1,
-        device char *dst_gate,
-        device char *dst_up,
-        device char *dst_mid,
-        device const char *ids,
-        device const char *weights,
-        threadgroup char *shmem [[threadgroup(0)]],
-        uint3 tgpig [[threadgroup_position_in_grid]],
-        ushort tiitg [[thread_index_in_threadgroup]],
-        ushort tiisg [[thread_index_in_simdgroup]],
-        ushort sgitg [[simdgroup_index_in_threadgroup]]) {
-    const int idx = (int)tgpig.z;
-    const int32_t expert = ((device const int32_t *)ids)[idx];
-    const uint64_t pair_row = (uint64_t)idx;
-    device const float *route =
-        (device const float *)(weights + pair_row * act.weight_stride);
-    device char *gate_cur = dst_gate + pair_row * args.ne0 * sizeof(float);
-    device char *up_cur = dst_up + pair_row * args.ne0 * sizeof(float);
-    device char *mid_cur = dst_mid + pair_row * act.mid_row_stride;
-    device const char *gate_expert =
-        src0_gate + (int64_t)expert * args.nb02;
-    device const char *up_expert =
-        src0_up + (int64_t)expert * args.nb02;
-    tgpig.z = 0;
-    /* Defensive: the host proves this shape before selecting the pipeline, so
-     * the dynamic sibling here is unreachable in production.  Keeping it makes
-     * a mis-selected pipeline produce identical results instead of garbage. */
-    if (args.ne00 == DS4_MXFP4_PAIR_STATIC_NB * QK_MXFP4 &&
-        args.nb01 == (uint64_t)DS4_MXFP4_PAIR_STATIC_ROW_BLOCKS *
-                         sizeof(block_mxfp4)) {
-        kernel_mul_mv_mxfp4_pair_swiglu_static_impl(
-            args, act, gate_expert, up_expert, src1, gate_cur, up_cur, mid_cur,
-            route[0], shmem, tgpig, tiisg, sgitg);
-    } else {
-        kernel_mul_mv_mxfp4_pair_swiglu_impl(
-            args, act, gate_expert, up_expert, src1, gate_cur, up_cur, mid_cur,
-            route[0], shmem, tgpig, tiisg, sgitg);
-    }
-    (void)tiitg;
 }
 
 /* TP-safe exact-shape sibling. The resident model view starts at this rank's
@@ -4571,51 +4342,6 @@ static inline float2 ds4_mxfp4_accumulate_rows(
     return sums;
 }
 
-// Exact-shape sibling for the resident Flash decode down projection.  Its
-// NR2/nsg1 grid covers all 4096 rows without a tail, so retain the established
-// per-lane K walk and arithmetic while omitting only the redundant row guard.
-static inline float2 ds4_mxfp4_accumulate_full_rows(
-        device const char *src0,
-        uint64_t row_bytes,
-        device const float *y,
-        uint32_t n_cols,
-        uint32_t first_row,
-        threadgroup const float *lut,
-        ushort tiisg) {
-    const int nb = (int)(n_cols / QK_MXFP4);
-    const int row_blocks = (int)(row_bytes / sizeof(block_mxfp4));
-    const short ix = tiisg / 2;
-    const short it = tiisg & 1;
-    device const block_mxfp4 *x =
-        (device const block_mxfp4 *)(src0 + (uint64_t)first_row * row_bytes);
-    device const float *yb = y + ix * QK_MXFP4 + it * 8;
-    float2 sums = 0.0f;
-
-    for (int ib = ix; ib < nb; ib += 16) {
-        device const float4 *y4 = (device const float4 *)yb;
-        const float4 yl0 = y4[0];
-        const float4 yl1 = y4[4];
-        const float4 yl2 = y4[1];
-        const float4 yl3 = y4[5];
-        FOR_UNROLL (short row = 0; row < N_R0_MXFP4; row++) {
-            device const block_mxfp4 &b = x[row * row_blocks + ib];
-            device const uchar *q = b.qs + 8 * it;
-            float4 acc = yl0 * float4(lut[q[0] & 15], lut[q[1] & 15],
-                                      lut[q[2] & 15], lut[q[3] & 15]);
-            acc += yl1 * float4(lut[q[0] >> 4], lut[q[1] >> 4],
-                                lut[q[2] >> 4], lut[q[3] >> 4]);
-            acc += yl2 * float4(lut[q[4] & 15], lut[q[5] & 15],
-                                lut[q[6] & 15], lut[q[7] & 15]);
-            acc += yl3 * float4(lut[q[4] >> 4], lut[q[5] >> 4],
-                                lut[q[6] >> 4], lut[q[7] >> 4]);
-            sums[row] += ds4_metal_e8m0_to_f32(b.e) *
-                         ((acc.x + acc.y) + (acc.z + acc.w));
-        }
-        yb += 16 * QK_MXFP4;
-    }
-    return sums;
-}
-
 kernel void kernel_mul_mv_id_mxfp4_sum6_f32(
         constant ds4_metal_args_mul_mv_id &args,
         device const char *src0s,
@@ -4664,99 +4390,12 @@ kernel void kernel_mul_mv_id_mxfp4_sum6_f32(
     (void)tiitg;
 }
 
-kernel void kernel_mul_mv_id_mxfp4_sum6_fixed_route_f32(
-        constant ds4_metal_args_mul_mv_id &args,
-        device const char *src0s,
-        device const char *src1,
-        device char *dst,
-        device const char *ids,
-        device const char *add_in,
-        threadgroup char *shmem [[threadgroup(0)]],
-        uint3 tgpig [[threadgroup_position_in_grid]],
-        ushort tiitg [[thread_index_in_threadgroup]],
-        ushort tiisg [[thread_index_in_simdgroup]],
-        ushort sgitg [[simdgroup_index_in_threadgroup]]) {
-    const short NSG = FC_mul_mv_nsg;
-    const uint32_t first_row = (uint32_t)((tgpig.x * NSG + sgitg) * N_R0_MXFP4);
-    device const int32_t *token_ids = (device const int32_t *)ids;
-    device const char *token_src1 = src1;
-    threadgroup float *lut = (threadgroup float *)shmem;
-    if (sgitg == 0) lut[tiisg] = ds4_metal_mxfp4_values[tiisg & 15];
-    threadgroup_barrier(mem_flags::mem_threadgroup);
-
-    float2 sumf = 0.0f;
-    for (int slot = 0; slot < args.nei0; slot++) {
-        const int32_t expert = token_ids[slot];
-        device const char *expert_base =
-            src0s + (int64_t)expert * args.nb02;
-        device const float *y =
-            (device const float *)(token_src1 + (uint64_t)slot * args.nb11);
-        sumf += ds4_mxfp4_accumulate_rows(expert_base, args.nb01, y,
-                                           args.ne00, first_row, args.ne0,
-                                           lut, tiisg);
-    }
-
-    device float *out = (device float *)dst;
-    FOR_UNROLL (short row = 0; row < N_R0_MXFP4; row++) {
-        if (first_row + row < (uint32_t)args.ne0) {
-            const float value = simd_sum(sumf[row]);
-            if (tiisg == 0) {
-                out[first_row + row] = value +
-                    (args.tp_addend ? ((device const float *)add_in)[first_row + row] : 0.0f);
-            }
-        }
-    }
-    (void)tiitg;
-}
-
-kernel void kernel_mul_mv_id_mxfp4_sum6_fixed_route_full_rows_f32(
-        constant ds4_metal_args_mul_mv_id &args,
-        device const char *src0s,
-        device const char *src1,
-        device char *dst,
-        device const char *ids,
-        device const char *add_in,
-        threadgroup char *shmem [[threadgroup(0)]],
-        uint3 tgpig [[threadgroup_position_in_grid]],
-        ushort tiitg [[thread_index_in_threadgroup]],
-        ushort tiisg [[thread_index_in_simdgroup]],
-        ushort sgitg [[simdgroup_index_in_threadgroup]]) {
-    const short NSG = FC_mul_mv_nsg;
-    const uint32_t first_row = (uint32_t)((tgpig.x * NSG + sgitg) * N_R0_MXFP4);
-    device const int32_t *token_ids = (device const int32_t *)ids;
-    device const char *token_src1 = src1;
-    threadgroup float *lut = (threadgroup float *)shmem;
-    if (sgitg == 0) lut[tiisg] = ds4_metal_mxfp4_values[tiisg & 15];
-    threadgroup_barrier(mem_flags::mem_threadgroup);
-
-    float2 sumf = 0.0f;
-    for (int slot = 0; slot < args.nei0; slot++) {
-        const int32_t expert = token_ids[slot];
-        device const char *expert_base =
-            src0s + (int64_t)expert * args.nb02;
-        device const float *y =
-            (device const float *)(token_src1 + (uint64_t)slot * args.nb11);
-        sumf += ds4_mxfp4_accumulate_full_rows(
-            expert_base, args.nb01, y, args.ne00, first_row, lut, tiisg);
-    }
-
-    device float *out = (device float *)dst;
-    FOR_UNROLL (short row = 0; row < N_R0_MXFP4; row++) {
-        const float value = simd_sum(sumf[row]);
-        if (tiisg == 0) {
-            out[first_row + row] = value +
-                (args.tp_addend ? ((device const float *)add_in)[first_row + row] : 0.0f);
-        }
-    }
-    (void)tiitg;
-}
-
-/* Exact-shape sibling of the fixed-route full-rows decode down projection.
+/* Exact-shape full-rows decode down projection for the TP static kernel.
  * The host proves ne00 == 2048, row bytes == 1088, nei0 == 6 and ne0 == 4096
  * before selecting it, so the K walk (64 blocks / 16 lane pairs = 4 steps),
  * the row stride and the routed-slot count are all literals here.  The lane
  * mapping, the block visit order, the per-block accumulate order and the
- * simd_sum tree are byte-identical to ds4_mxfp4_accumulate_full_rows. */
+ * simd_sum tree are byte-identical to the generic full-rows walk. */
 #define DS4_MXFP4_DOWN_STATIC_NB 64
 #define DS4_MXFP4_DOWN_STATIC_ROW_BLOCKS 64
 #define DS4_MXFP4_DOWN_STATIC_SLOTS 6
@@ -4800,68 +4439,6 @@ static inline float2 ds4_mxfp4_accumulate_full_rows_static(
         yb += 16 * QK_MXFP4;
     }
     return sums;
-}
-
-kernel void kernel_mul_mv_id_mxfp4_sum6_fixed_route_full_rows_static_f32(
-        constant ds4_metal_args_mul_mv_id &args,
-        device const char *src0s,
-        device const char *src1,
-        device char *dst,
-        device const char *ids,
-        device const char *add_in,
-        threadgroup char *shmem [[threadgroup(0)]],
-        uint3 tgpig [[threadgroup_position_in_grid]],
-        ushort tiitg [[thread_index_in_threadgroup]],
-        ushort tiisg [[thread_index_in_simdgroup]],
-        ushort sgitg [[simdgroup_index_in_threadgroup]]) {
-    const short NSG = FC_mul_mv_nsg;
-    const uint32_t first_row = (uint32_t)((tgpig.x * NSG + sgitg) * N_R0_MXFP4);
-    device const int32_t *token_ids = (device const int32_t *)ids;
-    device const char *token_src1 = src1;
-    threadgroup float *lut = (threadgroup float *)shmem;
-    if (sgitg == 0) lut[tiisg] = ds4_metal_mxfp4_values[tiisg & 15];
-    threadgroup_barrier(mem_flags::mem_threadgroup);
-
-    /* Defensive: unreachable in production because the host proves the shape
-     * before selecting this pipeline; identical results either way. */
-    const bool static_shape =
-        args.ne00 == DS4_MXFP4_DOWN_STATIC_NB * QK_MXFP4 &&
-        args.nb01 == (uint64_t)DS4_MXFP4_DOWN_STATIC_ROW_BLOCKS *
-                         sizeof(block_mxfp4) &&
-        args.nei0 == DS4_MXFP4_DOWN_STATIC_SLOTS;
-
-    float2 sumf = 0.0f;
-    if (static_shape) {
-        for (short slot = 0; slot < DS4_MXFP4_DOWN_STATIC_SLOTS; slot++) {
-            const int32_t expert = token_ids[slot];
-            device const char *expert_base =
-                src0s + (int64_t)expert * args.nb02;
-            device const float *y =
-                (device const float *)(token_src1 + (uint64_t)slot * args.nb11);
-            sumf += ds4_mxfp4_accumulate_full_rows_static(
-                expert_base, y, first_row, lut, tiisg);
-        }
-    } else {
-        for (int slot = 0; slot < args.nei0; slot++) {
-            const int32_t expert = token_ids[slot];
-            device const char *expert_base =
-                src0s + (int64_t)expert * args.nb02;
-            device const float *y =
-                (device const float *)(token_src1 + (uint64_t)slot * args.nb11);
-            sumf += ds4_mxfp4_accumulate_full_rows(
-                expert_base, args.nb01, y, args.ne00, first_row, lut, tiisg);
-        }
-    }
-
-    device float *out = (device float *)dst;
-    FOR_UNROLL (short row = 0; row < N_R0_MXFP4; row++) {
-        const float value = simd_sum(sumf[row]);
-        if (tiisg == 0) {
-            out[first_row + row] = value +
-                (args.tp_addend ? ((device const float *)add_in)[first_row + row] : 0.0f);
-        }
-    }
-    (void)tiitg;
 }
 
 kernel void kernel_mul_mv_id_mxfp4_sum6_tp_full_rows_static_f32(

@@ -205,7 +205,6 @@ These switches turn fusions off, and each one keeps the output bitwise
 identical (`make test-deepseek41-decode-switch SWITCH=<env>`):
 - `DS4_METAL_DISABLE_V41_ROUTER_ONE`;
 - `DS4_METAL_DISABLE_V41_HC_BLOCK_INPUT`;
-- `DS4_METAL_DISABLE_M5_HC_NORM_MIX_CLUSTER2`;
 - `DS4_METAL_DISABLE_V41_ROPE_QUANTIZE`;
 - `DS4_METAL_DISABLE_GATHERED_KV_STAGE`;
 - `DS4_METAL_DISABLE_V41_EXPAND_FUSION`;
@@ -302,8 +301,8 @@ the TP spec cycles) are gone. The server batches every pending decode as one
 plain batch, `session_concurrency_bench` has no `--spec` mode, and a TP worker
 refuses VERIFY and GLM_MTP frames, which only a drafting leader sends. What remains of the generic
 `ds4_gpu_graph` (`s->graph`, `metal_graph_*`) is either shared with the V4.1
-graph (stream/page-in helpers, `metal_graph_matmul_dense_quant_kslice`,
-`metal_graph_tp_env_flag`) or reached only by the pipeline layer-slice entry
+graph (stream/page-in helpers, `metal_graph_matmul_dense_quant_kslice`)
+or reached only by the pipeline layer-slice entry
 points, which are kept on purpose (see the Identity table).
 
 ## Names that lie: do not remove by name, verify by reachability
