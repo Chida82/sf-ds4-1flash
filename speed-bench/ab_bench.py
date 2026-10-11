@@ -39,7 +39,21 @@ ACTIVE_PERCENT = 50.0
 CACHE_FLAG = '82GB'
 CACHE_WINDOW = (74.5, 75.5)
 CTX_ALLOC = 32768
-STREAMING = ['--ssd-streaming', '--ssd-streaming-cache-experts', CACHE_FLAG, '--ctx-alloc', str(CTX_ALLOC)]
+# --b-cache NGB and --ctx-alloc N (270) replace these for one invocation; the defaults are today's.
+B_CACHE_FLAG = CACHE_FLAG
+PREFILL_HEADROOM_GIB = 7.12
+
+
+def cache_flag(build):
+    return B_CACHE_FLAG if build == 'B' else CACHE_FLAG
+
+
+def cache_window(flag):
+    """The dynamic cache the loader must report for a cache flag: the flag less the prefill headroom."""
+    if flag == CACHE_FLAG:
+        return CACHE_WINDOW
+    centre = float(flag[:-2]) - PREFILL_HEADROOM_GIB
+    return (round(centre - 0.5, 2), round(centre + 0.5, 2))
 
 KINDS = {
     'decode': {'frontiers': (2048, 8192), 'gen': 256},
@@ -75,6 +89,7 @@ MACTOP = {'time': ('timestamp',), 'freq': ('soc_metrics', 'gpu_freq_mhz'),
           'temp': ('soc_metrics', 'gpu_temp'), 'thermal': ('thermal_state',)}
 IDS = re.compile(r'^ds4-bench: gen\[ctx=(\d+)\] token ids:(.*)$', re.M)
 CTX = re.compile(r'^ds4-bench: context buffers .*\(ctx=(\d+),', re.M)
+CAPPED = re.compile(r'^.*cache budget .* capped to .*$', re.M)
 LOADER = re.compile(r'^ds4: \w+ SSD streaming cache target .*\+ ([0-9.]+) GiB dynamic cache '
                     r'\((\d+) experts, ([0-9.]+) MiB each\)', re.M)
 REPORT = re.compile(r'^ds4: Metal memory after frontier (\d+):', re.M)
@@ -243,9 +258,10 @@ class Monitor:
 
 # --- one run ----------------------------------------------------------------
 
-def bench_cmd(tree, kind, model, csv_path, logits_dir=None, extra=()):
+def bench_cmd(tree, kind, model, csv_path, logits_dir=None, extra=(), cache=CACHE_FLAG):
     k = KINDS[kind]
-    cmd = [str(tree / BENCH), '-m', str(model), '--prompt-file', str(ROOT / PROMPT), *STREAMING,
+    streaming = ['--ssd-streaming', '--ssd-streaming-cache-experts', cache, '--ctx-alloc', str(CTX_ALLOC)]
+    cmd = [str(tree / BENCH), '-m', str(model), '--prompt-file', str(ROOT / PROMPT), *streaming,
            '--frontiers', ','.join(map(str, k['frontiers'])), '-n', str(k['gen']),
            '--show-output', '--cache-stats', '--csv', str(csv_path)]
     if logits_dir:
@@ -311,14 +327,19 @@ def parse_cache_reports(err_text, kind):
     return deltas
 
 
-def parse_loader(err_text, kind):
+def parse_loader(err_text, kind, cache=CACHE_FLAG):
     """(dynamic cache GiB, expert slots) of the loader's cache line, checked against the window."""
+    capped = CAPPED.search(err_text)
+    if capped:
+        raise Stop(2, f'{kind}: the engine capped the expert cache, so it is not the one asked '
+                      f'(raise iogpu.wired_limit_mb): {capped[0].strip()}')
     m = LOADER.search(err_text)
     if not m:
         raise Stop(2, f'{kind}: the loader printed no SSD streaming cache line (is --ssd-streaming on?)')
     gib, slots = float(m[1]), int(m[2])
-    if not CACHE_WINDOW[0] <= gib <= CACHE_WINDOW[1]:
-        raise Stop(2, f'{kind}: dynamic expert cache {gib} GiB is outside {CACHE_WINDOW[0]}-{CACHE_WINDOW[1]} GiB: '
+    window = cache_window(cache)
+    if not window[0] <= gib <= window[1]:
+        raise Stop(2, f'{kind}: dynamic expert cache {gib} GiB is outside {window[0]}-{window[1]} GiB: '
                       f'{m[0].strip()}')
     c = CTX.search(err_text)
     if not c or int(c[1]) != CTX_ALLOC:
@@ -336,7 +357,7 @@ def section_ratios(err_text, targets):
     return {f'sections {rows} rows': hit[rows] / rest[rows] for rows in sorted(hit) if rest.get(rows)}
 
 
-def parse_run(csv_text, err_text, kind, sections=()):
+def parse_run(csv_text, err_text, kind, sections=(), flag=CACHE_FLAG):
     frontiers = list(KINDS[kind]['frontiers'])
     rows = {int(r['ctx_tokens']): r for r in csv.DictReader(io.StringIO(csv_text))}
     tokens = {int(m[1]): [int(t) for t in m[2].split()] for m in IDS.finditer(err_text)}
@@ -345,7 +366,7 @@ def parse_run(csv_text, err_text, kind, sections=()):
                if sorted(got) != frontiers]
     if missing:
         raise Stop(1, f'{kind}: bench output lacks {", ".join(missing)} for frontiers {frontiers}')
-    gib, slots = parse_loader(err_text, kind)
+    gib, slots = parse_loader(err_text, kind, flag)
     m = metrics(kind, rows)
     if sections:
         m.update(section_ratios(err_text, sections))
@@ -363,7 +384,7 @@ def run_bench(n, build, tree, kind, model, env, out, phase, bitwise, extra=(), s
     logits_dir = out / 'logits' / f'{build}-{kind}' if phase == 'warm-up' and bitwise else None
     if logits_dir:
         logits_dir.mkdir(parents=True)
-    cmd = bench_cmd(tree, kind, model, f'{stem}.csv', logits_dir, extra)
+    cmd = bench_cmd(tree, kind, model, f'{stem}.csv', logits_dir, extra, cache_flag(build))
     start = time.time()
     with open(f'{stem}.err', 'wb') as err:
         rc = subprocess.run(cmd, cwd=tree, env=env, stdout=subprocess.DEVNULL, stderr=err).returncode
@@ -371,7 +392,7 @@ def run_bench(n, build, tree, kind, model, env, out, phase, bitwise, extra=(), s
     if rc != 0:
         raise Stop(1, f'{build} {kind} run failed (exit {rc}); see {stem}.err')
     run = parse_run(Path(f'{stem}.csv').read_text(), Path(f'{stem}.err').read_text(errors='replace'), kind,
-                    sections)
+                    sections, cache_flag(build))
     run.update(n=n, build=build, kind=kind, phase=phase, warmup=phase in ('warm-up', 'preheat'),
                start=start, end=end, duration=end - start, logits=logits_dir, note='')
     return run
@@ -625,7 +646,8 @@ def summary(ctx, runs, table, status, correctness, e2e):
         lines.append(f'bench args  A {" ".join(extra["A"]) or "-"}   B {" ".join(extra["B"]) or "-"}')
     cache = ctx.get('cache')
     lines.append(f'streaming  cache {CACHE_FLAG} -> dynamic {cache[0] if cache else "?"} GiB, '
-                 f'{cache[1] if cache else "?"} expert slots; ctx {CTX_ALLOC}')
+                 f'{cache[1] if cache else "?"} expert slots; ctx {CTX_ALLOC}'
+                 + (f'   B cache {B_CACHE_FLAG}' if B_CACHE_FLAG != CACHE_FLAG else ''))
     lines.append(f'time  {ctx["elapsed"]:.0f} s of {ctx["budget"]} s   runs {len(runs)} '
                  f'({len(runs) - len(timed)} untimed; first timed run at {ctx["preheat"]:.0f} s)   '
                  f'pairs {valid} valid, {len(all_pairs) - valid} dropped')
@@ -656,9 +678,10 @@ def summary(ctx, runs, table, status, correctness, e2e):
     thin = [f'{t["kind"]} {t["metric"]}' for t in table if t['headline'] and not t['guard'] and t['n'] < 2]
     if thin and status == 'PASS':
         lines += ['', f'INCONCLUSIVE: fewer than two valid pairs for {", ".join(thin)}']
-    if any(ctx.get('bench_args', {}).values()) or ctx.get('b_env'):
-        lines += ['', 'record row: none (bench arguments or a B-only environment make the figures '
-                      'incomparable with the record)']
+    if any(ctx.get('bench_args', {}).values()) or ctx.get('b_env') or B_CACHE_FLAG != CACHE_FLAG \
+            or CTX_ALLOC != 32768:
+        lines += ['', 'record row: none (bench arguments, a B-only environment, B\'s cache or the allocated '
+                      'context make the figures incomparable with the record)']
     else:
         lines += ['', 'record row:', record_row(ctx['B']['branch'], ctx['date'][:10], ctx['B']['commit'],
                                                  ctx['model_name'], valid, status, table, e2e)]
@@ -707,6 +730,7 @@ def write_samples(path, runs):
 # --- main --------------------------------------------------------------------
 
 def parse_args(argv):
+    global B_CACHE_FLAG, CTX_ALLOC
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument('--a', required=True, help='baseline build tree')
     p.add_argument('--b', required=True, help='candidate build tree (may equal --a for an A/A run)')
@@ -738,8 +762,20 @@ def parse_args(argv):
                    default=[], metavar='LABEL[,LABEL]',
                    help=f'also judge these GPU sections against the others, per chunk shape, with '
                         f'DS4_METAL_V41_STAGE_PROFILE on both builds ({", ".join(SECTIONS)})')
+    p.add_argument('--b-cache', metavar='NGB',
+                   help=f"B's --ssd-streaming-cache-experts (default {CACHE_FLAG}); B's dynamic cache must come "
+                        f'out at N - {PREFILL_HEADROOM_GIB} GiB +- 0.5')
+    p.add_argument('--ctx-alloc', type=int, default=CTX_ALLOC, metavar='N',
+                   help=f'--ctx-alloc for both builds (default {CTX_ALLOC})')
     p.add_argument('--out', help='output directory (default $TMPDIR/sf-ds4-1flash-ab/<UTC time>)')
     args = p.parse_args(argv)
+    if args.b_cache is not None:
+        if not re.fullmatch(r'\d+(\.\d+)?GB', args.b_cache):
+            raise Stop(2, f'--b-cache {args.b_cache}: write it as NGB, like 90GB')
+        B_CACHE_FLAG = args.b_cache
+    if args.ctx_alloc <= 0:
+        raise Stop(2, f'--ctx-alloc {args.ctx_alloc}: must be positive')
+    CTX_ALLOC = args.ctx_alloc
     args.kinds = select_kinds(args.kinds, '--kinds')
     args.guards = select_kinds(args.guards, '--guards')
     if not args.kinds and not args.guards:
@@ -786,8 +822,10 @@ def main(argv=None):
         run = run_bench(next(counter), build, trees[build]['path'], kind, model, envs[build], out, phase, args.bitwise,
                         bench_args(args, build), args.sections)
         monitor.check()
-        if runs:
-            check_cache_config(run, runs[0])
+        # with --b-cache each build keeps its own slot count; otherwise both match the first run
+        first = next((r for r in runs if B_CACHE_FLAG == CACHE_FLAG or r['build'] == build), None)
+        if first:
+            check_cache_config(run, first)
         refs.setdefault(kind, run)  # the first run of a kind is A's warm-up (or a guard's A run)
         print(f'  run {run["n"]:2d} {build} {kind:<12} {phase:<7} {run["duration"]:.1f} s',
               file=sys.stderr, flush=True)

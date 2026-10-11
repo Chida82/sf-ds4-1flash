@@ -6,7 +6,7 @@
 
 ## 2. Screening
 
-- [ ] 2.1 Replay the `225` decode and append id dumps at the slot counts of 86, 88 and 90 GiB (from the loader's slot size; regenerate the dumps with the `225` scratch build if they are gone). Verify 8078 slots still reproduce 3.91 / 4.05 miss layers per token; record the table in `perf-record.md` and drop from 3.x a candidate that replays identical to the next smaller one on both kinds.
+- [x] 2.1 Replay the `225` decode and append id dumps at the slot counts of 86, 88 and 90 GiB (from the loader's slot size; regenerate the dumps with the `225` scratch build if they are gone). Verify 8078 slots still reproduce 3.91 / 4.05 miss layers per token; record the table in `perf-record.md` and drop from 3.x a candidate that replays identical to the next smaller one on both kinds. (Done 2026-10-09: slots 8078/8509/8725/8941 for 82/86/88/90 GB (107.88 slots per GiB of dynamic cache); decode 3.91/3.28/3.10/3.07, append 4.05/3.46/3.19/2.96 miss layers per token; 8078 reproduces `225`. No candidate is dropped: 88 to 90 still moves append. Table goes to perf-record with the 3.x rows.)
 
 ## 3. Measurement (owner runs `sudo sysctl iogpu.wired_limit_mb=118000` first; external SSD mounted)
 

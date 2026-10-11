@@ -67,6 +67,18 @@ cache-state change are never confused. A change that alters eviction or
 preload passes `--cache-policy-change`: the pair is kept and the summary shows
 both hit rates.
 
+Two options change the configuration for one invocation (`270`):
+- `--b-cache NGB` gives B another cache flag. B's dynamic cache must then come
+  out at N less 7.12 GiB, give or take 0.5, and each build's slot count is
+  checked against its own first run. Pass `--cache-policy-change`: a larger
+  cache changes the hits.
+- `--ctx-alloc N` allocates another context in both builds.
+
+If either build's stderr has a `cache budget ... capped to` line, the run stops
+with exit 2: the engine cut the cache below the flag, usually because Metal's
+working set (`iogpu.wired_limit_mb`) is too small for that cache and context.
+Neither option is a record configuration, so the summary prints no record row.
+
 One invocation:
 
 1. **Preflight.** It refuses (exit 2), naming the reason, unless the machine is
