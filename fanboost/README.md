@@ -123,8 +123,10 @@ a normal user, and they talk without privileges:
 `sf-ds4-1flash --boost` runs `/usr/local/bin/fanboost max` at most once a
 second while the GPU has work, and never sends `release`: after the last
 request the fans stay at full speed for about 10 seconds, then go back to
-Apple's curve. How a request reaches the daemon is fanboost's business; the
-engine only runs the command.
+Apple's curve. Before loading the model it runs `fanboost check` and refuses
+to start when fanboost is missing or its daemon is down. How a request
+reaches the daemon is fanboost's business; the engine only runs the commands
+and reads their exit status.
 
 ## Commands
 
@@ -134,6 +136,7 @@ None needs `sudo`.
 |---|---|
 | `fanboost` | monitor: every 2 s prints temperatures, thermal state (`si`/`no`/`pausa`), request (`si`/`coda`/`no`) and fans; never writes, even with sudo |
 | `fanboost status` | the current state: daemon up or not, protection (paused, below threshold, waiting, BOOST), request (seconds to expiry), fans with rpm/target/mode, temperatures with thresholds |
+| `fanboost check` | exits 0 when the daemon is running, otherwise 1 with one line on stderr; prints nothing else (for scripts, such as `sf-ds4-1flash --boost`) |
 | `fanboost help` | the command list; an unknown command prints it too and exits with an error |
 | `fanboost max` | fans at 100% at once for 10 s; repeated, it renews |
 | `fanboost release` | withdraws the request: fans at 100% for at least 3 s (about 4), then protection or Apple's curve |

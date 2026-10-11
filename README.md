@@ -468,13 +468,13 @@ requires `--power 100`.
 
 `--boost` (CLI, server and bench) is for interactive use. The output is the
 same with and without it. It does two things:
-- It asks the `fanboost` daemon, if installed, for full fans while the GPU
-  works. The fans go back to the Apple curve a few seconds after the engine
+- It asks the `fanboost` daemon for full fans while the GPU works, so it
+  needs fanboost installed and running: without it the engine refuses to
+  start and says what is missing. The fans go back to the Apple curve a few seconds after the engine
   goes idle, when fanboost's request lapses. In a 30-minute session of
   typical requests (expert cache `82GB`) the machine never reached the Heavy
   thermal state (without it, inside the first request), and requests ran
-  about 4-5% faster. It does so by running `fanboost max` once a second;
-  without `/usr/local/bin/fanboost` it does nothing.
+  about 4-5% faster. It does so by running `fanboost max` once a second.
 - Under SSD streaming, it keeps the GPU busy while a decode token waits for
   missing experts. That is worth a few tenths of a percent of decode on a
   cool machine.

@@ -30716,7 +30716,11 @@ static int ds4_engine_open_internal(ds4_engine **out,
         }
         ds4_gpu_set_quality(e->quality);
         ds4_gpu_set_ssd_streaming(e->ssd_streaming);
-        ds4_gpu_set_boost(opt->boost);
+        if (!ds4_gpu_set_boost(opt->boost)) {
+            ds4_engine_close(e);
+            *out = NULL;
+            return 1;
+        }
         if (!ds4_engine_configure_streaming_auto_cache(e, opt->context_size)) {
             ds4_engine_close(e);
             *out = NULL;

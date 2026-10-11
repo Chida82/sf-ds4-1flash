@@ -8990,24 +8990,59 @@ int ds4_gpu_pack_slot_rows_f32_tensor(
     return 1;
 }
 
-/* --boost also asks the owner's fanboost for full fans while the GPU has
- * work: `fanboost max` holds them for a few seconds, so running it once a
- * second keeps them up and an idle engine lets them lapse. How long a request
- * lasts and how it reaches the daemon are fanboost's business, not this
- * file's. Every command batch passes here (thousands a second in decode); the
- * check costs a compare on the batch's own timestamp. The spawn and its wait
- * run on a background queue, off the command path; without fanboost installed
- * the spawn fails and nothing happens. */
+/* --boost asks the owner's fanboost through its commands only: their exit
+ * status is all this file reads. ds4_gpu_set_boost refuses to start without
+ * a running daemon; afterwards `fanboost max` holds the fans for a few
+ * seconds, so running it once a second keeps them up and an idle engine lets
+ * them lapse. */
+#define DS4_FANBOOST "/usr/local/bin/fanboost"
+
+/* Runs `fanboost <cmd>` with its output discarded. Returns its exit status,
+ * 256 + the signal that killed it, or -1 with errno set when the spawn or the
+ * wait fails. */
+static int ds4_gpu_fanboost(const char *cmd) {
+    char *argv[] = {"fanboost", (char *)cmd, NULL};
+    char *envp[] = {NULL};
+    posix_spawn_file_actions_t fa;
+    posix_spawn_file_actions_init(&fa);
+    posix_spawn_file_actions_addopen(&fa, STDOUT_FILENO, "/dev/null", O_WRONLY, 0);
+    posix_spawn_file_actions_addopen(&fa, STDERR_FILENO, "/dev/null", O_WRONLY, 0);
+    pid_t pid;
+    const int rc = posix_spawn(&pid, DS4_FANBOOST, &fa, NULL, argv, envp);
+    posix_spawn_file_actions_destroy(&fa);
+    if (rc != 0) {
+        errno = rc;
+        return -1;
+    }
+    int st;
+    while (waitpid(pid, &st, 0) < 0)
+        if (errno != EINTR) return -1;
+    return WIFEXITED(st) ? WEXITSTATUS(st) : 256 + WTERMSIG(st);
+}
+
+static void ds4_gpu_fanboost_cause(int rc, int err, char *buf, size_t n) {
+    if (rc < 0) snprintf(buf, n, "%s", strerror(err));
+    else if (rc > 255) snprintf(buf, n, "signal %d", rc - 256);
+    else snprintf(buf, n, "exit %d", rc);
+}
+
+/* Every command batch passes here (thousands a second in decode); the check
+ * costs a compare on the batch's own timestamp. The spawn and its wait run on
+ * a background queue, off the command path. A failure (fanboost removed while
+ * a server runs) is reported once and the run goes on. */
 static void ds4_gpu_fan_hint(double now_ms) {
     static double last_ms;
     if (!g_boost || now_ms - last_ms < 1000.0) return;
     last_ms = now_ms;
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
-        char *argv[] = {"fanboost", "max", NULL};
-        char *envp[] = {NULL};
-        pid_t pid;
-        if (posix_spawn(&pid, "/usr/local/bin/fanboost", NULL, NULL, argv, envp) == 0)
-            waitpid(pid, NULL, 0);
+        static int warned;
+        const int rc = ds4_gpu_fanboost("max");
+        const int err = errno;
+        if (rc != 0 && !__atomic_exchange_n(&warned, 1, __ATOMIC_RELAXED)) {
+            char cause[64];
+            ds4_gpu_fanboost_cause(rc, err, cause, sizeof(cause));
+            fprintf(stderr, "ds4: --boost: fanboost max failed (%s); the fans are on Apple's curve\n", cause);
+        }
     });
 }
 
@@ -10190,8 +10225,30 @@ static void *ds4_gpu_tp_keepalive_thread(void *arg) {
     return NULL;
 }
 
-void ds4_gpu_set_boost(bool enabled) {
-    g_boost = enabled ? 1 : 0;
+int ds4_gpu_set_boost(bool enabled) {
+    g_boost = 0;
+    if (!enabled) return 1;
+    const int rc = ds4_gpu_fanboost("check");
+    if (rc != 0) {
+        const int err = errno;
+        if (rc < 0 && err == ENOENT) {
+            fprintf(stderr, "ds4: --boost needs fanboost, which is not installed (" DS4_FANBOOST "): "
+                            "install it with ./fanboost/install.sh (see fanboost/README.md), "
+                            "or run without --boost\n");
+        } else if (rc == 1) {
+            fprintf(stderr, "ds4: --boost needs the fanboost daemon, which is not running: "
+                            "reinstall it with ./fanboost/install.sh, or run without --boost\n");
+        } else {
+            char cause[64];
+            ds4_gpu_fanboost_cause(rc, err, cause, sizeof(cause));
+            fprintf(stderr, "ds4: --boost: fanboost check failed (%s): see fanboost/README.md, "
+                            "or run without --boost\n", cause);
+        }
+        return 0;
+    }
+    g_boost = 1;
+    ds4_gpu_fan_hint(ds4_gpu_now_ms()); /* fans up before the model loads */
+    return 1;
 }
 
 /* Single-box decode keep-alive (--boost): the TP keep-alive thread, started

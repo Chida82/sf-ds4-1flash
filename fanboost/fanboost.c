@@ -6,6 +6,7 @@
 //
 //   fanboost               monitor: stampa letture e decisioni, non scrive mai
 //   fanboost status        stato attuale: demone, termica, richiesta, ventole, temperature
+//   fanboost check         esce 0 se il demone è attivo, 1 (con una riga su stderr) se no
 //   fanboost help          elenco dei comandi (anche per un comando sbagliato)
 //   fanboost max           ventole al 100% subito, per TTL secondi (rinnovabile)
 //   fanboost release       ritira la richiesta: ventole al 100% per almeno TAIL s, poi termica o curva Apple
@@ -219,6 +220,7 @@ static int help(FILE *out) {
     "fanboost: ventole al 100%% quando serve, poi di nuovo alla curva Apple (la sicurezza resta ad Apple)\n\n"
     "  fanboost            monitor: letture e decisioni ogni %d s, non scrive mai\n"
     "  fanboost status     stato attuale: demone, termica, richiesta, ventole, temperature\n"
+    "  fanboost check      esce 0 se il demone è attivo, 1 se no (per gli script)\n"
     "  fanboost max        ventole al 100%% subito per %d s; ripetuto, rinnova\n"
     "  fanboost release    ritira la richiesta: ventole al 100%% ancora per almeno %d s\n"
     "  fanboost resume     accende la protezione termica (all'avvio del demone è in pausa)\n"
@@ -232,9 +234,15 @@ static int help(FILE *out) {
 }
 
 // Legge senza root: stato pubblicato dal demone, lease, SMC. Non scrive mai, non logga.
-static int status(void) {
+// Stato pubblicato dal demone; 0 se il demone non c'è.
+static uint64_t daemon_state(void) {
   int tk; uint64_t st = 0;
   if (notify_register_check(NOTE_STATE, &tk) == NOTIFY_STATUS_OK) notify_get_state(tk, &st);
+  return st;
+}
+
+static int status(void) {
+  uint64_t st = daemon_state();
   int up = st & ST_UP;
   printf("demone      %s\n", up ? "attivo" : "NON attivo: niente boost (sudo make install, oppure riavvio)");
   if (up) printf("termica     %s\n", st & ST_PAUSE ? "in pausa (fanboost resume per accenderla)"
@@ -261,7 +269,7 @@ static int status(void) {
 int main(int argc, char **argv) {
   const char *cmd = argc > 1 ? argv[1] : "";
   if (!strcmp(cmd, "help") || !strcmp(cmd, "-h") || !strcmp(cmd, "--help")) return help(stdout);
-  if (*cmd && strcmp(cmd, "run") && strcmp(cmd, "status") && strcmp(cmd, "-t") && strcmp(cmd, "max") &&
+  if (*cmd && strcmp(cmd, "run") && strcmp(cmd, "status") && strcmp(cmd, "check") && strcmp(cmd, "-t") && strcmp(cmd, "max") &&
       strcmp(cmd, "release") && strcmp(cmd, "pause") && strcmp(cmd, "resume")) {
     fprintf(stderr, "comando sconosciuto: %s\n\n", cmd);
     return help(stderr);
@@ -270,6 +278,12 @@ int main(int argc, char **argv) {
   if (!strcmp(cmd, "max") || !strcmp(cmd, "release")) return request(!strcmp(cmd, "max"));
   // pause: il demone resta vivo (solo lui può scrivere le ventole) ma smette di valutare la termica.
   if (!strcmp(cmd, "pause") || !strcmp(cmd, "resume")) return thermal_set(!strcmp(cmd, "resume"));
+  // check: solo l'esito, per chi chiede max e deve sapere se qualcuno lo ascolta.
+  if (!strcmp(cmd, "check")) {
+    if (daemon_state() & ST_UP) return 0;
+    fputs("demone fanboost NON attivo (sudo make install, oppure riavvio)\n", stderr);
+    return 1;
+  }
   lg = os_log_create("com.chida82.fanboost", "daemon");
   dry = geteuid() != 0 || strcmp(cmd, "run");
 

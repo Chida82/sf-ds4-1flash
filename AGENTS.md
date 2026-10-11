@@ -164,7 +164,11 @@ Prefetch with a cheaper guess is change `170`.
   the fans run at 100% while the GPU has work. The engine never touches
   fanboost's lease itself: how a request reaches the daemon is fanboost's. In
   request-shaped sessions this kept the machine out of Heavy: requests were
-  4.7% faster.
+  4.7% faster. Engine open runs `fanboost check` first (`290`) and refuses to
+  start, with the cause and `./fanboost/install.sh` on one line, when fanboost
+  is missing or its daemon is down; a later failed `max` warns once. The
+  engine reads only those commands' exit status. For the keep-alive alone,
+  without fanboost, set `DS4_METAL_V41_DECODE_KEEPALIVE=1`.
 - **GPU keep-alive.** It runs the TP keep-alive kernel on its own queue only
   while a decode token waits in `ds4_gpu_stream_expert_pread_pool_wait`, in
   200 us bursts. This measured +0.5% decode at thermal pressure Nominal and 0
