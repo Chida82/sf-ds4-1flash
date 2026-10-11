@@ -49,6 +49,7 @@
 #include "ds4_image.h"
 #include "ds4_engram.h"
 #include "ds4_tp.h"
+#include "ds4_env.h" /* sf: DS4_* classification and the startup report */
 #ifndef DS4_NO_GPU
 #define DS4_HAS_DEEPSEEK41_GPU 1
 #endif
@@ -30061,6 +30062,7 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
 
 static int ds4_engine_open_internal(ds4_engine **out,
                                      const ds4_engine_options *opt) {
+    ds4_env_report(); /* sf: DS4_* switches out of their normal state, once per process (ds4_env.h) */
     /* sf-ablate(cuda): Metal-only child; refuse any other backend here so no CUDA branch below can be reached through the public API */
     if (opt->backend != DS4_BACKEND_METAL && opt->backend != DS4_BACKEND_CPU) {
         fprintf(stderr, "ds4: this build supports only the Metal and CPU backends\n");

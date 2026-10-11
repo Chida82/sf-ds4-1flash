@@ -1,28 +1,9 @@
-# Spec Delta
+# env-switches Specification
 
 ## Purpose
+Defines how every `DS4_*` environment switch the code reads is classified and described, and what the engine tells the user at startup about switches that are set.
 
-Defines how the engine reads its `DS4_*` environment switches, how every switch the code reads is classified and described, and what the engine tells the user at startup about switches that are set.
-
-## ADDED Requirements
-
-### Requirement: Switches are read once per process
-The engine SHALL take the values of the `DS4_*` environment variables once per process and serve every later lookup from that snapshot. A lookup SHALL return the same value the C library would have returned at snapshot time. Lookups of names outside `DS4_*` SHALL be served by the C library unchanged.
-
-#### Scenario: Same values as before
-- **WHEN** a run is made with a given set of `DS4_*` variables before and after this change
-- **THEN** every switch takes the same value and the output is bitwise identical
-
-#### Scenario: No switch set
-- **WHEN** no `DS4_*` variable is set
-- **THEN** every `DS4_*` lookup reports the variable as unset without scanning the process environment
-
-### Requirement: Tests can change switches inside a process
-A test that sets or unsets a `DS4_*` variable inside its process SHALL see the new value at the next lookup, without changes at its call sites.
-
-#### Scenario: Test toggles a switch between two calls
-- **WHEN** a test sets a `DS4_*` variable, calls the engine, unsets it and calls again
-- **THEN** the first call sees the variable set and the second sees it unset
+## Requirements
 
 ### Requirement: Every switch the code reads is classified
 The repository SHALL hold one classification entry for each `DS4_*` name the sources read. Each entry SHALL give the name, a category (`operational`, `tuning`, `disable`, `enable`, `probe` or `test`), the normal-use state (`unset` or `any`) and a one-line description of what the variable does.

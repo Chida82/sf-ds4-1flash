@@ -282,6 +282,17 @@ All in one block of the `Makefile`, each read at exactly one place:
 `DS4_*` environment variables are upstream's and are **not renamed**. Set them
 inline (`DS4_METAL_CB_TIMES=1 ./sf-ds4-1flash ...`), never `export`.
 
+Each name the sources read has one line in `ds4_env.def`: category
+(`operational`, `tuning`, `disable`, `enable`, `probe`, `test`), normal-use
+state, and what it does. At engine open the CLI, server, bench and eval print
+`ds4: env NAME=value is set (category): description` for every set variable
+whose normal state is `unset`, and `... is set but this build never reads it`
+for a `DS4_*` name not in the file; a clean terminal prints nothing
+(`ds4_env.h`, included by `ds4.c`).
+`make env-check`, the first step of `make test`, fails on a read name missing
+from `ds4_env.def` and on a line nothing reads any more. A sync that brings a
+new upstream switch stops there until the switch is classified.
+
 ## Speculative decoding: none
 
 This child has no speculative decoding at all, and it is the only one of the

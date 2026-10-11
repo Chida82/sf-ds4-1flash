@@ -47,6 +47,7 @@ figures are in the named section.
 | CPU keep-alive during decode (`220` S2: one user-interactive thread spinning with `yield` for the whole token) | The decode thread already spins on the Super cluster at its top clock; the spinner lands there too and takes package power from the GPU: decode -0.4% at Nominal, -1.7%/-2.6% at Heavy (CIs below zero) with GPU 15.5 W against 16.5 W at the same clock. Argodrive's gain came from a cluster that was not at its top. | Decode keep-alive after 210 |
 | Lending the prefill reserve to the expert cache between sweeps (`230` S1: one slab of 767 slots allocated after a sweep, released before the next) | decode +0.6%/+2.3% (CIs touching zero), but the first token after an 8192 prefill went 753 -> 1208 ms (CI below zero): the 200 ms allocation sits at the end of the sweep, and the shrink drops 767 entries per sweep. A retry needs the allocation off the critical path and a slab that survives sweeps. | Expert cache growth after 225 |
 | Decode miss reads through an uncached descriptor (`240`, `F_NOCACHE` on a second fd for the pread pool) | Closed at its gate on `225`'s evidence, not run: the file cache serves 20-28% of today's decode miss reads at about half the drive's time, so the estimate is decode about -0.8% and appends worse. The memory it returns pays only if it becomes cache slots, and `230` S1, the lever that would take it, was dropped. A retry needs that consumer first. | Memory levers |
+| Reading `DS4_*` switches once per process (`280` S1: `getenv` redirected to a snapshot of the `DS4_*` entries) | The `130` profile had `getenv` at 0.5% of decode on the main thread, but two pooled invocations against `main` measured decode 2048 +0.13% (CI across zero) and decode 8192 -0.29% (CI below zero). The lookups are not on the path that sets the token rate. | DS4_* switches classified and reported |
 | Judging a kernel from back-to-back single timeline runs | Thermal drift is larger than the effect: the same baseline read 29 and 39 ms per dispatch. Use the harness's sections mode. | Prefill routed experts after 80 |
 
 ## Situation 0 (2026-09-27, `main` at `a60b8ee`)
@@ -1875,6 +1876,83 @@ warm-up right after the ds4 block read 166.5 tokens/s on the first 2048
 tokens and was discarded; the three measured plain sf runs read 175.2-175.9,
 the three ds4 runs 119.0-123.0. The worst spread of any column, first token
 aside, is 4.9% (sf, steady decode 8192); `--boost` 2.0%.
+
+## DS4_* switches classified and reported (2026-10-11, `280-env-snapshot-and-check`)
+
+**Inventory.** The whole-string `"DS4_[A-Z0-9_]+"` literals in `ds4*.c`,
+`ds4*.m` and `tests/*.c` name 594 distinct strings. 73 are not variables this
+build reads, and `tests/env_check.pl` leaves them out with the reason:
+- 71 `DS4_ROCM_*` names passed first to `glm_graph_env_present`/`_value`,
+  which discards that argument;
+- `DS4_IMAGE_`, the prefix of the server's image marker text;
+- `DS4_METAL_HAS_TENSOR`, a macro of the Metal library source.
+
+Four `DS4_ROCM_*` names are read for real (the layer and decode stage
+profiles, through `metal_graph_stage_profile_enabled_for_layer`) and are
+classified. That left 521 variables. A reachability pass then removed 20 whose
+every read was unreachable, with the code only they guarded:
+- one set only by `ds4_test` (`DS4_METAL_DISABLE_STREAMING_COLD_DECODE_PREFILL`);
+- six `DS4_CUDA_*` CLI switches of a greedy look-ahead that never produced a
+  token, and `DS4_CUDA_GREEDY_TOP1`, whose two arms were the same calls;
+- the M5 HC-mix `cluster2` switch (it needed `n == 16384`; V4.1 projects
+  20480, so `make test-deepseek41-decode-switch` passed on a no-op);
+- eleven switches of kernels that needed 256 experts of width 4096 or
+  `hc_dim == 16384`: the pre-M5 MXFP4 fixed-route decode, the M5 IQ2 pair
+  pack2, the fused HC norm/mix producers, the concurrent full FFN and the
+  pre-M5 Q2 split schedule.
+
+`ds4_env.def` holds 501 lines. Code that a test still reaches (256-expert
+router fixtures, the TP MXFP4 static kernels, the 8-expert IQ2 cached path) and
+the pipeline and CPU-reference paths stay.
+
+**S1, a snapshot read once per process, against `main`** (`decode,append,cold-5000`,
+`--bitwise`, 3600 s, thermal Heavy). `getenv` went through a force-included
+header to a copy of the `DS4_*` entries, taken once. Two invocations (974-1060
+and 1046-1103 MHz), 26 pairs each, bitwise, pooled with `ab_pool.py`:
+
+| Metric | Gain | 95% CI | n |
+|---|---|---|---|
+| decode 2048 | +0.13% | -0.91..+0.40 | 20 |
+| decode 8192 | -0.29% | -0.61..-0.11 | 20 |
+| append +300 | +0.29% | -0.08..+0.45 | 16 |
+| append +1500 | -0.32% | -1.77..+0.37 | 16 |
+| prefill 5000 | -0.02% | -2.31..+1.05 | 16 |
+| ttft 5000 | -0.22% | -0.57..+0.34 | 16 |
+
+The `130` profile had `getenv` at 0.5% of decode on the main thread; no gain
+shows end to end, so the snapshot was dropped and switches keep reading the
+live environment. The decode 8192 interval is below zero although a lookup
+with nothing set got shorter (both go through a symbol stub): more likely code
+layout than a cost of the lookup.
+
+**S2, classification, check, report and the cuts, against S1**
+(`decode,append`, `--bitwise`, 1800 s, thermal Heavy, 1083-1205 MHz), 12
+pairs, bitwise; no interval wholly below zero:
+
+| Metric | Gain | 95% CI |
+|---|---|---|
+| decode 2048 | -0.5% | -3.8..+1.8 |
+| decode 8192 | -0.2% | -1.6..+1.1 |
+| append +300 | -0.0% | -0.2..+0.4 |
+| append +1500 | +0.1% | -0.7..+2.4 |
+
+**The change against `main`** (S1 dropped: classification, check, report and
+the cuts; `decode,append,cold-5000`, `--bitwise`, 3600 s, thermal Heavy,
+1062-1261 MHz), 26 pairs, bitwise; no headline interval wholly below zero:
+
+| Metric | Gain | 95% CI |
+|---|---|---|
+| decode 2048 | -0.7% | -1.5..+0.8 |
+| decode 8192 | -0.1% | -0.5..+0.3 |
+| append +300 | +0.1% | +0.0..+0.6 |
+| append +1500 | +0.0% | -0.5..+0.2 |
+| ttft 5000 | -0.1% | -0.6..+0.0 |
+| e2e (estimate) | -0.3% | - |
+
+The detail metric `first token 5000 ms` read -0.9% (-1.7..-0.4), 0.4 ms on
+46 ms; the S1 invocations read it at +0.8% and -0.8% between builds whose
+token path differs no more than this one's. The change claims no speed, so
+it adds no Segment 1 row.
 
 ## Adding a row
 

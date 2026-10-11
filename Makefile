@@ -37,7 +37,8 @@ help:
 	@echo "sf-ds4-1flash build targets:"
 	@echo "  make              Build the four Metal binaries ($(BIN), -server, -bench, -eval)"
 	@echo "  make cpu          Build the four CPU-reference binaries ($(BIN)-cpu*)"
-	@echo "  make test         Build and run the model-less tests"
+	@echo "  make test         Build and run the model-less tests (env-check first)"
+	@echo "  make env-check    Check that ds4_env.def classifies every DS4_* name the sources read"
 	@echo "  make metal-decode-schedule-bench  Build the balanced Metal decode schedule benchmark"
 	@echo "  make session-concurrency-bench    Build the concurrency x context serving benchmark"
 	@echo "  make metal-prefill-variant-bench  Build the balanced Metal prefill variant benchmark"
@@ -387,11 +388,16 @@ mxfp4-dot-test: tests/test_mxfp4_dot.c
 	$(CC) -O2 -Wall -Wextra -std=c99 -o tests/test_mxfp4_dot tests/test_mxfp4_dot.c -lm
 	./tests/test_mxfp4_dot
 
+# Every DS4_* switch the sources read is classified in ds4_env.def.
+.PHONY: env-check
+env-check:
+	@perl tests/env_check.pl ds4_env.def ds4*.c ds4*.m tests/*.c
+
 # `make test` is the seconds-long, model-less check that runs after every
 # ablation batch (SPEC.md §F.2).  Only the --server subset of ds4_test is
 # model-less: the full run opens a GGUF and belongs to the model-backed phase,
 # with DS4_TEST_MODEL set.
-test: ds4_test $(BIN)-eval q4k-dot-test mxfp4-dot-test test-session-state test-engram \
+test: env-check ds4_test $(BIN)-eval q4k-dot-test mxfp4-dot-test test-session-state test-engram \
 	tests/test_deepseek4_vision_image tests/test_image_decode \
 	tests/test_prompt_prefix $(SAMPLING_TEST) $(BIN) $(BIN)-server $(BIN)-bench \
 	tests/test_metal_slab_residency tests/test_deepseek41_prefill tests/test_deepseek41_graph
@@ -421,6 +427,9 @@ test-quality-api: tests/test_quality_api.c gguf-tools/quality-testing/score_offi
 ds4.o ds4_cpu.o ds4_server.o ds4_server_cpu.o ds4_test.o \
 ds4_cpu_test_hooks.o tests/test_session_state.o \
 tests/test_session_state_gpu.o: ds4_tool_text.h
+
+ds4.o ds4_cpu.o ds4_cpu_test_hooks.o tests/test_session_state.o tests/test_session_state_gpu.o \
+tests/test_deepseek41_gguf.o tests/test_deepseek41_graph.o tests/test_deepseek41_prefill.o: ds4_env.h ds4_env.def
 
 clean:
 	rm -f $(BIN) $(BIN)-server $(BIN)-bench $(BIN)-eval \
