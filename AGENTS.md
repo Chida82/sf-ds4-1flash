@@ -158,7 +158,8 @@ The figures are in `speed-bench/perf-record.md`, Decode misses after 140.
 Prefetch with a cheaper guess is change `170`.
 
 `--boost` (`220-decode-keepalive`, off by default) does two things:
-- **Fan hint.** It runs the owner's `fanboost max` (`/usr/local/bin/fanboost`,
+- **Fan hint.** It runs `fanboost max` (`/usr/local/bin/fanboost`, sources
+  and installer in `fanboost/`,
   on a background queue) from `ds4_gpu_begin_commands`, at most once a second, so
   the fans run at 100% while the GPU has work. The engine never touches
   fanboost's lease itself: how a request reaches the daemon is fanboost's. In
@@ -169,6 +170,12 @@ Prefetch with a cheaper guess is change `170`.
   200 us bursts. This measured +0.5% decode at thermal pressure Nominal and 0
   at Heavy. `DS4_METAL_V41_DECODE_KEEPALIVE=0|1` overrides the flag per
   token, and `_BURST_US` sets the burst.
+
+`fanboost/` is a copy of the owner's `fanboost` repository: `fanboost.c`, the
+`Makefile` and the launchd plist verbatim (their comments and messages stay
+Italian), plus an English `README.md` and `install.sh` written here. When
+fanboost changes, copy those three files again and update the README; never
+copy its `.claude/` or agent notes.
 
 Harness A/B runs never pass `--boost`: the fans of one run would cool the
 next.
