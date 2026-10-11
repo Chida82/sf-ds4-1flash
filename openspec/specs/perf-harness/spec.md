@@ -48,11 +48,18 @@ to both builds and listed in the summary.
 ### Requirement: Streaming with a fixed expert cache
 Every benchmark process SHALL run in SSD streaming mode with the same fixed
 expert-cache target and the same allocated context of 32768 tokens, whatever
-the kind. The harness SHALL read from each run's log the dynamic expert cache
-the loader admitted, in GiB and in expert slots, and SHALL refuse the
-invocation, with exit status 2 and the log line quoted, when the dynamic cache
-of any run is outside 74.5-75.5 GiB or its slot count differs from the other
-runs'. The summary SHALL print the cache size and slot count.
+the kind.
+
+#### Scenario: Same layout for every kind
+- **WHEN** a decode kind and a cold-prompt kind run in one invocation
+- **THEN** both bench processes report the same allocated context of 32768
+
+### Requirement: Admitted cache check
+The harness SHALL read from each run's log the dynamic expert cache the loader
+admitted, in GiB and in expert slots, and SHALL refuse the invocation, with
+exit status 2 and the log line quoted, when the dynamic cache of any run is
+outside 74.5-75.5 GiB or its slot count differs from the other runs'. The
+summary SHALL print the cache size and slot count.
 
 #### Scenario: Cache admitted
 - **WHEN** the loader reports a 74.9 GiB dynamic cache with the same slot count in every run
@@ -61,10 +68,6 @@ runs'. The summary SHALL print the cache size and slot count.
 #### Scenario: Cache clamped
 - **WHEN** another resident process leaves the loader admitting a 60 GiB dynamic cache
 - **THEN** the harness exits 2 quoting the loader's cache line
-
-#### Scenario: Same layout for every kind
-- **WHEN** a decode kind and a cold-prompt kind run in one invocation
-- **THEN** both bench processes report the same allocated context of 32768
 
 ### Requirement: Preflight refusal
 Before any model process starts, the harness SHALL refuse to run, with exit
@@ -97,30 +100,11 @@ at once.
 - **THEN** the next run starts only after the previous process has exited
 
 ### Requirement: Scenario kinds
-The harness SHALL measure these kinds, each selectable by name, and the groups
-`cold` (the five cold kinds), `guards` (the two guard kinds) and `all` (every
-kind but the guards). The prompt is the child's benchmark prose text. The
-harness SHALL refuse an invocation that selects no kind.
-
-| Kind | Context frontiers | Generated tokens per frontier | Metrics |
-|---|---|---|---|
-| `decode` | 2048, then 8192 on top of it | 256 | steady decode tokens/s at 2048 and at 8192; first-token ms as detail |
-| `cold-2500` | 2500 from an empty context | 16 | time to first token (the prefill time), first-token ms as detail |
-| `cold-3500` | 3500 | 16 | as above |
-| `cold-5000` | 5000 | 16 | as above |
-| `cold-7500` | 7500 | 16 | as above |
-| `cold-10000` | 10000 | 16 | as above |
-| `append` | 5000, then 5300, then 6800 | 16 | prefill seconds of +300 and of +1500 |
-| `guard-16896` | 16896 from an empty context | 16 | time to first token |
-| `guard-decode` | 8192 | 2500 | steady decode tokens/s over 2500 tokens |
-
-A kind selected with `--guards` instead of `--kinds` SHALL run once as a single
-A, B pair after the timed rounds, without a confidence interval, and its
-metrics SHALL be marked as guards in the summary.
-
-#### Scenario: Decode change
-- **WHEN** the harness runs with `--kinds decode --guards guard-decode`
-- **THEN** the timed rounds hold only `decode` runs, then one A and one B `guard-decode` run, and the summary marks the guard
+The harness SHALL measure the decode, prompt and append kinds below, each
+selectable by name, and the groups `cold` (the five cold kinds), `guards` (the
+two guard kinds) and `all` (every kind but the guards). The prompt is the
+child's benchmark prose text. The harness SHALL refuse an invocation that
+selects no kind.
 
 #### Scenario: Prefill change
 - **WHEN** the harness runs with `--kinds cold,append`
@@ -129,6 +113,52 @@ metrics SHALL be marked as guards in the summary.
 #### Scenario: No kind
 - **WHEN** neither `--kinds` nor `--guards` is given
 - **THEN** the harness exits 2 listing the kinds and groups
+
+### Requirement: Decode kinds
+The decode kinds SHALL be:
+
+| Kind | Context frontiers | Generated tokens per frontier | Metrics |
+|---|---|---|---|
+| `decode` | 2048, then 8192 on top of it | 256 | steady decode tokens/s at 2048 and at 8192; first-token ms as detail |
+| `guard-decode` | 8192 | 2500 | steady decode tokens/s over 2500 tokens |
+
+#### Scenario: Decode kind
+- **WHEN** the `decode` kind runs
+- **THEN** it generates 256 tokens after a 2048 context and 256 after extending it to 8192, and reports steady decode at both
+
+### Requirement: Prompt kinds
+The prompt kinds SHALL be:
+
+| Kind | Context frontiers | Generated tokens per frontier | Metrics |
+|---|---|---|---|
+| `cold-2500` | 2500 from an empty context | 16 | time to first token (the prefill time), first-token ms as detail |
+| `cold-3500` | 3500 | 16 | as above |
+| `cold-5000` | 5000 | 16 | as above |
+| `cold-7500` | 7500 | 16 | as above |
+| `cold-10000` | 10000 | 16 | as above |
+| `guard-16896` | 16896 from an empty context | 16 | time to first token |
+
+#### Scenario: Cold prompt
+- **WHEN** the `cold-7500` kind runs
+- **THEN** it prefills 7500 tokens from an empty context, generates 16, and reports the time to first token
+
+### Requirement: Append kind
+The `append` kind SHALL run the context frontiers 5000, then 5300, then 6800,
+with 16 generated tokens per frontier, and report the prefill seconds of +300
+and of +1500.
+
+#### Scenario: Append measured
+- **WHEN** the `append` kind runs
+- **THEN** the summary reports the prefill seconds of the 300 tokens added at 5300 and of the 1500 added at 6800
+
+### Requirement: Guard runs
+A kind selected with `--guards` instead of `--kinds` SHALL run once as a single
+A, B pair after the timed rounds, without a confidence interval, and its
+metrics SHALL be marked as guards in the summary.
+
+#### Scenario: Decode change
+- **WHEN** the harness runs with `--kinds decode --guards guard-decode`
+- **THEN** the timed rounds hold only `decode` runs, then one A and one B `guard-decode` run, and the summary marks the guard
 
 ### Requirement: Untimed warm-up
 Before any timed run, the harness SHALL run every selected kind once for each
@@ -143,11 +173,18 @@ harness SHALL stop before the timed rounds.
 ### Requirement: Interleaved timed rounds
 For each kind the harness SHALL schedule timed runs in quads A B B A, so that
 drift of any kind weighs on both builds equally, and SHALL form one pair from
-each half of a quad: (A1, B1) and (B2, A2). For a metric the harness SHALL
-report the A and B medians, the median over valid pairs of the pair ratio, and
-a bootstrap 95% confidence interval of that median over the invocation's valid
-pairs. Every ratio SHALL be printed as a gain, so that a positive percentage is
-faster for every metric: B/A for tokens/s, A/B for seconds.
+each half of a quad: (A1, B1) and (B2, A2).
+
+#### Scenario: Two quads
+- **WHEN** two quads of one kind complete
+- **THEN** the runs went A B B A A B B A and form four pairs: (A1, B1), (B2, A2), (A3, B3), (B4, A4)
+
+### Requirement: Gains and intervals
+For a metric the harness SHALL report the A and B medians, the median over
+valid pairs of the pair ratio, and a bootstrap 95% confidence interval of that
+median over the invocation's valid pairs. Every ratio SHALL be printed as a
+gain, so that a positive percentage is faster for every metric: B/A for
+tokens/s, A/B for seconds.
 
 #### Scenario: One quad
 - **WHEN** one quad of the `decode` kind completes
@@ -174,34 +211,42 @@ status 3), not a ratio.
 - **WHEN** the budget fitted no quad of a selected kind, or disturbances left one pair
 - **THEN** the summary marks that kind's metrics inconclusive and the harness exits 3
 
-### Requirement: GPU log and disturbance rule
+### Requirement: GPU log
 While the harness runs, it SHALL log GPU frequency, GPU temperature, GPU power,
-GPU activity and thermal state at about 1 Hz. An optional preheat SHALL keep
-the machine under load with untimed runs until a configurable time has passed
-since the first run started (default 0, at most half the budget). The thermal
-state SHALL NOT exclude a run or a pair. A pair SHALL be excluded only when one
-of its runs has a median active GPU frequency below a configurable fraction
-(default 0.90) of the median over the invocation's timed runs. The summary
-SHALL report the GPU frequency range and the thermal states of the timed runs.
-The monitor stopping before the last run SHALL abort the harness.
-
-#### Scenario: External disturbance
-- **WHEN** the timed runs' median frequency is 1300 MHz and one run ran at 900 MHz
-- **THEN** that run's pair is excluded, both runs show the reason, and the quad's other pair is kept
+GPU activity and thermal state at about 1 Hz. The summary SHALL report the GPU
+frequency range and the thermal states of the timed runs. The monitor stopping
+before the last run SHALL abort the harness.
 
 #### Scenario: Monitor stops
 - **WHEN** `mactop` exits before the last run
 - **THEN** the harness aborts with status 2
+
+### Requirement: Preheat
+An optional preheat SHALL keep the machine under load with untimed runs until
+a configurable time has passed since the first run started (default 0, at most
+half the budget).
+
+#### Scenario: Preheat set
+- **WHEN** the preheat is 300 s
+- **THEN** untimed runs follow one another until 300 s after the first one started, and the timed rounds start after that
+
+### Requirement: Disturbance rule
+The thermal state SHALL NOT exclude a run or a pair. A pair SHALL be excluded
+only when one of its runs has a median active GPU frequency below a
+configurable fraction (default 0.90) of the median over the invocation's timed
+runs.
+
+#### Scenario: External disturbance
+- **WHEN** the timed runs' median frequency is 1300 MHz and one run ran at 900 MHz
+- **THEN** that run's pair is excluded, both runs show the reason, and the quad's other pair is kept
 
 ### Requirement: Cache-state check
 For every timed run and frontier the harness SHALL record the expert-cache
 hits, misses, bytes read from the model file and read time of that frontier.
 A pair whose hit or miss counts differ between A and B by more than a
 configurable tolerance (default 1% of the frontier's lookups) or whose bytes
-read differ by more than 5% SHALL be excluded, both runs carrying the reason,
-unless the invocation declares a cache-policy change, in which case the
-difference SHALL be reported as a note and the pair kept. The summary SHALL
-print the hit rate of A and B per kind.
+read differ by more than 5% SHALL be excluded, both runs carrying the reason.
+The summary SHALL print the hit rate of A and B per kind.
 
 #### Scenario: Same policy, same state
 - **WHEN** A and B differ only in a kernel and their counts match within the tolerance
@@ -211,18 +256,19 @@ print the hit rate of A and B per kind.
 - **WHEN** B evicts differently and misses 4% more experts than A at the 8192 frontier
 - **THEN** that pair is excluded with the reason, and the other pairs are judged on their own counts
 
+### Requirement: Declared cache-policy change
+When the invocation declares a cache-policy change, a cache-state difference
+SHALL be reported as a note and the pair kept instead of excluded.
+
 #### Scenario: Declared policy change
 - **WHEN** the invocation declares a cache-policy change and the counts differ
 - **THEN** the pair is kept and the summary notes the hit rates of A and B
 
 ### Requirement: End-to-end estimate
 The summary SHALL print an estimate of the request time of the typical mix for
-A and for B, and its gain: the mean over prompts of 2500, 3500, 5000, 7500 and
-10000 tokens and answers of 200, 1000 and 2000 tokens of the time to first
-token of that prompt plus the answer divided by the steady decode rate at 2048
-for prompts up to 5000 and at 8192 above. It SHALL be computed from the A and B
-medians of the invocation. A phase whose kinds were not run SHALL count as
-unchanged, and the summary SHALL name those kinds.
+A and for B, and its gain, computed from the A and B medians of the
+invocation. A phase whose kinds were not run SHALL count as unchanged, and the
+summary SHALL name those kinds.
 
 #### Scenario: Full run
 - **WHEN** the `decode` kind and the five cold kinds ran
@@ -231,6 +277,16 @@ unchanged, and the summary SHALL name those kinds.
 #### Scenario: Decode-only run
 - **WHEN** only the `decode` kind ran
 - **THEN** the estimate takes A's decode rates against B's, treats every time to first token as unchanged, and says so
+
+### Requirement: Typical mix
+The estimate SHALL be the mean over prompts of 2500, 3500, 5000, 7500 and
+10000 tokens and answers of 200, 1000 and 2000 tokens of the time to first
+token of that prompt plus the answer divided by the steady decode rate at 2048
+for prompts up to 5000 and at 8192 above.
+
+#### Scenario: One term of the mean
+- **WHEN** the time to first token at 7500 is 15 s and steady decode at 8192 is 25 tokens/s
+- **THEN** the 7500-token prompt with a 1000-token answer adds 15 + 40 = 55 s to the mean
 
 ### Requirement: Correctness gate
 The harness SHALL compare the generated token ids of A and B for every kind and
@@ -257,12 +313,19 @@ Every invocation SHALL write, into one output directory: a raw CSV with one row
 per timed run and frontier (build, kind, frontier, metrics, cache hits, misses,
 bytes read and read time, GPU frequency median, flag and reason, token hash);
 the raw GPU log; each run's standard error; and a summary that fits one screen
-and is also printed. The summary SHALL name both trees with their commit and
-whether they had uncommitted changes, the model file, the device, the cache
-size and slot count, the budget used, the GPU frequency range and thermal
-states of the timed runs, the number of valid and dropped pairs, the
-correctness verdict, and per metric the A and B medians, the median gain, its
-interval and the number of pairs.
+and is also printed.
+
+#### Scenario: Output directory
+- **WHEN** a run completes
+- **THEN** its output directory holds the raw CSV, the GPU log, one standard error file per run and the summary
+
+### Requirement: Summary content
+The summary SHALL name both trees with their commit and whether they had
+uncommitted changes, the model file, the device, the cache size and slot
+count, the budget used, the GPU frequency range and thermal states of the
+timed runs, the number of valid and dropped pairs, the correctness verdict,
+and per metric the A and B medians, the median gain, its interval and the
+number of pairs.
 
 #### Scenario: Citable verdict
 - **WHEN** a run completes
@@ -270,17 +333,24 @@ interval and the number of pairs.
 
 ### Requirement: Record row
 The summary SHALL end with one Markdown table row, ready to paste into the
-performance record, whose header the harness also defines. The row SHALL hold
-the step (B's branch), the date, B's commit, the model file, the number of
-valid pairs, the correctness verdict and, for every headline metric (decode at
-2048 and 8192, time to first token at 2500, 3500, 5000, 7500 and 10000, append
-+300 and +1500, the two guards and the end-to-end estimate), B's absolute
-median together with the median gain. Metrics not measured in the invocation
-SHALL appear as empty cells, so every row has the same columns.
+performance record, whose header the harness also defines. Metrics not
+measured in the invocation SHALL appear as empty cells, so every row has the
+same columns.
 
 #### Scenario: Subset of kinds
 - **WHEN** only the `decode` kind was run
 - **THEN** the cold, append and guard cells of the row are empty and the decode and estimate cells are filled
+
+### Requirement: Record row columns
+The row SHALL hold the step (B's branch), the date, B's commit, the model
+file, the number of valid pairs, the correctness verdict and, for every
+headline metric (decode at 2048 and 8192, time to first token at 2500, 3500,
+5000, 7500 and 10000, append +300 and +1500, the two guards and the
+end-to-end estimate), B's absolute median together with the median gain.
+
+#### Scenario: Headline cell
+- **WHEN** B's decode at 2048 has a median of 21.6 tokens/s and a median gain of +30.5%
+- **THEN** the decode 2048 cell reads `21.6 (+30.5%)`
 
 ### Requirement: Pooled verdict across invocations
 A pooling tool SHALL take a kind, a metric and the output directories of
@@ -306,19 +376,29 @@ be strictly increasing and positive, or the bench exits with status 2.
 - **WHEN** the bench is given `--frontiers 8192,2048`
 - **THEN** it exits with status 2 naming the option
 
-### Requirement: Benchmark token, logit and cache evidence
+### Requirement: Benchmark token output
 With `--show-output`, the bench SHALL print the generated token ids of each
-frontier. With `--dump-frontier-logits-dir`, it SHALL write, besides the
-existing logits after each prefill frontier, the logits after the last decoded
-token of that frontier, in the same format, with every float32 value written so
-that it reads back to the same bits. With `--cache-stats`, it SHALL print after
-each frontier the streaming expert-cache counters (hits, misses, bytes read,
-read time) accumulated so far, so that a reader can take per-frontier deltas;
-on a backend without an expert cache the option prints nothing.
+frontier.
+
+#### Scenario: Token ids per frontier
+- **WHEN** the bench runs with `--show-output --frontiers 2048,8192`
+- **THEN** it prints the generated token ids of each of the two frontiers
+
+### Requirement: Benchmark decode logits
+With `--dump-frontier-logits-dir`, the bench SHALL write, besides the existing
+logits after each prefill frontier, the logits after the last decoded token of
+that frontier, in the same format, with every float32 value written so that it
+reads back to the same bits.
 
 #### Scenario: Decode logits file
 - **WHEN** the bench runs with `--dump-frontier-logits-dir D --frontiers 2500`
 - **THEN** `D` holds a prefill logits file and a decode logits file for frontier 2500
+
+### Requirement: Benchmark cache counters
+With `--cache-stats`, the bench SHALL print after each frontier the streaming
+expert-cache counters (hits, misses, bytes read, read time) accumulated so
+far, so that a reader can take per-frontier deltas; on a backend without an
+expert cache the option prints nothing.
 
 #### Scenario: Cache counters per frontier
 - **WHEN** the bench runs with `--cache-stats --frontiers 2048,8192`

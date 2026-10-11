@@ -36,7 +36,7 @@ The engine SHALL open the supplied file read-only, require a regular compatible 
 - **THEN** they reuse the validated source identity without rescanning all replica weight bytes per session
 
 ### Requirement: Exact concurrent delivery within the existing budget
-For supported explicit-buffer sweeps, the engine SHALL read absent routed-up bytes from the replica and absent gate/down bytes from the canonical model, permitting the two disk sources to make concurrent progress. It SHALL retain any accepted resident-cache reuse and the same expert-slot and layer-buffer budgets. It SHALL preserve token outputs, logits, state and numerical prefill partitions bit-for-bit. Sweeps not supported by the explicit-buffer path SHALL use the canonical path and identify that fallback.
+For supported explicit-buffer sweeps, the engine SHALL read absent routed-up bytes from the replica and absent gate/down bytes from the canonical model, permitting the two disk sources to make concurrent progress. It SHALL retain any accepted resident-cache reuse and the same expert-slot and layer-buffer budgets. It SHALL preserve token outputs, logits, state and numerical prefill partitions bit-for-bit.
 
 #### Scenario: Two available disk sources
 - **WHEN** a supported sweep needs uncached bytes from both sources
@@ -45,6 +45,9 @@ For supported explicit-buffer sweeps, the engine SHALL read absent routed-up byt
 #### Scenario: Same input and cache allocation
 - **WHEN** an enabled run is compared with canonical-only execution on the same model and input
 - **THEN** output logits and session state match bit-for-bit and admitted expert slots are unchanged
+
+### Requirement: Canonical fallback for unsupported sweeps
+Sweeps not supported by the explicit-buffer path SHALL use the canonical path and identify that fallback.
 
 #### Scenario: Unsupported sweep shape
 - **WHEN** a sweep cannot use the validated explicit-buffer path
