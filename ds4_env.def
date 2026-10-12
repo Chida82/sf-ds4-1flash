@@ -224,6 +224,7 @@ DS4_ENV(DS4_METAL_DISABLE_V41_PREFILL_ALIAS, disable, unset, "Turns off aliasing
 DS4_ENV(DS4_METAL_DISABLE_V41_READBACK_MAILBOX, disable, unset, "Polls the router batch status instead of a shared mailbox for V4.1 selected-expert ids")
 DS4_ENV(DS4_METAL_DISABLE_V41_READBACK_POLL, disable, unset, "Turns off the bounded 2 ms status poll at the V4.1 selected-id readback")
 DS4_ENV(DS4_METAL_DISABLE_V41_READBACK_SPLIT, disable, unset, "Turns off committing the V4.1 router alone so the shared expert runs during the id readback")
+DS4_ENV(DS4_METAL_DISABLE_V41_RESIDUAL_STEERING, disable, unset, "Turns off the 401 residual_stream_post_layer directional-steering edit (forces the fused fold path)")
 DS4_ENV(DS4_METAL_DISABLE_V41_ROPE_QUANTIZE, disable, unset, "Turns off the fused V4.1 RoPE + quantize + store kernel")
 DS4_ENV(DS4_METAL_DISABLE_V41_ROUTER_BATCH, disable, unset, "Turns off the batched V4.1 router matmul for 32 or more tokens")
 DS4_ENV(DS4_METAL_DISABLE_V41_ROUTER_MM, disable, unset, "Turns off the mul_mm path of the batched V4.1 router for 256 or more tokens")

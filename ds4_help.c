@@ -212,6 +212,7 @@ static void print_steering(FILE *fp, const help_colors *c) {
     title(fp, c, "Directional Steering");
     opt(fp, c, "--dir-steering-file FILE", "Load one f32 direction vector per layer.");
     opt(fp, c, "--dir-steering-ffn F", "Apply steering after FFN outputs. Default with file: 1");
+    opt(fp, c, "--dir-steering-residual F", "Apply steering at the V4.1 post-HC-fold residual (control-vector site). Default 0.");
     opt(fp, c, "--dir-steering-attn F", "Apply steering after attention outputs. Default: 0");
     opt(fp, c, "--allow-v41-steering", "Lift the V4.1 startup refusal for --dir-steering-file (single-box Metal).");
     fputc('\n', fp);

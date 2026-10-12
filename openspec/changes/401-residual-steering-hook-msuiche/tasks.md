@@ -4,15 +4,16 @@ Depends on `400` (gate opt-in). Prerequisite for the drop-in check (3.2): the us
 sets `HF_TOKEN` and accepts the Responsible Use Agreement on both repos; downloads go
 to `/tmp`.
 
-Status 2026-10-13: Group 1 (converter) DONE and confirmed on the real msuiche GGUF.
-Group 2 investigation (2.1) DONE and written into `design.md` ("Investigation findings").
-It surfaced that the hook is a WIDE, DELICATE change to the active `ds41_*` hot graph
-path (force the slow `ds41_hc_mix` path, thread `il`, upload a new directions tensor,
-mirror on prefill/batch, CPU reference) AND a real architectural choice (option A vs B:
-the fold `g->x` is post-engram on layers {1,14} and fused with the rms-norm). Per the
-repo's "stop and ask on `ds4.c` hot-path ambiguity" rule, the apply (2.2-2.4, 3.x) is
-HELD for the owner's A/B go-ahead rather than landed blind overnight. The frontend flag
-plumbing was drafted and reverted (kept clean); the exact edits are in `design.md`'s plan.
+Status 2026-10-13: Group 1 (converter) DONE. Group 2 investigation (2.1) DONE in
+`design.md`. Option A IMPLEMENTED for the DECODE path and verified: build clean, `make
+test` EXIT=0 (env-check 503, the new `DS4_METAL_DISABLE_V41_RESIDUAL_STEERING`
+classified), OFF path (`--dir-steering-residual 0`) BITWISE IDENTICAL to baseline on a
+benign prompt, ON path (0.5) alters the residual and stays coherent (effective, benign).
+Remaining: the PREFILL/BATCH fold coverage (`ds41_hc_mix_batch`) and the CPU reference
+mirror (2.3), and the refusal-efficacy drop-in via `402` (3.2). Index chosen = direction
+`[il]` at the before-attention fold of layer `il`; the +1 analysis means `402` may show a
+one-layer shift is better (a one-constant change). Layers {1,14} apply post-engram (minor,
+below msuiche's null gate).
 
 ## 1. Converter
 
@@ -35,37 +36,47 @@ plumbing was drafted and reverted (kept clean); the exact edits are in `design.m
   before-attention fold (`ds41_graph_before_attention` 23904, `ffn==false`). Decode,
   prefill/batch and CPU call sites, the fused-with-norm blocker, and the engram-ordering
   (engram at 23900 BEFORE the fold at 23904 on layers {1,14}) are recorded in `design.md`.
-- [ ] 2.2 Metal apply — HELD for the A/B decision (see `design.md`). Plan A: force the
-  slow `ds41_hc_mix` path when `scale!=0 && !ffn` and project `g->x` between the
-  weighted-sum (23600) and the norm (23601) with `ds4_gpu_directional_steering_project_tensor`;
-  upload the directions tensor in `ds41_graph_alloc`. Not landed blind.
-- [ ] 2.3 CPU reference — HELD with 2.2: `cpu_directional_steering_project_rows(scratch->attn_cur,
-  dirs, il, 1, scale)` after the fold (ds4.c:11595). CPU has no engram, so no ordering issue.
-- [ ] 2.4 `--dir-steering-residual F` in CLI/server/help + the `ds4_engine_options` field
-  + the disable env — drafted, reverted; HELD with 2.2 so no flag lands that silently
-  no-ops on Metal. (bench has no steering flags; not added.)
+- [x] 2.2 Metal apply (option A, DECODE path): `ds41_hc_mix` takes `il`; when
+  `scale!=0 && !ffn && residual_dirs && !DS4_METAL_DISABLE_V41_RESIDUAL_STEERING` it skips
+  both fused kernels (forcing the slow path) and projects `g->x` between the weighted-sum
+  and `ds41_norm` with `ds4_gpu_directional_steering_project_tensor` (projective, matching
+  msuiche). The 40x5120 directions tensor is uploaded to `ds41_gpu_graph` in
+  `ds4_session_create` (freed in `ds41_graph_free`); `cpu_load_directional_steering` now
+  loads the file for the Metal path too when residual is active. Off keeps the fast path
+  (bitwise identical).
+- [ ] 2.3 CPU reference + PREFILL/BATCH coverage — REMAINING. CPU:
+  `cpu_directional_steering_project_rows(scratch->attn_cur, dirs, il, 1, scale)` after the
+  fold (ds4.c:11595). Prefill/batch: mirror in `ds41_hc_mix_batch` (b->x fold). The decode
+  path alone steers only generated tokens, not the prompt representation.
+- [x] 2.4 `--dir-steering-residual F` in CLI/server/help + `ds4_engine_options` field +
+  engine field/copy + the disable env (classified, env-check 503). Setting it sets
+  `directional_steering_scale_set` so a file does not also default `ffn=1`. (bench has no
+  steering flags; not added.)
 
 ## 3. Verify
 
-- [ ] 3.1 No-op gate — HELD with the apply: scale 0 keeps the fast fused path, bitwise
-  identical. The real proof is a baseline vs `--dir-steering-residual 0` decode compare.
-- [ ] 3.2 Drop-in — HELD with the apply. The converted vector `v41-msuiche.f32` is READY;
-  the run settles site/index/sign (404's +1 offset is the index hint) and whether A
-  reproduces msuiche's removal (refusal32 4->24). Manual, single run under the lock.
+- [x] 3.1 No-op gate: baseline vs `--dir-steering-file v41-msuiche.f32 --dir-steering-residual
+  0` on a benign prompt -> BITWISE IDENTICAL completion (scale 0 keeps the fast fused path).
+  `make test` EXIT=0, env-check 503.
+- [ ] 3.2 Drop-in refusal-efficacy — via `402` (model-backed, user-run). Benign
+  effectiveness CONFIRMED: at residual 0.5 the output changes vs baseline and stays
+  coherent (the mechanism alters the stream at the knee). Still to settle with `402`:
+  whether it reproduces msuiche's refusal removal (refusal32 4->24), the sign, the +1 index
+  shift, and whether prefill coverage (2.3) is needed. DECODE-only today.
 
 ## 4. Docs
 
-- [~] 4.1 `dir-steering/README.md` now has the V4.1 control-vector + fusion workflow and
-  that msuiche's vector is `residual_stream_post_layer`, WRONG at ffn/attn (added with
-  404). The formal ffn/attn/residual 3-row site table lands with the `--dir-steering-residual`
-  flag (2.4). The V4.1 refusal block stays verbatim (lifted by 400's opt-in).
+- [x] 4.1 `dir-steering/README.md`: the ffn/attn/residual 3-row site table + the
+  `--dir-steering-residual` runtime option, that msuiche's vector is `residual_stream_post_layer`
+  (wrong at ffn/attn) and that setting residual does not auto-enable ffn, plus the
+  decode-only coverage note. The V4.1 refusal block stays verbatim (lifted by 400's opt-in).
 - [x] 4.2 Provenance in `docs/upstream-prs.md` (msuiche GLP-39; distributedcognition
   grimjim norm-preserving biprojected abliteration), with the +1 offset finding; not in
   source comments.
 
 ## 5. Integration
 
-- [ ] 5.1 HELD with the apply: `make test` (incl. env-check) + parity on the disabled
-  path once 2.2-2.4 land. `openspec validate 401-residual-steering-hook-msuiche --strict`
-  passes now (the converter + design + tasks are valid). Standing commit authority on
-  `sf/steering` for this steering work.
+- [x] 5.1 `make test` EXIT=0 (env-check 503). `openspec validate
+  401-residual-steering-hook-msuiche --strict` passes. Disabled-path identity verified
+  directly (baseline == `--dir-steering-residual 0`, bitwise). The full parity oracle and
+  the prefill/batch + CPU coverage (2.3) remain. Standing commit authority on `sf/steering`.

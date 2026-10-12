@@ -23167,6 +23167,8 @@ typedef struct {
     ds4_gpu_tensor *compressed[4], *index_cache[4];
     ds4_gpu_tensor *previous_kv[4], *previous_score[4];
     ds4_gpu_tensor *engram_q_norm[2], *engram_k_norm[2];
+    ds4_gpu_tensor *residual_dirs;  /* sf: 401 per-layer steering directions (40x5120), NULL when off */
+    float residual_scale;           /* sf: 401 residual_stream_post_layer scale (0 = off) */
     ds41_prefill_row batch, *rows_view;
     ds41_prefill_row carry;
     ds4_gpu_tensor *prefill_tokens;
@@ -23202,6 +23204,7 @@ static void ds41_graph_free(ds41_gpu_graph *g) {
         ds4_gpu_tensor_free(g->engram_q_norm[i]);
         ds4_gpu_tensor_free(g->engram_k_norm[i]);
     }
+    ds4_gpu_tensor_free(g->residual_dirs);  /* sf: 401 */
     for (uint32_t i = 0; i < 40; i++) ds4_gpu_tensor_free(g->window[i]);
     for (uint32_t i = 0; i < 4; i++) {
         ds4_gpu_tensor_free(g->compressed[i]);
@@ -23573,14 +23576,24 @@ static bool ds41_hc_block_input_off(void) {
  * the previous block's pre weights and norm; each half fused where the fused
  * kernel reproduces the separate ones. */
 static bool ds41_hc_mix(ds41_gpu_graph *g, const ds4_model *m,
-                        const ds4_layer_weights *l, bool ffn, const ds4_gpu_tensor *pre) {
+                        const ds4_layer_weights *l, bool ffn, const ds4_gpu_tensor *pre,
+                        uint32_t il) {
     const ds4_gpu_tensor *residual = ffn ? g->after_attn : g->residual;
     const ds4_tensor *fn = ffn ? l->hc_ffn_fn : l->hc_attn_fn;
     const ds4_tensor *scale = ffn ? l->hc_ffn_scale : l->hc_attn_scale;
     const ds4_tensor *base = ffn ? l->hc_ffn_base : l->hc_attn_base;
     const ds4_tensor *norm = ffn ? l->ffn_norm : l->attn_norm;
     ds4_gpu_tensor *split = ffn ? g->ffn_split : g->attn_split;
-    if (fn->type == DS4_TENSOR_F16 && !ds41_hc_block_input_off() &&
+    /* sf: 401 residual_stream_post_layer steering. The single 5120 fold g->x is a
+     * standalone tensor only on the slow path (both fast kernels fuse the fold with
+     * the rms-norm), so when this layer's attention-side fold is steered we skip the
+     * two fused paths and project g->x between the weighted-sum and the norm, reusing
+     * the existing projection kernel (y -= scale*d*dot(d,y), matching msuiche's
+     * projective control vector). Off (scale 0, ffn side, or the disable env) keeps
+     * the fast paths, so the disabled path is bitwise identical. */
+    const bool steer = !ffn && g->residual_scale != 0.0f && g->residual_dirs &&
+                       !getenv("DS4_METAL_DISABLE_V41_RESIDUAL_STEERING");
+    if (!steer && fn->type == DS4_TENSOR_F16 && !ds41_hc_block_input_off() &&
         ds4_gpu_dsv41_hc_block_input_rows(g->mix, g->x, g->norm, split, residual, pre, m->map, m->size,
                                           fn->abs_offset, scale->abs_offset, base->abs_offset, norm->abs_offset,
                                           DS4_N_HC * DS4_N_EMBD, 24u, DS4_N_EMBD, DS4_N_HC,
@@ -23591,14 +23604,17 @@ static bool ds41_hc_mix(ds41_gpu_graph *g, const ds4_model *m,
           (ds4_gpu_rms_norm_plain_tensor(g->flat_norm, residual,
                DS4_N_HC * DS4_N_EMBD, DS4_RMS_EPS) &&
            ds41_matmul(g->mix, m, fn, g->flat_norm, false)))) return false;
-    if (ds4_gpu_dsv41_hc_input(g->x, g->norm, split, g->mix, residual, pre, m->map, m->size,
+    if (!steer && ds4_gpu_dsv41_hc_input(g->x, g->norm, split, g->mix, residual, pre, m->map, m->size,
                                scale->abs_offset, base->abs_offset, norm->abs_offset,
                                DS4_N_EMBD, DS4_N_HC, DS4_N_HC_SINKHORN_ITER, DS4_HC_EPS, DS4_RMS_EPS))
         return true;
-    return ds4_gpu_hc_split_sinkhorn_tensor(split, g->mix, m->map, m->size,
-               scale->abs_offset, base->abs_offset, DS4_N_HC, DS4_N_HC_SINKHORN_ITER, DS4_HC_EPS) &&
-        ds4_gpu_hc_weighted_sum_bf16_tensor(g->x, residual, pre, DS4_N_EMBD, DS4_N_HC) &&
-        ds41_norm(g->norm, g->x, m, norm);
+    if (!(ds4_gpu_hc_split_sinkhorn_tensor(split, g->mix, m->map, m->size,
+              scale->abs_offset, base->abs_offset, DS4_N_HC, DS4_N_HC_SINKHORN_ITER, DS4_HC_EPS) &&
+          ds4_gpu_hc_weighted_sum_bf16_tensor(g->x, residual, pre, DS4_N_EMBD, DS4_N_HC)))
+        return false;
+    if (steer && !ds4_gpu_directional_steering_project_tensor(g->x, g->residual_dirs, il,
+                     DS4_N_EMBD, 1u, g->residual_scale)) return false;
+    return ds41_norm(g->norm, g->x, m, norm);
 }
 
 /* rope_il >= 0: the heads still carry their rope; that layer's inverse rope
@@ -23901,19 +23917,19 @@ static bool ds41_graph_before_attention(ds41_gpu_graph *g, const ds4_model *m,
                 g->engram_q_norm[i], g->engram_k_norm[i], NULL, DS4_N_EMBD, 1, DS4_RMS_EPS))
             return false;
     }
-    return ds41_hc_mix(g, m, l, false, il ? g->ffn_split : g->pre);
+    return ds41_hc_mix(g, m, l, false, il ? g->ffn_split : g->pre, il);
 }
 
 static bool ds41_graph_after_attention(ds41_gpu_graph *g, const ds4_model *m,
                                       const ds4_layer_weights *l) {
     return ds4_gpu_hc_expand_split_bf16_tensor(g->after_attn, g->block, g->residual, g->attn_split, DS4_N_EMBD, DS4_N_HC) &&
-        ds41_hc_mix(g, m, l, true, g->attn_split);
+        ds41_hc_mix(g, m, l, true, g->attn_split, 0u);
 }
 
 static bool ds41_graph_before_moe(ds41_gpu_graph *g, const ds4_model *m,
                                  const ds4_layer_weights *l, uint32_t il) {
     return ds41_graph_before_attention(g, m, l, il) && ds41_attention(g, m, l, il, false) &&
-        (g->tp_world == 2 ? ds41_graph_after_attention(g, m, l) : ds41_hc_mix(g, m, l, true, g->attn_split));
+        (g->tp_world == 2 ? ds41_graph_after_attention(g, m, l) : ds41_hc_mix(g, m, l, true, g->attn_split, il));
 }
 
 static bool ds41_norm_batch(ds4_gpu_tensor *out, const ds4_gpu_tensor *in,
@@ -25716,6 +25732,7 @@ struct ds4_engine {
     float *directional_steering_dirs;
     float directional_steering_attn_scale;
     float directional_steering_ffn_scale;
+    float directional_steering_residual_scale;  /* sf: 401 post-HC-fold residual site (V4.1) */
     int power_percent;
     uint32_t prefill_chunk;
     uint32_t ssd_streaming_cache_experts;
@@ -25893,7 +25910,8 @@ static void cpu_directional_steering_project_rows(
 static bool cpu_load_directional_steering(ds4_engine *e) {
     if (!e ||
         (e->directional_steering_attn_scale == 0.0f &&
-         e->directional_steering_ffn_scale == 0.0f)) {
+         e->directional_steering_ffn_scale == 0.0f &&
+         e->directional_steering_residual_scale == 0.0f)) {
         return true;
     }
 
@@ -30071,7 +30089,8 @@ static int ds4_engine_open_internal(ds4_engine **out,
     e->ssd_streaming_cache_bytes = opt->ssd_streaming_cache_bytes;
     e->ssd_streaming_preload_experts = opt->ssd_streaming_preload_experts;
     if (e->power_percent > 100) e->power_percent = 100;
-    if ((opt->directional_steering_attn != 0.0f || opt->directional_steering_ffn != 0.0f) &&
+    if ((opt->directional_steering_attn != 0.0f || opt->directional_steering_ffn != 0.0f ||
+         opt->directional_steering_residual != 0.0f) &&
         (!opt->directional_steering_file || !opt->directional_steering_file[0]))
     {
         fprintf(stderr, "ds4: directional steering needs --dir-steering-file\n");
@@ -30083,6 +30102,7 @@ static int ds4_engine_open_internal(ds4_engine **out,
         e->directional_steering_file = ds4_strdup(opt->directional_steering_file);
         e->directional_steering_attn_scale = opt->directional_steering_attn;
         e->directional_steering_ffn_scale = opt->directional_steering_ffn;
+        e->directional_steering_residual_scale = opt->directional_steering_residual;
     }
     if (opt->n_threads > 0) g_requested_threads = (uint32_t)opt->n_threads;
     e->placement_session_count_hint = opt->placement_session_count_hint;
@@ -30301,7 +30321,8 @@ static int ds4_engine_open_internal(ds4_engine **out,
         *out = e;
         return 0;
     }
-    if (e->backend == DS4_BACKEND_CPU && !cpu_load_directional_steering(e)) {
+    if ((e->backend == DS4_BACKEND_CPU || e->directional_steering_residual_scale != 0.0f) &&
+        !cpu_load_directional_steering(e)) {
         ds4_engine_close(e);
         *out = NULL;
         return 1;
@@ -31498,6 +31519,20 @@ int ds4_session_create(ds4_session **out, ds4_engine *e, int ctx_size) {
             return 1;
         }
         s->ds41_graph_ready = true;
+        /* sf: 401 upload the per-layer steering directions to the V4.1 graph and
+         * arm the residual_stream_post_layer site (no tensor when off). */
+        if (e->directional_steering_residual_scale != 0.0f && e->directional_steering_dirs) {
+            const uint64_t db = (uint64_t)directional_steering_layer_count() * DS4_N_EMBD * 4u;
+            s->ds41_graph.residual_dirs = ds4_gpu_tensor_alloc(db);
+            if (!s->ds41_graph.residual_dirs ||
+                !ds4_gpu_tensor_write(s->ds41_graph.residual_dirs, 0,
+                                      e->directional_steering_dirs, db)) {
+                ds41_graph_free(&s->ds41_graph);
+                free(s);
+                return 1;
+            }
+            s->ds41_graph.residual_scale = e->directional_steering_residual_scale;
+        }
         s->ds41_graph.quality = e->quality;
         s->ds41_graph.streaming_prefill_bytes = e->ssd_streaming_prefill_headroom_bytes;
         if (e->tp.active) {

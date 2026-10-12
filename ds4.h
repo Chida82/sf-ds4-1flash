@@ -138,6 +138,7 @@ typedef struct {
     const char *expert_profile_path;
     float directional_steering_attn;
     float directional_steering_ffn;
+    float directional_steering_residual;  /* sf: 401 residual_stream_post_layer site (V4.1) */
     bool allow_v41_steering;    /* sf: opt into V4.1 steering, lifting its startup refusal */
     int power_percent;
     uint32_t ssd_streaming_cache_experts;

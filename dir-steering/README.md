@@ -39,7 +39,23 @@ format example.
 --dir-steering-file FILE   load one f32 direction per normal model layer
 --dir-steering-ffn F       apply steering after FFN outputs; default is 1 when a file is provided
 --dir-steering-attn F      apply steering after attention outputs; default is 0
+--dir-steering-residual F  apply steering at the V4.1 post-HC-fold residual; default is 0
 ```
+
+Three application sites, each with its own scale, chosen to match the vector's own
+derivation point:
+
+| Site | Flag | For vectors derived at |
+|---|---|---|
+| FFN output (pre-residual) | `--dir-steering-ffn` | `ffn_out_pre_residual`-style vectors |
+| Attention output | `--dir-steering-attn` | attention-output vectors |
+| Post-HC-fold residual (V4.1) | `--dir-steering-residual` | `residual_stream_post_layer` control vectors (msuiche) |
+
+A control vector is only valid at the site it was measured; msuiche's vector
+(`residual_stream_post_layer`) is applied with `--dir-steering-residual`, and is wrong at
+`--dir-steering-ffn`. Setting `--dir-steering-residual` does not auto-enable the FFN site.
+(V4.1 residual steering currently covers the decode path; prefill/batch coverage and the
+CPU reference are follow-ups.)
 
 The FFN output is usually the best first target because it is late enough in
 each layer to represent behavior, style, and topic signals. Attention steering
