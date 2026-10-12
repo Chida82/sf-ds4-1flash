@@ -4,6 +4,16 @@ Depends on `400` (gate opt-in). Prerequisite for the drop-in check (3.2): the us
 sets `HF_TOKEN` and accepts the Responsible Use Agreement on both repos; downloads go
 to `/tmp`.
 
+Status 2026-10-13: Group 1 (converter) DONE and confirmed on the real msuiche GGUF.
+Group 2 investigation (2.1) DONE and written into `design.md` ("Investigation findings").
+It surfaced that the hook is a WIDE, DELICATE change to the active `ds41_*` hot graph
+path (force the slow `ds41_hc_mix` path, thread `il`, upload a new directions tensor,
+mirror on prefill/batch, CPU reference) AND a real architectural choice (option A vs B:
+the fold `g->x` is post-engram on layers {1,14} and fused with the rms-norm). Per the
+repo's "stop and ask on `ds4.c` hot-path ambiguity" rule, the apply (2.2-2.4, 3.x) is
+HELD for the owner's A/B go-ahead rather than landed blind overnight. The frontend flag
+plumbing was drafted and reverted (kept clean); the exact edits are in `design.md`'s plan.
+
 ## 1. Converter
 
 - [x] 1.1 `dir-steering/tools/controlvector_to_f32.py`: reads a GGUF `controlvector`,
@@ -19,42 +29,43 @@ to `/tmp`.
 
 ## 2. Residual-stream hook
 
-- [ ] 2.1 Locate the post-HC-fold, pre-engram single-5120-stream tensor in the V4.1
-  graph (decode and prefill/token-major), layers 1-39. Record the tensor and the two
-  call sites in the design. Verify by reading the graph that it is the mean-reduced
-  stream before the engram read on layers {1,14}.
-- [ ] 2.2 Metal: bind `ds4_gpu_directional_steering_project_tensor` at that site under
-  a new `residual` scale; gate allocation on a non-zero scale. Verify a graph dump
-  shows the edit applied at the fold, not at `ffn_out`.
-- [ ] 2.3 CPU reference: mirror with `cpu_directional_steering_project_rows` at the
-  equivalent point. Verify CPU and Metal agree on a model-less fixture within
-  tolerance.
-- [ ] 2.4 `--dir-steering-residual F` in CLI/server/bench/help; the
-  `ds4_engine_options` field; any disable env classified in `ds4_env.def`. Verify
-  `make env-check` and `--help`.
+- [x] 2.1 Located the site in the ACTIVE `ds41_*` graph (not the dead `metal_graph_*` V4
+  graph the proposal cited): the single 5120 fold is `g->x`, produced in `ds41_hc_mix`
+  (ds4.c:23575-23602); the once-per-layer `residual_stream_post_layer` edit maps to the
+  before-attention fold (`ds41_graph_before_attention` 23904, `ffn==false`). Decode,
+  prefill/batch and CPU call sites, the fused-with-norm blocker, and the engram-ordering
+  (engram at 23900 BEFORE the fold at 23904 on layers {1,14}) are recorded in `design.md`.
+- [ ] 2.2 Metal apply — HELD for the A/B decision (see `design.md`). Plan A: force the
+  slow `ds41_hc_mix` path when `scale!=0 && !ffn` and project `g->x` between the
+  weighted-sum (23600) and the norm (23601) with `ds4_gpu_directional_steering_project_tensor`;
+  upload the directions tensor in `ds41_graph_alloc`. Not landed blind.
+- [ ] 2.3 CPU reference — HELD with 2.2: `cpu_directional_steering_project_rows(scratch->attn_cur,
+  dirs, il, 1, scale)` after the fold (ds4.c:11595). CPU has no engram, so no ordering issue.
+- [ ] 2.4 `--dir-steering-residual F` in CLI/server/help + the `ds4_engine_options` field
+  + the disable env — drafted, reverted; HELD with 2.2 so no flag lands that silently
+  no-ops on Metal. (bench has no steering flags; not added.)
 
 ## 3. Verify
 
-- [ ] 3.1 No-op gate: `--dir-steering-residual 0` (and no file) bitwise identical.
-  Verify `make test-deepseek41-decode-switch SWITCH=<the residual disable env>`.
-- [ ] 3.2 Drop-in (needs the gated vector): convert msuiche's GGUF, run
-  `--allow-v41-steering --dir-steering-file msuiche.f32 --dir-steering-residual 0.5`
-  on 5-10 prompts the base refuses. Verify the base refuses and the steered run
-  answers; read the completions, not only a keyword. Record which site/tensor was
-  confirmed. Harness A/B is not used here (no speed claim); the model run is a single
-  manual check under the shared lock.
+- [ ] 3.1 No-op gate — HELD with the apply: scale 0 keeps the fast fused path, bitwise
+  identical. The real proof is a baseline vs `--dir-steering-residual 0` decode compare.
+- [ ] 3.2 Drop-in — HELD with the apply. The converted vector `v41-msuiche.f32` is READY;
+  the run settles site/index/sign (404's +1 offset is the index hint) and whether A
+  reproduces msuiche's removal (refusal32 4->24). Manual, single run under the lock.
 
 ## 4. Docs
 
-- [ ] 4.1 `dir-steering/README.md`: the site table (ffn/attn/residual), which vector
-  uses which hook, and that a residual-hook vector applied at ffn is wrong. Keep the
-  V4.1 refusal block verbatim (now lifted by `400`'s opt-in). Verify no doc claims the
-  ffn hook serves msuiche's vector.
-- [ ] 4.2 Provenance in `docs/upstream-prs.md`/registry (msuiche GLP-39, grimjim
-  method): not in source comments.
+- [~] 4.1 `dir-steering/README.md` now has the V4.1 control-vector + fusion workflow and
+  that msuiche's vector is `residual_stream_post_layer`, WRONG at ffn/attn (added with
+  404). The formal ffn/attn/residual 3-row site table lands with the `--dir-steering-residual`
+  flag (2.4). The V4.1 refusal block stays verbatim (lifted by 400's opt-in).
+- [x] 4.2 Provenance in `docs/upstream-prs.md` (msuiche GLP-39; distributedcognition
+  grimjim norm-preserving biprojected abliteration), with the +1 offset finding; not in
+  source comments.
 
 ## 5. Integration
 
-- [ ] 5.1 `make test` (incl. env-check), parity on the disabled path token-identical,
-  `openspec validate 401-residual-steering-hook-msuiche --strict`. No commit or push
-  without a request.
+- [ ] 5.1 HELD with the apply: `make test` (incl. env-check) + parity on the disabled
+  path once 2.2-2.4 land. `openspec validate 401-residual-steering-hook-msuiche --strict`
+  passes now (the converter + design + tasks are valid). Standing commit authority on
+  `sf/steering` for this steering work.
