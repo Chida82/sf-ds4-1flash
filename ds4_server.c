@@ -11523,6 +11523,7 @@ static bool append_rendered_suffix_to_live_session(server *s, server_slot *slot,
 static int server_generation_rewind(server *s, server_slot *slot,
                                      const request *r, int pos,
                                      char *err, size_t errlen) {
+    /* sf-ablate(specdec): upstream's resample rewind to a verifier snapshot (fc80bd6) dropped; no speculative blocks here */
     pthread_mutex_lock(&s->inference_mu);
     ds4_session_rewind(slot->session, pos);
     ds4_tokens prefix = {0};

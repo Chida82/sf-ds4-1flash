@@ -1043,7 +1043,7 @@ static int check_general_topk(void) {
 }
 
 static int check_causal_topk(void) {
-    const uint32_t frontiers[] = {513, 514, 1023, 1024, 1025, 1535, 2047, 2048, 4095, 16383, 32767, 65535};
+    const uint32_t frontiers[] = {513, 514, 1023, 1024, 1025, 1535, 2047, 2048, 4095, 4096, 8191, 8192, 16383, 32767, 65535};
     const uint32_t counts[] = {1, 2, 31, 32, 33, 127, 128, 129};
     for (uint32_t ratio = 1; ratio <= 2; ratio++) {
     for (size_t fi = 0; fi < sizeof(frontiers) / sizeof(*frontiers); fi++) {
@@ -1181,14 +1181,18 @@ static int check_compact_carry(void) {
  * Selected rows are shuffled; include masked future rows at odd frontiers. */
 static int check_tp_attention(void) {
     enum { D = 512, H = 64, K = 512, C = 2048 };
-    const uint32_t sizes[] = {1, 31, 32, 33, 129, 257, 2048};
+    const struct { uint32_t rows, selected; } cases[] = {
+        {1, K}, {31, K}, {32, K}, {33, K}, {129, K}, {257, K}, {2048, K},
+        {1, 0}, {1, 1}, {2, K}, {6, K}, {8, K},
+        {2, 0}, {2, 1}, {6, 0}
+    };
     float *sinks = NULL;
     CHECK(posix_memalign((void **)&sinks, getpagesize(), getpagesize()) == 0);
     for (int h = 0; h < H; h++) sinks[h] = random_value();
     CHECK(ds4_gpu_set_model_map(sinks, getpagesize()));
     ds4_gpu_set_quality(false);
-    for (unsigned s = 0; s < sizeof(sizes) / sizeof(*sizes); s++) {
-        const uint32_t n = sizes[s], nr = n + 127, start = 3073;
+    for (unsigned s = 0; s < sizeof(cases) / sizeof(*cases); s++) {
+        const uint32_t n = cases[s].rows, nr = n + 127, start = 3073;
         const uint32_t ratio = 1u + s % 2u;
         const size_t nq = (size_t)n * H * D;
         float *q = malloc(nq * 4), *actual = malloc(nq * 4);
@@ -1201,7 +1205,9 @@ static int check_tp_attention(void) {
         for (uint32_t i = 0; i < C * D; i++) comp[i] = bf16(random_value() / 4);
         for (uint32_t t = 0; t < n; t++)
             for (uint32_t j = 0; j < K; j++)
-                ids[t * K + j] = j % 29 ? (int32_t)((j * 127u + t * 17u) % C) : -1;
+                ids[t * K + j] = j < cases[s].selected &&
+                    (cases[s].selected != K || j % 29)
+                    ? (int32_t)((j * 127u + t * 17u) % C) : -1;
         ds4_gpu_tensor *qt = upload(q, nq * 4), *rt = upload(raw, (size_t)nr * D * 4);
         ds4_gpu_tensor *ct = upload(comp, C * D * 4), *it = upload(ids, (size_t)n * K * 4);
         ds4_gpu_tensor *out = upload(NULL, nq * 4), *qp = upload(NULL, nq * 2);
@@ -1277,8 +1283,8 @@ static int check_tp_attention(void) {
                 }
             }
         }
-        fprintf(stderr, "V4.1 TP attention rows=%u ratio=%u max split=%g oracle=%g: PASS\n",
-            n, ratio, max_split, max_oracle);
+        fprintf(stderr, "V4.1 TP attention rows=%u selected=%u ratio=%u max split=%g oracle=%g: PASS\n",
+            n, cases[s].selected, ratio, max_split, max_oracle);
         ds4_gpu_tensor_free(qt); ds4_gpu_tensor_free(rt); ds4_gpu_tensor_free(ct);
         ds4_gpu_tensor_free(it); ds4_gpu_tensor_free(out); ds4_gpu_tensor_free(qp);
         ds4_gpu_tensor_free(op);

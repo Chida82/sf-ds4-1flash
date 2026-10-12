@@ -45,7 +45,6 @@ DS4_ENV(DS4_METAL_CB_TIMES, probe, unset, "Print Metal command buffer encode, qu
 DS4_ENV(DS4_METAL_COMPRESSOR_PAIR_NR4, enable, unset, "Use 4 rows per simdgroup in the compressor pair f16 matvec (out 512/1024, in >= 4096)")
 DS4_ENV(DS4_METAL_CONCAT_SOURCE, probe, unset, "Load concat.metal from this path instead of the built-in source")
 DS4_ENV(DS4_METAL_CPY_SOURCE, probe, unset, "Load cpy.metal from this path instead of the built-in source")
-DS4_ENV(DS4_METAL_DECODE_INDEXER_SPARSE_THRESHOLD, tuning, unset, "Layer-slice graph decode: rows before sparse indexed attention (default 1024, 64-4096 pow2)")
 DS4_ENV(DS4_METAL_DECODE_STAGE_PROFILE, probe, unset, "Profile decode per layer stage; also turns off layer batching and batched session decode")
 DS4_ENV(DS4_METAL_DECODE_STAGE_PROFILE_LAYER, probe, unset, "Limit the decode stage profile to this layer")
 DS4_ENV(DS4_METAL_DEEPSEEK4_VISION_SOURCE, probe, unset, "Load deepseek4_vision.metal from this path instead of the built-in source")
