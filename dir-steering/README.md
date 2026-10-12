@@ -172,3 +172,46 @@ Style control:
 The method is not a fine-tune. It is a low-rank runtime edit, so it works best
 for coarse behavior, topic, or style directions that are consistently present in
 the activation captures.
+
+## V4.1 control vectors and fusion
+
+Two external V4.1 refusal directions are supported for the broad-removal work.
+Both are single-stream, HC-collapsed residual directions for the same base model,
+used **projectively** (`y -= scale*d*dot(d,y)`), never as weight edits.
+
+- **Convert a GGUF control vector (401).** msuiche's control vector ships as a
+  GGUF (`controlvector`, 39 `direction.N`). Convert it to the runtime `.f32`:
+
+  ```sh
+  python3 dir-steering/tools/controlvector_to_f32.py glp.deepseek-v41-flash-GLP-39-L1-39-a0.5.gguf \
+    --out dir-steering/out/v41-msuiche.f32
+  ```
+
+  This writes a 40x5120 `.f32` (layer 0 zeros, `direction.N` -> layer N) and a
+  `.json` sidecar carrying the hook, alpha, sha256, base revision and the
+  non-monotone / L1-6 caveats. Its hook is `residual_stream_post_layer`, so it is
+  applied at the residual site (change `401`), **not** at `--dir-steering-ffn`.
+
+- **Fuse msuiche with distributedcognition (404).** distributedcognition's
+  `refusal_directions.pt` holds per-layer directions for the same model (read
+  without torch). Fuse them per layer:
+
+  ```sh
+  python3 dir-steering/tools/fuse_directions.py \
+    --msuiche dir-steering/out/v41-msuiche.f32 \
+    --distcog refusal_directions.pt \
+    --out dir-steering/out
+  ```
+
+  It sign-aligns and unit-norms each pair, searches a small layer offset (the two
+  sites are one sub-layer apart; +1 aligns best on V4.1), and emits
+  `v41-fused-denoise.f32` (`unit(a+b)`), `v41-fused-ortho.f32` (the orthogonal
+  residual, a diagnostic), and `v41-fused-subspace_k1.f32`, each with a sidecar
+  recording method, offset, per-layer cosine and provenance. Rank-k>1 subspace
+  removal is not a single `.f32` (the runtime applies one direction per layer).
+
+A fused candidate is **not validated until `402` has scored it** (refusal
+removal, benign fidelity, over-refusal, capability, breadth). Keep the
+lowest-rank candidate that beats msuiche-alone on refusal removal without
+worsening the others; otherwise keep msuiche-alone. See
+[refusal validation](../docs/REFUSAL_VALIDATION.md).

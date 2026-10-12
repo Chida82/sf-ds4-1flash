@@ -29,6 +29,25 @@ that takes an idea writes its own code and records the source here.
 | `argonautlabsai/ds4-argodrive` | `8d992cd` | `DS4_ARGODRIVE_GAP_KEEPALIVE`: GPU keep-alive kernel while the pread pool is waited on (mode 1) | idea -> `220-decode-keepalive`, behind `--boost` | +0.5% decode at Nominal, 0 at Heavy; the whole-token variant lost 1.6-2.0% |
 | `argonautlabsai/ds4-argodrive` | `8d992cd` | `DS4_ARGODRIVE_CPU_KEEPALIVE`: user-interactive busy CPU thread | rejected (`220` S2) | the decode thread already spins on the Super cluster at its top clock; the spinner took GPU power: -0.4% Nominal, -1.7%/-2.6% Heavy |
 
+## External steering sources (401, 404)
+
+V4.1 refusal/steering directions taken from external Hugging Face artifacts for
+the directional-steering work. Provenance is recorded here, not in source
+comments. Both target the same base (`deepseek-ai/DeepSeek-V4.1-Flash`, rev
+`fb2764a5`, 40L x 5120), both are single-stream HC-collapsed residual directions.
+
+| Source | Artifact | Site / method | Use |
+|---|---|---|---|
+| `msuiche/DeepSeek-V4.1-Flash-abliterated-cyber-GLP-39-L1-39-a0.5` | `glp.*.gguf` controlvector, 39 `direction.N`, fp32, 5120, unit norm, alpha knee 0.5 | `residual_stream_post_layer` (post-layer HC fold, mean over 4 hc copies, pre-engram); projective `h -= alpha*(h.d)d`; captain-vector 0.1.2, `dom_per_layer` | converted by `401` (`controlvector_to_f32.py`), applied at `401`'s residual hook |
+| `distributedcognition/DeepSeek-V4.1-Flash-abliterated` | `refusal_directions.pt`, per-layer 5120, layers 1-39 unit norm | `attn_norm` input (layer input); grimjim norm-preserving biprojected abliteration, 128 harmful vs 128 harmless, orthogonalized against the harmless mean | directions fused with msuiche by `404` (`fuse_directions.py`); the `.pt`'s weight edits (`wo_b`, `shared_experts.w2`) are NOT used |
+
+Empirical alignment (`404`, 2026-10-13): the two directions align best at a
+layer offset of **+1** (median per-layer cosine -1 -> 0.579, 0 -> 0.688,
+**+1 -> 0.779**), consistent with one being the layer-input and the other the
+layer-output of the same residual stream. Cosine is low in layers 1-7 (~0.2-0.47,
+the "L1-6 below the null gate" region) and ~0.8 in the deep layers. Candidates are
+judged by `402`, never trusted unmeasured.
+
 ## Finding what changed
 
 ```sh

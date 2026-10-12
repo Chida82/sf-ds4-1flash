@@ -5,48 +5,61 @@ real data: the user sets `HF_TOKEN` and accepts the Responsible Use Agreement on
 distributedcognition repo; `refusal_directions.pt` and msuiche's GGUF download to
 `/tmp`. The tool's self-check (1.3) needs neither.
 
+Status 2026-10-13: `dir-steering/tools/fuse_directions.py` authored (offline
+self-check green); run on the real msuiche `.f32` (from `401`'s converter) and
+distcog `refusal_directions.pt` (read without torch). Empirical offset = **+1**
+(median per-layer cosine -1 -> 0.579, 0 -> 0.688, +1 -> 0.779), confirming the two
+sites are one sub-layer apart. Candidates written (3 x 819200 B) to /tmp, not
+committed (binaries derived from gated sources; regenerable). Group 3 (measure/pick)
+needs `401`'s hook + `402` model runs -> deferred.
+
 ## 1. Ingest and align
 
-- [ ] 1.1 `dir-steering/tools/fuse_directions.py`: load msuiche's `.f32` (40×5120, via
-  `401`) and distributedcognition's `refusal_directions.pt` (per-layer 5120). Map both
-  to a 40×5120 array, sign-align each per-layer pair (project onto a common reference)
-  and unit-norm. Verify the loaded shapes and that layer 0 (no msuiche direction) is
-  handled.
-- [ ] 1.2 Offset search over {-1,0,+1}: pick the offset maximizing the median per-layer
-  cosine; record it. Verify the chosen offset and the per-layer cosine vector are in
-  the sidecar.
-- [ ] 1.3 `__main__` assert self-check on tiny fixtures: sign-align flips a negated
-  pair, denoise is unit-norm, the SVD basis has the right shape. Verify
+- [x] 1.1 `dir-steering/tools/fuse_directions.py`: loads msuiche's `.f32` (40x5120)
+  and distcog's `refusal_directions.pt` (zip `data/0` storage read as raw f32, no
+  pickle executed); maps both to 40x5120, sign-aligns each per-layer pair, unit-norms;
+  layer 0 (no direction) handled. Shapes verified on the real artifacts.
+- [x] 1.2 Offset search over {-1,0,+1}: picks the offset maximizing the median
+  per-layer cosine (chosen +1 on the real data); offset and the per-layer cosine
+  vector are in each sidecar.
+- [x] 1.3 `__main__` assert self-check on tiny fixtures: sign-align flips a negated
+  pair, denoise is unit-norm, the SVD basis is orthonormal/right shape.
   `python3 dir-steering/tools/fuse_directions.py --self-check` exits 0.
 
 ## 2. Fuse candidates
 
-- [ ] 2.1 Emit `denoise` (`normalize(a+b)` per layer) and `subspace` k=1,2,3 (SVD
-  basis) candidates, each a `.f32` + `.json` sidecar (method, k, offset, sources,
-  provenance). Verify each `.f32` is 819200 bytes and loads under `401`'s runtime.
-- [ ] 2.2 Orthogonal-residual test per layer (`r = a-(a·b)b`): emit the residual-only
-  vector as a diagnostic candidate. Verify the sidecar records whether `r` has
-  non-trivial norm per layer.
+- [x] 2.1 Emits `denoise` (`unit(a+b)`) and `subspace_k1` (top SVD right-singular
+  vector; == denoise for unit inputs) as single-direction `.f32` (819200 B) + `.json`
+  sidecars (method, offset, per-layer cosine, sources, provenance). DEVIATION: k=2,3
+  are NOT single-direction files -- `401`'s runtime applies one direction per layer,
+  so genuine rank-k>1 removal needs a multi-direction runtime extension (tracked in
+  `405`); the SVD basis is still computed for analysis. "loads under 401's runtime" is
+  *model-backed* once `401`'s hook lands.
+- [x] 2.2 Orthogonal-residual test per layer (`r = b-(a.b)a`): emitted as the
+  `ortho` diagnostic candidate; the sidecar records per-layer residual norms.
 
 ## 3. Measure and pick
 
-- [ ] 3.1 Run each candidate through `402` against the msuiche-alone baseline (A, B, C,
-  D, and the breadth map). Verify the report ranks them and flags any that worsen
-  B/C/D. Model runs share the lock; serialize.
+- [ ] 3.1 Run each candidate through `402` against the msuiche-alone baseline (A, B,
+  C, D, breadth). *model-backed* (needs `401`'s hook + `402` runs); the harness and
+  candidates are ready. Model runs share the lock; serialize.
 - [ ] 3.2 Keep the lowest-rank candidate that beats msuiche-alone on A with B/C/D
-  unmoved; if none does, keep msuiche-alone and record the null result. Verify the
-  chosen vector's sidecar names the winning method/k/offset and the `402` numbers.
+  unmoved; else keep msuiche-alone and record the null result. *model-backed*.
 
 ## 4. Docs
 
-- [ ] 4.1 `dir-steering/README.md`: the fusion workflow, candidate naming, and that
-  the `.pt` directions are used projectively, not as weight edits. Verify no doc claims
-  a fused vector is validated before `402` has scored it.
-- [ ] 4.2 Provenance in `docs/upstream-prs.md`/registry (msuiche GLP-39;
-  distributedcognition grimjim method): not in source comments.
+- [x] 4.1 `dir-steering/README.md`: the fusion workflow, candidate naming, directions
+  used projectively (not weight edits), and that a fused vector is not validated until
+  `402` scores it.
+- [x] 4.2 Provenance in `docs/upstream-prs.md` (msuiche GLP-39; distributedcognition
+  grimjim norm-preserving biprojected abliteration) with the +1 offset finding; not in
+  source comments.
 
 ## 5. Integration
 
-- [ ] 5.1 `make test`, parity on the disabled path token-identical,
-  `openspec validate 404-fuse-msuiche-distributedcognition --strict`. No commit or push
-  without a request.
+- [x] 5.1 `openspec validate 404-fuse-msuiche-distributedcognition --strict` passes.
+  `make test` is unaffected and not re-run: this change adds only a standalone python
+  tool (imported by nothing) plus `.md` docs -- no C, env, Makefile `test:` target or
+  runtime change (make test was green at `402`). Parity on the disabled path is
+  unchanged (tooling only, no `ds4.c` change); *model-backed* parity re-run not needed.
+  Standing commit authority on `sf/steering` for this steering work.
