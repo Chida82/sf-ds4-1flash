@@ -1954,6 +1954,152 @@ The detail metric `first token 5000 ms` read -0.9% (-1.7..-0.4), 0.4 ms on
 token path differs no more than this one's. The change claims no speed, so
 it adds no Segment 1 row.
 
+## Expert cache above the cap (2026-10-11, `270-max-performance-one-mac`)
+
+**Limit and read-back.** With `iogpu.wired_limit_mb=118000` Metal reports
+`recommendedMaxWorkingSetSize` 118000 MiB (115.23 GiB), the sysctl value
+exactly. `90GB` at `--ctx-alloc 262144` opens uncapped: 82.88 GiB dynamic,
+8941 slots, context buffers 10625.87 MiB; the cap is
+`floor_GiB(7/8 x 115.23 - 10.38) = 90`. Under the system limit (107.52 GiB)
+`90GB` at 32K is capped to 86, and the harness stops on the `capped to` line
+with exit 2.
+
+The limit each value needs is `(C + context buffers) x 8/7 + 0.5` GiB, in MiB
+rounded up to the next 100 (the 0.5 GiB keeps the floor from cutting the
+flag):
+
+| ctx | context buffers | W for 82 / 86 / 88 / 90 GB (MiB) | cap at W 118000 | macOS keeps at 90 GB |
+|---|---|---|---|---|
+| 32K | 7.89 GiB | 105800 / 110400 / 112800 / 115100 | 92 GiB | 20.74 GiB |
+| 256K | 10.38 GiB | 108700 / 113400 / 115700 / 118000 | 90 GiB | 18.25 GiB |
+| 1M | 18.92 GiB | 118700 / 123300 / 125700 / 128000 | 81 GiB | 9.71 GiB |
+
+**Replay.** The `225` id dumps replayed at the slot count of each flag
+(107.88 slots per GiB of dynamic cache, after the 7.12 GiB prefill reserve);
+8078 reproduces `225`:
+
+| Flag | Slots | decode miss layers / token | append miss layers / token |
+|---|---|---|---|
+| 82GB | 8078 | 3.91 | 4.05 |
+| 86GB | 8509 | 3.28 | 3.46 |
+| 88GB | 8725 | 3.10 | 3.19 |
+| 90GB | 8941 | 3.07 | 2.96 |
+
+No candidate replays identical to the next smaller one on both kinds (88 to
+90 still moves append), so all three run.
+
+**Harness check.** `--b-cache 82GB --kinds decode --bitwise`, an A/A at
+W 118000 (1800 s, 14 pairs, thermal Heavy to Nominal, 1007-1617 MHz):
+bitwise; decode 2048 -0.1% (-1.4..+1.2), decode 8192 -0.2% (-0.5..+0.8).
+
+**The user wire limit.** The first `86GB` A/B stopped after 678 s, at
+thermal Heavy:
+- correctness FAIL: append, frontier 5000, token index 11, in one of three B
+  append runs;
+- in that run the cache's mlock failed with EAGAIN after 78.54 of 78.88 GiB;
+- the engine capped the cache, released a margin and ran with 7619 slots,
+  fewer than `82GB`'s 8078 (hit rate 0.487 at frontier 5000, mailbox 617
+  hits and 63 fallbacks);
+- the other two B runs were token-identical to A.
+
+The limit is `vm.global_user_wire_limit`:
+- 116823110451 bytes (108.8 GiB), that is 128 GiB less
+  `vm.global_no_user_wire_amount` (19.2 GiB);
+- an mlock fails when it would take every wired page past it, the GPU's
+  included.
+
+`ds41_prefill_seed` fills the cache during the first prefill, one slot and
+one mlock at a time. The prefill's explicit expert buffers and its scratch
+are wired then.
+
+Single bench runs at `--ctx-alloc 262144` with the copy, wired memory from
+`vm_stat` every second:
+
+| Run | Locked at open | Cache | mlock | Peak wired |
+|---|---|---|---|---|
+| 86GB, prompts 5000 then 10000, 256 tokens | no | 8509 slots | ok | 109.75 GiB (the 10000 prefill, cache already locked) |
+| 86GB, first prompt 16896, 16 tokens | no | 8509 slots | ok | 105.39 GiB |
+| 88GB, first prompt 16896 | no | 8725 slots | ok | 102.17 GiB |
+| 90GB, first prompt 16896 | no | 7367 slots | failed at 75.97 GiB | 106.83 GiB |
+| 90GB, first prompt 16896 | yes, 2.1 s | 8941 slots | ok | 104.95 GiB |
+
+Other wired memory at a failing lock was 26.5-32.8 GiB, against about
+21 GiB a second after engine open. Wired pages the GPU takes later are not
+held to the limit: the 10000 prefill reached 109.75 GiB with the cache
+already locked.
+
+**Locked at open, against `main`.** Every slot is now allocated and mlocked
+at engine open. Harness at `82GB`, 32K (`decode,append,cold-5000`,
+`--bitwise`, 2700 s, thermal Heavy, 1011-1068 MHz):
+- 18 pairs, bitwise; hit rates equal;
+- no headline interval wholly below zero;
+- the first prefill no longer pays the mlock.
+
+| Metric | Gain | 95% CI |
+|---|---|---|
+| decode 2048 | +2.4% | -0.6..+3.5 |
+| decode 8192 | +0.1% | -0.5..+0.3 |
+| append +300 | +0.3% | -0.8..+1.3 |
+| append +1500 | -0.2% | -1.1..+0.7 |
+| ttft 5000 | +1.2% | +0.5..+1.4 |
+| prefill 5000 (detail) | +1.8% | +0.4..+2.6 |
+
+At `90GB` the open takes 2.1 s more.
+
+**The first token after a prefill**, checked against locking at open:
+- **Harness at `82GB`, 256K, with the copy**, `main` against the change (`decode`, `--bitwise`, 1800 s, 16 pairs, bitwise):
+  - first token after 2048: 209.0 -> 190.5 ms, +10.0% (+1.2..+20.7);
+  - first token after 8192: 157.5 -> 140.1 ms, +18.3% (+1.8..+44.5);
+  - decode 2048 +0.3% (+0.1..+0.5), decode 8192 +0.1% (-0.3..+0.6).
+- **Direct bench runs at `86GB`, 256K, with the copy**, one tree, lazy (`DS4_METAL_DISABLE_STREAMING_CACHE_LOCK_AHEAD=1`) against locking at open, ABBA x3, no mlock failure:
+  - first token after 2048: median 246 ms (220-362) lazy against 173 ms (123-216) at open, lower in all six pairs;
+  - after 8192: 163 ms (120-171) against 153 ms (128-166), lower in four pairs, 3 and 8 ms higher in two.
+
+The slower first token of the larger caches below is the cache's, not the
+lock's. Each GiB of cache is a GiB less of file cache for the pageable static
+weights, which the first token after a sweep reads back.
+
+**A/B per candidate**, on the tree that locks at open, A `82GB` against B
+`<C>GB`, both at `--ctx-alloc 262144` with the copy:
+- `decode,append`, guards `guard-16896,guard-decode` once;
+- `--bitwise --cache-policy-change`, 3600 s, W 118000.
+
+| B | Pairs, thermal, MHz | decode 2048 | decode 8192 | append +300 | append +1500 | first token after 2048 / 8192 (detail) | Guards (one pair) | Decode reads per run |
+|---|---|---|---|---|---|---|---|---|
+| 86GB | 22, Heavy, 964-1082 | +0.3% (+0.1..+0.6) | +0.4% (+0.3..+0.8) | +1.3% (+0.9..+1.7) | -1.3% (-2.3..+0.2) | 117 -> 186 ms (-40.9..-24.5%) / 134 -> 157 ms (-25.2..+1.2%) | ttft 16896 -0.6%, decode 2500 +1.3%, its first token 184 -> 252 ms | 10.37 -> 9.01 GiB |
+| 88GB | 22, Heavy, 964-1069 | +0.6% (+0.3..+0.9) | +0.8% (+0.5..+1.0) | +1.6% (+1.4..+2.4) | -1.1% (-3.2..+0.3) | 114 -> 202 ms (-46.9..-34.0%) / 137 -> 213 ms (-43.4..-22.3%) | ttft 16896 -0.4%, decode 2500 +1.4%, its first token 254 -> 260 ms | 10.37 -> 8.44 GiB |
+| 90GB | 22, Heavy, 964-1081 | +0.6% (+0.4..+0.9) | +1.3% (+0.9..+1.6) | +2.2% (+2.1..+2.4) | -2.4% (-3.6..-1.7) | 113 -> 182 ms (-45.7..-30.8%) / 121 -> 301 ms (-62.2..-52.2%) | ttft 16896 -1.0%, decode 2500 +1.5%, its first token 143 -> 330 ms | 10.37 -> 7.85 GiB |
+
+Every candidate is bitwise. Decode gains 0.3-1.3%; it saturates later than
+the replay's +1%, because each GiB of cache also costs file cache. The first
+token after a prefill pays for it: the first token after 8192 has its
+interval wholly below zero at 88 and 90, and append +1500 at 90.
+
+**Memory check** (D4), one bench run each: frontiers 5000 and 10000, 256 tokens, 256K, with the copy. `vm_stat` every second, mactop memory every second, and the bench's own compressed memory (`top` `CMPRS`) every 3 s:
+
+| Run | Wired peak | Free min | File-backed min | Compressed during the run (all processes) | Bench compressed | Swapouts | Available min (mactop) |
+|---|---|---|---|---|---|---|---|
+| 82GB, lazy (`main`) | 105.72 | 0.25 | 13.06 | 1.79 | 0.05-0.15 GB | 0 | 10.89 |
+| 82GB, locked at open | 105.10 | 0.21 | 13.13 | 2.42 | 0.05-0.15 GB | 0 | 10.66 |
+| 86GB, locked at open | 109.55 | 0.14 | 9.42 | 5.20 | 0.78-0.88 GB | 0 | 7.46 |
+| 86GB, locked at open, repeat | 103.94 | 0.08 | 10.08 | 10.01 | 0.78-0.88 GB | 0 | 7.62 |
+
+GiB unless marked. Locking at open leaves the memory picture of `82GB`
+unchanged. At `86GB` the bench has about eight times as many compressed pages,
+and the least available memory falls by about 3.2 GiB, to 7.5 GiB. The static
+frame of D1 (128 - C - 10.38 - 9.37 = 22.25 GiB at 86) does not count the
+prefill's transient buffers or the file cache the reads need.
+
+**Choice (D5).** `82GB`:
+- 88 and 90 fail the first-token rule;
+- 86 passes it narrowly (-25.2..+1.2%), but fails the memory check, for decode +0.3-0.4%.
+
+At `82GB` a 256K context needs W = 108700 MiB, under the default 110100. So
+the ceiling test needs no `sysctl`, and the limit was reset to 0. The one
+change this measurement keeps is locking the cache at open. It makes a flag
+above about 84 GB safe to use, at a cost in first token and memory that the
+rows above give.
+
 ## Adding a row
 
 1. `SF_PARITY_FLAGS=--ssd-streaming tools/parity-check.sh sf-ds4-1flash` from

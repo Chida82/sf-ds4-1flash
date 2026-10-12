@@ -96,7 +96,14 @@ and reads each family whole: three requests, which `260` measured to be no
 slower than pieces. The owned cache slabs sit in a Metal residency set attached to the queue
 (`DS4_METAL_DISABLE_STREAMING_SLAB_RESIDENCY=1` turns it off; it saves about
 1 s on the first token after a prefill sweep); all three were measured on this
-machine by `40-ssd-expert-reads`. `--ssd-streaming-full-layers` is gone: it only ever applied
+machine by `40-ssd-expert-reads`. Every cache slot is allocated and mlocked at
+engine open (`streaming expert cache locked ahead: ...`, `270`). The reason is
+the system's user wire limit (`vm.global_user_wire_limit`, 108.8 GiB): it
+counts the GPU's wired pages, and `iogpu.wired_limit_mb` does not move it.
+Slots locked lazily, as the first prefill seeded them, met that prefill's own
+buffers there. From about 86 GB they failed, and the engine shrank the cache
+below `82GB`'s. `DS4_METAL_DISABLE_STREAMING_CACHE_LOCK_AHEAD=1` restores lazy
+locking. `--ssd-streaming-full-layers` is gone: it only ever applied
 to GLM graph streaming, and V4.1 warned and ignored it.
 
 The time to first token is set by the prefill schedule (`ds41_prefill_count`).

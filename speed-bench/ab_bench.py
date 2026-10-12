@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """A/B harness: two build trees of sf-ds4-1flash on one GGUF, under SSD streaming.
 
-    python3 speed-bench/ab_bench.py --a ../sf-ds4-1flash-base --b . --kinds decode
+    python3 speed-bench/ab_bench.py --a ../base --b . --kinds decode
 
 Each tree's bench runs from its own directory (kernels load from metal/ in the cwd), in
 streaming mode with a fixed expert cache and a fixed allocated context. Runs are warm-up
@@ -90,6 +90,7 @@ MACTOP = {'time': ('timestamp',), 'freq': ('soc_metrics', 'gpu_freq_mhz'),
 IDS = re.compile(r'^ds4-bench: gen\[ctx=(\d+)\] token ids:(.*)$', re.M)
 CTX = re.compile(r'^ds4-bench: context buffers .*\(ctx=(\d+),', re.M)
 CAPPED = re.compile(r'^.*cache budget .* capped to .*$', re.M)
+UNLOCKED = re.compile(r'^ds4:\s+using locked cache cap: .*$', re.M)
 LOADER = re.compile(r'^ds4: \w+ SSD streaming cache target .*\+ ([0-9.]+) GiB dynamic cache '
                     r'\((\d+) experts, ([0-9.]+) MiB each\)', re.M)
 REPORT = re.compile(r'^ds4: Metal memory after frontier (\d+):', re.M)
@@ -333,6 +334,10 @@ def parse_loader(err_text, kind, cache=CACHE_FLAG):
     if capped:
         raise Stop(2, f'{kind}: the engine capped the expert cache, so it is not the one asked '
                       f'(raise iogpu.wired_limit_mb): {capped[0].strip()}')
+    unlocked = UNLOCKED.search(err_text)
+    if unlocked:
+        raise Stop(2, f'{kind}: mlock of the expert cache failed and the engine shrank it '
+                      f'(vm.global_user_wire_limit): {unlocked[0].strip()}')
     m = LOADER.search(err_text)
     if not m:
         raise Stop(2, f'{kind}: the loader printed no SSD streaming cache line (is --ssd-streaming on?)')

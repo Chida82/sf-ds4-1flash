@@ -174,6 +174,7 @@ void ds4_gpu_test_set_flags(uint32_t flags);
 void ds4_gpu_release_zero_prefix_prefill_mask_cache(void);
 void ds4_gpu_set_streaming_expert_cache_budget(uint32_t experts);
 void ds4_gpu_set_streaming_expert_cache_expert_bytes(uint64_t bytes);
+void ds4_gpu_stream_expert_cache_lock_ahead(void);
 /* One row of a Qwen3.8 decode batch for the attention rows kernels: the
  * session's caches for the layer, its rope positions, its token position and
  * whether it attends through the block selection or densely. */

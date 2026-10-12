@@ -42,10 +42,10 @@ macOS keeps `128 - C - 10.38 - 9.37` GiB, so C is at most 90.25 and the candidat
 ### D2. One working-set limit per session
 The owner sets `iogpu.wired_limit_mb` once, for the largest candidate, and every arm runs under it. The cap does not bind the smaller arms.
 
-The value is `ceil((C + 10.38) x 8/7 + 0.5)` GiB in MiB:
+The value is `(C + 10.38) x 8/7 + 0.5` GiB, in MiB rounded up to the next 100:
 - 90 → 118000;
 - 88 → 115700;
-- 86 → 113300.
+- 86 → 113400.
 
 The 0.5 GiB margin keeps the floor from cutting the flag if Metal reports the limit slightly under the sysctl value.
 
@@ -90,6 +90,20 @@ It sits after "A second drive". It holds:
 
 The `82GB` callout under "Speed" links to the section. A provisional section written during planning sits uncommitted in the working tree, and this task rewrites it.
 
+### D7. The cache is locked at engine open
+The first `86GB` A/B stopped on a token difference. In that one run the cache's mlock failed with EAGAIN after 78.54 of 78.88 GiB, and the engine shrank the cache to 7619 slots, fewer than `82GB`'s 8078. The working-set limit was not the cause. The binding limit is `vm.global_user_wire_limit`:
+- it is 108.8 GiB, that is 128 GiB less the kernel's 19.2 GiB reserve;
+- it counts every wired page, the GPU's included;
+- `iogpu.wired_limit_mb` does not move it.
+
+The slots are mlocked one by one as `ds41_prefill_seed` fills them during the first prefill. At that moment the prefill's explicit expert buffers (7.12 GiB) and its scratch (+7.3 GiB) are wired too. Other wired memory at the failing lock was 26.5 to 32.8 GiB, against about 21 GiB at engine open. Two first-prompt tests at 16896 tokens, on a clean start:
+- `90GB` failed at 75.97 GiB and fell to 7367 slots;
+- `86GB` and `88GB` passed, with peaks of 105.39 and 102.17 GiB.
+
+Raising `vm.global_user_wire_limit` would take its margin from the kernel and needs another `sudo`, so it is not used. Instead, the engine allocates every slab at open and mlocks every slot before any prefill (`ds4_gpu_stream_expert_cache_lock_ahead`). The locked slots go on the free list, which the lazy path already serves first. `DS4_METAL_DISABLE_STREAMING_CACHE_LOCK_AHEAD=1` restores lazy locking. It runs for single-box streaming only.
+
+With the change, `90GB` locks 8941 of 8941 slots at open in 2.1 s, and the peak wired is 104.95 GiB. The A/Bs of D4 run on this tree. The change itself is checked at `82GB` against `main` (`decode,append,cold-5000`, `--bitwise`): it must not worsen. The harness also stops on `using locked cache cap` with exit 2, as it does on `capped to`.
+
 ## Risks / Trade-offs
 
 - [Metal does not follow `iogpu.wired_limit_mb` one to one] → the first task reads the recommended size back; the margin of D2 absorbs a small difference, and a larger one changes W before any run.
@@ -97,6 +111,8 @@ The `82GB` callout under "Speed" links to the section. A provisional section wri
 - [The `sysctl` outlives the session if the owner forgets the reset] → it does not survive a reboot; the README and the task list end with the reset.
 - [A/B noise at about 1%] → the inconclusive rule of the project: one repeat with a longer budget on the deciding kinds.
 - [The copy's drive is not mounted] → the engine refuses to start; the session waits for the owner.
+- [Locking at open costs time and commits memory before it is used] → about 2 s at open for 83 GiB. The cache fills within the first prompt anyway, and the first prefill no longer pays the mlock.
+- [Output under the old fallback] → the run where the lock failed decoded different tokens (frontier 5000, token 11). The fallback is not investigated here. Locking at open removes its trigger up to `90GB`.
 
 ## Migration Plan
 

@@ -30447,6 +30447,7 @@ static int ds4_engine_open_internal(ds4_engine **out,
             uint64_t slab_expert_bytes = 0;
             if (ds4_streaming_routed_expert_bytes(&e->weights, &slab_expert_bytes)) {
                 ds4_gpu_set_streaming_expert_cache_expert_bytes(slab_expert_bytes);
+                if (!load_slice && !tp_shard) ds4_gpu_stream_expert_cache_lock_ahead();
                 uint32_t routed = 0, boosted = 0;
                 for (uint32_t il = 0; il < DS4_N_LAYER; il++) {
                     const ds4_layer_weights *l = &e->weights.layer[il];

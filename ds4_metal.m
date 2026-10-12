@@ -13658,6 +13658,68 @@ static int ds4_gpu_stream_expert_alloc_slab_slot(
                                                  down_inner);
 }
 
+/* Allocate and lock every cache slot at engine open, before the first
+ * prefill. Slots locked while that prefill seeds them meet its explicit
+ * expert buffers and scratch under vm.global_user_wire_limit, which counts
+ * the GPU's wired pages too: from about 86 GB of cache the last ones failed
+ * and shrank the cache below the flag (270). The locked slots wait on the
+ * free list, as evicted slots do. */
+void ds4_gpu_stream_expert_cache_lock_ahead(void) {
+    if (!g_initialized && !ds4_gpu_init()) return;
+    const uint32_t budget = ds4_gpu_stream_expert_cache_configured_budget();
+    if (!g_ssd_streaming_mode || budget == 0 ||
+        !ds4_gpu_stream_expert_slab_enabled() ||
+        g_stream_expert_cache_expert_bytes == 0 ||
+        g_stream_expert_cache_slab_count != 0 ||
+        getenv("DS4_METAL_DISABLE_STREAMING_CACHE_LOCK_AHEAD") != NULL) {
+        return;
+    }
+    const uint64_t slot_bytes =
+        round_up_u64(g_stream_expert_cache_expert_bytes, (uint64_t)getpagesize());
+    if (slot_bytes == 0 || slot_bytes > (uint64_t)NSUIntegerMax) return;
+    uint64_t per_slab = ds4_gpu_stream_expert_slab_target_bytes() / slot_bytes;
+    if (per_slab == 0) per_slab = 1;
+    if (per_slab > (uint64_t)NSUIntegerMax / slot_bytes) {
+        per_slab = (uint64_t)NSUIntegerMax / slot_bytes;
+    }
+    g_stream_expert_cache_slab_slot_bytes = slot_bytes;
+
+    const double t0 = ds4_gpu_now_ms();
+    while (g_stream_expert_cache_slab_total_slots < budget &&
+           g_stream_expert_cache_slab_count < DS4_METAL_STREAM_EXPERT_CACHE_MAX_SLABS) {
+        uint32_t slots = budget - g_stream_expert_cache_slab_total_slots;
+        if (slots > per_slab) slots = (uint32_t)per_slab;
+        id<MTLBuffer> buffer = ds4_gpu_stream_expert_alloc_slab_buffer(
+                (uint64_t)slots * slot_bytes, @"ds4_stream_expert_slab");
+        if (!buffer) break;
+        const uint32_t slab = g_stream_expert_cache_slab_count++;
+        g_stream_expert_cache_slabs[slab] = buffer;
+        g_stream_expert_cache_slab_start_slot[slab] =
+            g_stream_expert_cache_slab_total_slots;
+        g_stream_expert_cache_slab_slot_count[slab] = slots;
+        /* Full for the lazy path: these slots are handed out from the free list. */
+        g_stream_expert_cache_slab_slots_used[slab] = slots;
+        g_stream_expert_cache_slab_total_slots += slots;
+    }
+
+    uint32_t locked = 0;
+    while (locked < g_stream_expert_cache_slab_total_slots &&
+           ds4_gpu_stream_expert_slab_lock_slot(locked)) {
+        locked++;
+    }
+    /* Pushed high to low, so slot 0 is handed out first. */
+    for (uint32_t slot = locked; slot-- > 0;) {
+        ds4_gpu_stream_expert_slab_push_free_slot(slot);
+    }
+    fprintf(stderr,
+            "ds4: streaming expert cache locked ahead: %u of %u slots, %u slabs, %.2f GiB in %.0f ms\n",
+            locked,
+            budget,
+            g_stream_expert_cache_slab_count,
+            ds4_gpu_gib((uint64_t)locked * slot_bytes),
+            ds4_gpu_now_ms() - t0);
+}
+
 static uint64_t ds4_gpu_stream_expert_buffer_object_count(
         id<MTLBuffer> gate,
         id<MTLBuffer> up,

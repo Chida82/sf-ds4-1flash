@@ -85,6 +85,24 @@ explicit `NGB` cache flag stay under it. During a harness-shaped run the box
 has about 1 GiB free and 23-25 GiB of file cache; see
 `speed-bench/perf-record.md`, Memory levers, for the timeline.
 
+Raising `iogpu.wired_limit_mb` raises the recommended size one to one: at
+118000 Metal reported 118000 MiB (115.23 GiB), and the cap at ctx 262144
+became 90 GiB (`270-max-performance-one-mac`). The limit W that an explicit
+cache flag `C GB` needs at a given allocated context is
+`(C + context buffers) x 8/7 + 0.5 GiB`, in MiB rounded up to the next 100;
+the 0.5 GiB keeps the floor from cutting the flag. macOS keeps what the cache,
+the context buffers and the 9.37 GiB of static weights leave of 128 GiB.
+
+| ctx | context buffers | W for 82 / 86 / 88 / 90 GB (MiB) | cap at W 118000 | macOS keeps at 90 GB |
+|---|---|---|---|---|
+| 32K | 7.89 GiB | 105800 / 110400 / 112800 / 115100 | 92 GiB | 20.74 GiB |
+| 256K | 10.38 GiB | 108700 / 113400 / 115700 / 118000 | 90 GiB | 18.25 GiB |
+| 1M | 18.92 GiB | 118700 / 123300 / 125700 / 128000 | 81 GiB | 9.71 GiB |
+
+At the default limit (107.52 GiB, 110100 MiB) the 82 column already fits every
+row but 1M. `sudo sysctl iogpu.wired_limit_mb=0` restores the default, and the
+setting does not survive a reboot.
+
 Keep three different caches separate in reasoning:
 
 1. the application's explicit expert cache in RAM;

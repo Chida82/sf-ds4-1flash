@@ -44,8 +44,9 @@ next to the CSV using the `_ts.svg` suffix, such as `speed-bench/m3_max_ts.svg`.
 streaming and prints a verdict that fits one screen:
 
 ```sh
-git worktree add ../sf-ds4-1flash-base main          # A: the baseline, once
-python3 speed-bench/ab_bench.py --a ../sf-ds4-1flash-base --b . --kinds decode --guards guard-decode
+# from the change's worktree, .claude/worktrees/<change>
+git worktree add --detach ../base main              # A: the baseline, once
+python3 speed-bench/ab_bench.py --a ../base --b . --kinds decode --guards guard-decode
 ```
 
 Pass trees, not binaries: the kernels are read from `metal/` in the working
@@ -77,6 +78,11 @@ Two options change the configuration for one invocation (`270`):
 If either build's stderr has a `cache budget ... capped to` line, the run stops
 with exit 2: the engine cut the cache below the flag, usually because Metal's
 working set (`iogpu.wired_limit_mb`) is too small for that cache and context.
+A `using locked cache cap` line stops it the same way. The cache slots are
+mlocked one by one as they fill, and the system's user wire limit
+(`vm.global_user_wire_limit`, 108.8 GiB here) counts every wired page,
+the GPU's included. A slot that fails shrinks the cache below the flag, so
+pairs collected before the stop can still be pooled.
 Neither option is a record configuration, so the summary prints no record row.
 
 One invocation:

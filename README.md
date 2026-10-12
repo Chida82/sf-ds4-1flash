@@ -60,7 +60,7 @@ On a 128 GB Mac this model always runs with `--ssd-streaming` (see
 > otherwise. It is the fixed measurement configuration and the value for
 > normal use. Without the flag the engine picks less (76.62 GiB in total,
 > 7498 slots at `--ctx 32768`). The ceiling with every lever on is the
-> separate [max_performance_90](#max-performance-on-one-mac) test.
+> separate [max_performance_82](#max-performance-on-one-mac) test.
 
 **Against ds4**, same GGUF, same flags, upstream's own bench:
 
@@ -282,49 +282,64 @@ after 132, KV cache placement after 150, External drive on APFS).
 
 ## Max performance on one Mac
 
-`max_performance_90` is a test run from time to time to see the most one Mac
-gets with every lever on at once, against the `82GB` figures above:
-- the expert cache at `--ssd-streaming-cache-experts 90GB`, with a 256K
+`max_performance_82` is a test run from time to time to see the most one Mac
+gets with every lever on at once, against the plain `82GB` figures of
+[Speed](#speed):
+- the expert cache at `--ssd-streaming-cache-experts 82GB`, with a 256K
   context allocated;
-- Metal's working-set limit raised so that cache fits:
-  `sudo sysctl iogpu.wired_limit_mb=117500`;
 - the copy on the second drive (`DS4_METAL_PREFILL_REPLICA`);
 - `--boost`: full fans through the `fanboost` daemon (it must be installed,
-  see [fanboost/](fanboost/README.md)) and
-  the GPU keep-alive during decode miss reads.
+  see [fanboost/](fanboost/README.md)) and the GPU keep-alive during decode
+  miss reads.
 
-It is not a step of the A/B harness and changes no default: normal use and
-every measurement stay at `82GB` with the system limit. Start it on a cool
-machine, with nothing else running.
+It is not a step of the A/B harness and changes no default. Start it on a cool
+machine, with `fanboost` running, macOS at thermal pressure Nominal and
+nothing else running.
 
 ```sh
-sudo sysctl iogpu.wired_limit_mb=117500
 DS4_METAL_PREFILL_REPLICA=/Volumes/<drive>/sf-ds4-1flash/DeepSeek-V4.1-Flash-Q2.gguf \
   ./sf-ds4-1flash-bench -m deepseek-v4.1-flash.gguf \
   --prompt-file speed-bench/promessi_sposi.txt \
-  --ssd-streaming --ssd-streaming-cache-experts 90GB --boost \
+  --ssd-streaming --ssd-streaming-cache-experts 82GB --boost \
   --ctx-start 2048 --ctx-max 32768 --step-mul 2 --gen-tokens 128 \
-  --ctx-alloc 262144 --csv max_performance_90.csv
-sudo sysctl iogpu.wired_limit_mb=0    # back to the default; a reboot does it too
+  --ctx-alloc 262144 --csv max_performance_82.csv
 ```
 
-Why these values:
-- **The cap.** The engine caps an explicit cache at 7/8 of Metal's recommended
-  working set less the context buffers. With the default limit (107.52 GiB on
-  this machine) that is 86 GiB at a 32K context and 83 GiB at 256K, so `90GB`
-  would be cut. With the limit at 117500 MiB, 90 GiB fits beside the 10.38 GiB
-  of buffers a 256K context needs. If the log still says `capped to`, the
-  limit did not take.
-- **Memory left to macOS.** The cache, the context buffers and the 9.37 GiB of
-  static weights leave about 18 GiB to macOS and other apps, against about
-  26 GiB at `82GB`.
-- **Why not more.** A replay of the decode expert ids (`speed-bench/perf-record.md`,
-  Memory levers) stops gaining decode at about 89 GiB; more cache helps only
-  appends, and every GiB comes out of the file cache, which serves 20-28% of
-  today's miss reads.
+The log must print `streaming expert cache locked ahead: 8078 of 8078 slots`,
+and neither `capped to` nor `using locked cache cap`: either line means the
+engine ran with less cache than asked.
 
-Results: not run yet. The first run fills a table with the same rows as
-**Against ds4**, plus the `82GB` column for comparison.
+Why these values:
+- **The cache stays at 82GB.** 86, 88 and 90 GB were measured against it
+  (`speed-bench/perf-record.md`, Expert cache above the cap):
+  - decode +0.3% to +1.3%, and appends of 300 tokens +1.3% to +2.2%;
+  - every GiB of cache is a GiB less of file cache, so the first token after
+    an 8192-token context slowed from 134 to 157 ms at 86, from 137 to 213 ms
+    at 88 and from 121 to 301 ms at 90;
+  - at 86 the engine's own pages started to be compressed, and macOS fell to
+    7.5 GiB available at the prefill peak.
+- **No `sysctl`.** At `82GB` a 256K context fits the default Metal working
+  set: it needs 108700 MiB, and the default is 110100. A larger cache needs
+  `sudo sysctl iogpu.wired_limit_mb`; [docs/MacM5.md](docs/MacM5.md) gives the
+  value per cache and context.
+- **256K allocated**, as a long session needs. Its buffers take 10.38 GiB,
+  against 7.89 GiB at 32K.
+
+Results: not run yet. The same rows as **Against ds4**:
+
+| Measurement | sf `82GB` t/s | `max_performance_82` t/s |
+|---|---:|---:|
+| prefill, first 2048 tokens | | |
+| prefill, +2048 to context 4096 | | |
+| prefill, +4096 to context 8192 | | |
+| prefill, +8192 to context 16384 | | |
+| prefill, +16384 to context 32768 | | |
+| generation, context 2048 | | |
+| generation, context 8192 | | |
+| generation, context 32768 | | |
+| steady decode, context 2048 | | |
+| steady decode, context 8192 | | |
+| steady decode, context 32768 | | |
 
 ## Supported hardware
 

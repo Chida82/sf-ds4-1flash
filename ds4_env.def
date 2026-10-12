@@ -151,6 +151,7 @@ DS4_ENV(DS4_METAL_DISABLE_ROUTER_WEIGHTS_BATCH_FUSION, disable, unset, "M3 multi
 DS4_ENV(DS4_METAL_DISABLE_SHARED_DOWN_HC_FUSION, disable, unset, "Decode: use the reference shared-expert down then HC expand instead of the fused kernel")
 DS4_ENV(DS4_METAL_DISABLE_SHARED_KV_PAD, disable, unset, "M3 flash attention: turn off the shared-memory KV pad for partial key blocks")
 DS4_ENV(DS4_METAL_DISABLE_SHARED_ROPE_COEFF, disable, unset, "In-place RoPE pair: turn off the shared4 coefficient kernel for batches of 32+ tokens")
+DS4_ENV(DS4_METAL_DISABLE_STREAMING_CACHE_LOCK_AHEAD, disable, unset, "SSD streaming: lock expert cache slots as the first prefill seeds them instead of all at engine open")
 DS4_ENV(DS4_METAL_DISABLE_STREAMING_COMPACT_ADDR, disable, unset, "Vetoes the opt-in compact expert address table for SSD streaming")
 DS4_ENV(DS4_METAL_DISABLE_STREAMING_EXPERT_ADDR_TABLE, disable, unset, "SSD streaming: turn off expert address tables (prefill batch selected addr, compact, split paths)")
 DS4_ENV(DS4_METAL_DISABLE_STREAMING_EXPERT_COMBINED_BUFFER, disable, unset, "SSD streaming: turn off the combined expert cache buffer and with it the slab cache")

@@ -25,7 +25,8 @@ This change finds the best value in that frame and writes a README section that 
   - `--b-cache NGB`: B's cache flag; the window check follows the flag, and a `capped to` line stops the run;
   - `--ctx-alloc N`: the allocated context for both builds.
 
-  The defaults stay `82GB` and 32768, so every existing invocation is unchanged.
+  The defaults stay `82GB` and 32768, so every existing invocation is unchanged. A `using locked cache cap` line also stops the run.
+- **Engine: the expert cache is locked at open** (design D7). Slots locked as the first prefill seeds them failed against `vm.global_user_wire_limit` from about 86 GB, and the engine shrank the cache below `82GB`'s. Every slot is now allocated and mlocked before any prefill. `DS4_METAL_DISABLE_STREAMING_CACHE_LOCK_AHEAD=1` restores the lazy locking.
 - **Screening on the replay.** The `225` id dumps are replayed at the slot counts of 86, 88 and 90 GiB, for `decode` and `append`, before any run.
 - **A/B per candidate.** 82 against 86, 88 and 90 GiB, measured on one tree with:
   - `--ctx-alloc 262144`;
@@ -45,14 +46,15 @@ This change finds the best value in that frame and writes a README section that 
 ## Capabilities
 
 ### New Capabilities
-None (`skip_specs: true`): measurement, a harness option, and documentation.
+None (`skip_specs: true`): measurement, a harness option, documentation, and an output-neutral change to when the expert cache is locked.
 
 ### Modified Capabilities
 None.
 
 ## Impact
 
-- `speed-bench/ab_bench.py` (two options), `speed-bench/README.md` (their lines).
+- `speed-bench/ab_bench.py` (two options and the lock check), `speed-bench/README.md` (their lines).
+- `ds4_metal.m`, `ds4.c`, `ds4_gpu.h` (the lock at open), `ds4_env.def` (its switch), `AGENTS.md` (its line).
 - `README.md` (the new section, and the `82GB` callouts that point to it).
 - `speed-bench/perf-record.md` (a section with the replay, the A/B rows and the memory check).
 - `docs/MacM5.md` (the working-set limit per cache and context).
