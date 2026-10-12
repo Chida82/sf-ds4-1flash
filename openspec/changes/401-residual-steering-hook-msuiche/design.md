@@ -150,3 +150,24 @@ align best at a **+1** layer offset (distcog measured at the layer-input fold), 
 msuiche's `direction[N]` may map to the before-attention fold of layer `N` or `N+1`; the
 drop-in check (task 3.2) at alpha 0.5 settles the index, sign and whether A reproduces the
 removal. The converted vector (`v41-msuiche.f32`, 401 task 1) is ready for that test.
+
+**Cross-check against llama.cpp's control-vector convention (2026-10-13).** msuiche's GGUF
+is in llama.cpp's `controlvector` format, so llama.cpp's application convention is the
+reference for the SITE and INDEX (the MATH differs — see below):
+- Site: llama.cpp applies the per-layer direction in `build_cvec(cur, il)` AFTER the FFN
+  output and AFTER the residual add, labelling the result `l_out` (the per-architecture
+  builders `glm4.cpp`, `bailingmoe.cpp` show this order). So `residual_stream_post_layer`
+  is the single-stream layer OUTPUT residual. In the `ds41` graph that single-stream view
+  is the fold `g->x`; the fold at layer `N+1`'s `before_attention` (ds4.c:23904) is the
+  output residual of layer `N`. This matches option A's site and **confirms the +1 index**:
+  apply `direction[N]` at the fold that carries layer `N`'s output, i.e. the before-attn
+  fold of layer `N+1` (equivalently, `direction[il-1]` at layer `il`'s before-attn fold).
+- Layer 0: llama.cpp never steers the embeddings (no tensor for layer 0) — matches
+  msuiche/distcog's zero layer-0 row and `controlvector_to_f32.py`.
+- Math: llama.cpp control vectors are ADDITIVE (`ggml_add(cur, dir)`); msuiche's card
+  explicitly refuses additive consumers ("NOT additive") and wants PROJECTIVE
+  `h -= alpha*(h.d)d`. ds4's `ds4_gpu_directional_steering_project_tensor` already does the
+  projective form, so ds4 applies the correct math at the site llama.cpp uses for the
+  additive form. No additive path is added.
+This removes the index ambiguity for option A; only the sign and the quantitative removal
+remain for the behavioral drop-in (3.2) / `402` to confirm.
