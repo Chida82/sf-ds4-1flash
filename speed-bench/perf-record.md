@@ -2100,6 +2100,39 @@ change this measurement keeps is locking the cache at open. It makes a flag
 above about 84 GB safe to use, at a cost in first token and memory that the
 rows above give.
 
+## Non-causal top-k sort after the fc80bd6 sync (2026-10-12, `300-upstream-pr-intake-october`)
+
+#1192 (`d851854`) builds `kernel_argsort_f32_i32_desc` on the
+`simd_shuffle_xor` network that the causal prefill variant already uses. V4.1
+reaches the non-causal sort only in decode (`ds41_attention_pick`): one row on
+each of the 8 index-source layers, plus layer 20's block top-k.
+
+**Micro-bench.** A scratch program ran those 9 calls in one command batch
+per token on random scores, without the model. The patched kernel was loaded
+through `DS4_METAL_ARGSORT_SOURCE` into the same binary. Over 8 ABBA pairs
+the selected indices were identical:
+
+| ctx | B - A per token | 95% CI |
+|---|---|---|
+| 2048 | -59 us | -66..-49 |
+| 8192 | -67 us | -73..-64 |
+| 32768 | -64 us | -70..-60 |
+
+That is about 0.13% of a 50 ms decode token, under the harness's resolution.
+
+**Harness, against `ddaddf1`** (`main` with the upstream `fc80bd6` sync;
+`decode`, guard `guard-decode`, `--bitwise`, 1800 s, thermal
+Heavy/Moderate/Nominal, 845-1160 MHz). 10 pairs, none dropped, bitwise, hit
+rate 0.900 on both:
+
+| Metric | A | B | Gain | 95% CI |
+|---|---|---|---|---|
+| decode 2048 | 22.0 | 22.1 | -0.6% | -5.9..+1.4 |
+| decode 8192 | 21.9 | 21.7 | -0.2% | -3.9..+1.8 |
+| guard decode 2500 | 21.5 | 21.9 | +1.5% | (one run) |
+
+Neutral end to end. Kept as an exception to the keep rule: the step changes one template line to the shuffle variant the causal prefill sort already uses, the output stays bitwise, and the micro-bench shows the kernel saving.
+
 ## Adding a row
 
 1. `SF_PARITY_FLAGS=--ssd-streaming tools/parity-check.sh sf-ds4-1flash` from

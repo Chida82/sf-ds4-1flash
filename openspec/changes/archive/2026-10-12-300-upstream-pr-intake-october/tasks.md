@@ -3,7 +3,7 @@
 ## 1. Registry
 
 - [x] 1.1 Fetch the heads of #1073 (`cad7933`), #1135 (`e5b19e2`), #1167 (`7217598`), #1168 (`8f60f7d`), #1192 (`d851854`) and #1204 (`4203d5f`) as read-only refs in the upstream mirror. Verify that each head SHA matches `gh pr view`. (Done 2026-10-11: fetched as `refs/remotes/upstream-pr/<N>`; every head matches `gh pr view`. `upstream/main` is at `fc80bd6`, nine commits past `0aaea5a`.)
-- [ ] 1.2 `docs/upstream-prs.md`:
+- [x] 1.2 `docs/upstream-prs.md`:
   - the #1073 row and its commit table moved to `cad7933`, with lines for `4f80638`, `ff95f53` and `cad7933`;
   - the nine DSpark commits set to `open` ("assigned by `310`"), and the Commits prose updated;
   - new rows for #1135, #1167, #1168, #1192 and #1204, with #1167 and #1168 as `idea -> 350` and `idea -> 330`.
@@ -23,8 +23,8 @@
 ## 3. #1192 and #1204
 
 - [x] 3.1 #1204 against `70` S4f, site by site. If it adds nothing for one row, the verdict is `in main, modified` with the reason. Otherwise it is a step for 3.2. (Done 2026-10-11: `in main, modified`. S4f's `ds4_gpu_dsv41_shared_swiglu` already runs the one-row gate, up and SwiGLU in one dispatch with the same BF16 rounding, without storing gate and up; no run.)
-- [ ] 3.2 Each reachable remaining commit is ported as a step and judged by the keep rule (sections mode when its predicted effect is below the harness's resolution). Verify the rows in `perf-record.md` and the verdict on its line. (2026-10-12: #1192 pre-screened with a scratch micro-bench of one decode token's top-k calls, loading the patched `argsort.metal` through `DS4_METAL_ARGSORT_SOURCE`: -59..-67 us/token at ctx 2048-32768, identical indices, about +0.13% decode. The harness A/B is still open, deferred to a later combined run.)
+- [x] 3.2 Each reachable remaining commit is ported as a step and judged by the keep rule (sections mode when its predicted effect is below the harness's resolution). Verify the rows in `perf-record.md` and the verdict on its line. (2026-10-12: #1192 pre-screened with a scratch micro-bench of one decode token's top-k calls, loading the patched `argsort.metal` through `DS4_METAL_ARGSORT_SOURCE`: -59..-67 us/token at ctx 2048-32768, identical indices, about +0.13% decode. Harness against `ddaddf1`, 10 pairs, bitwise: decode 2048 -0.6% (-5.9..+1.4), decode 8192 -0.2% (-3.9..+1.8). Neutral; adopted as an exception to the keep rule (one template line, bitwise, kernel saving measured): `adopt -> 300`.)
 
 ## 4. Integration
 
-- [ ] 4.1 `make test` (read the names of the tests that ran) and `SF_PARITY_FLAGS=--ssd-streaming tools/parity-check.sh sf-ds4-1flash` from the StarForge checkout when code changed. Then `openspec validate 300-upstream-pr-intake-october --strict`. No commit or push without a request.
+- [x] 4.1 `make test` (read the names of the tests that ran) and `SF_PARITY_FLAGS=--ssd-streaming tools/parity-check.sh sf-ds4-1flash` from the StarForge checkout when code changed. Then `openspec validate 300-upstream-pr-intake-october --strict`. No commit or push without a request. (Done 2026-10-12, with #1192 and the `fc80bd6` sync in the tree: `make test` ran its 17 suites, PASS; `make test-deepseek41-metal` PASS, the variable-k sort at every width included; parity on `aed22dd` against upstream `fc80bd6`: PARITY OK, 10 prompts token-identical, child faster on every prompt; validate strict.)
