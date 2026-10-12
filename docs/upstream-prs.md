@@ -7,7 +7,7 @@ new commits on PRs already judged. The head SHAs record what was reviewed; they
 are not a sync base. The base stays in git: the `sync-*` tags and
 `git merge-base HEAD upstream/main`.
 
-Last review: 2026-09-26
+Last review: 2026-09-26 (full); 2026-10-11 (six PRs, `300`)
 
 ## Outgoing ports
 
@@ -136,6 +136,12 @@ a read PR had moved. Of the eleven PRs updated since the review that were not
 among the 211, four touch engine files and were read (#1125, #1126, #1127,
 #1128); the other seven are classed under Excluded.
 
+The intake of 2026-10-11 (`300`) read six PRs by name, not a full review:
+#1073 at its new head and #1135, #1167, #1168, #1192 and #1204, all updated
+after 2026-09-26. That makes 78 PRs read commit by commit: the 69, the four
+of the re-triage and these five. `upstream/main` was then at `fc80bd6`, nine
+commits past `0aaea5a`. The next full review starts from 2026-09-26.
+
 The working notes behind these verdicts, with the per-commit analyses, the
 funnel's counts per candidate and the runtime size of each candidate commit,
 are in the archived change `10-upstream-pr-intake`
@@ -147,6 +153,11 @@ summary's `§n` names the section of those notes.
 
 | PR | Title | State | Head analyzed | Commits | Analyzed | Summary |
 |---|---|---|---|---|---|---|
+| #1204 | Metal: fuse the V4.1 shared expert's gate, up and SwiGLU | open | `4203d5f` | 10 (1 on `fc80bd6`) | 2026-10-11 | `in main, modified`: `70` S4f (#1073 `d8d1523`) already runs the one-row shared gate, up and SwiGLU in one dispatch with the same BF16 rounding (`ds4_gpu_dsv41_shared_swiglu`), and does not store gate and up, which nothing reads. The PR measured 3.2 -> 2.1 ms per 40 layers on M1 Ultra, and no generation change under SSD streaming |
+| #1192 | metal: use shuffle network for non-causal top-k block sort | open | `d851854` | 1 | 2026-10-12 | pending the harness: V4.1 reaches the non-causal sort only in decode (`ds41_attention_pick`: one row on the 8 index-source layers, plus layer 20's block top-k). A scratch micro-bench of those 9 calls, one command batch per token, 8 ABBA pairs, saved 59 us/token at ctx 2048 (95% CI 49..66), 67 at 8192 (64..73) and 64 at 32768 (60..70), with identical selected indices: about +0.13% of a 50 ms decode token, below the harness's resolution. The A/B is deferred to a later combined run |
+| #1168 | Back off speculative drafting on consecutive rejected proposals | open | `8f60f7d` | 3 | 2026-10-11 | `idea -> 330`: the back-off of `8f60f7d`, built on #1167's two commits. Written for V4 Flash; no code taken |
+| #1167 | Add n-gram prompt-lookup speculative drafting | open | `7217598` | 2 | 2026-10-11 | `idea -> 350`: the n-gram prompt-lookup drafter (`9d62160`) and its server flag (`7217598`). Written for V4 Flash; no code taken |
+| #1135 | Fix future-token leakage in Metal batched compressed attention | open | `e5b19e2` | 1 | 2026-10-12 | not reachable from V4.1: the compressed-mask copy it replaces runs only with `use_comp_mask`, which only `metal_graph_encode_layer_attention_batch` sets (the generic graph V4.1 never allocates); `ds41_attention_batch` passes `NULL, 0`. A scratch probe (`300`) saw the encoder on an 821-token text prompt and a 547-token image prompt (493 image tokens), always with `use_comp_mask=0`, and the copy never ran |
 | #1128 | Metal: reject unsupported shapes in five kernels (BF16 partial blocks, head groups, visual mask, Qwen4 n_rot, tile maxima) | open | `fa7bc8a` | 5 | 2026-09-26 | `next sync` for the three guards that reach the child (see Commits); `d7b0b31` changes the vision patch-embedding rounding, so vision output is checked at that sync. The two Qwen4 indexer commits are not reachable. No speed effect |
 | #1127 | Speed up callback-driven Metal prefill with layer overlap | open | `c71ca56` | 1 | 2026-09-26 | not reachable from V4.1: `metal_graph_prefill_layer_major` is called only from `ds4_session_eval_layer_slice`, and the overlap also requires `!ssd_streaming` |
 | #1126 | Metal: resolve keep-alive pipeline before starting keep-alive threads | open | `242da6b` | 1 | 2026-09-26 | `next sync`: the default queue keep-alive thread, and the TP one, resolve their pipeline on their own thread against the non-thread-safe pipeline cache while the main thread compiles the first prefill's pipelines |
@@ -159,7 +170,7 @@ summary's `§n` names the section of those notes.
 | #1089 | v4.1: rewind live sessions instead of rebuilding them | open | `f6639cf` | 1 | 2026-09-25 | `drop: output`: a rewound state equals "prefix then tail", not a fresh sweep (logits differ by 0.57-0.92). Given up: server multi-turn TTFT, a 21K turn measured 54.6 s -> 7.3 s on this machine; +640 MiB per session (§6) |
 | #1083 | CUDA SSD streaming: hits-first expert launch, the Metal split's counterpart (+5 to +8 % decode) | open | `4c82792` | 2 | 2026-09-25 | not reachable from V4.1 (CUDA). Metal already has the counterpart: `ds4_gpu_stream_expert_split_worthwhile`, `begin_selected_load`, the masked address-table kernels (§7) |
 | #1082 | CUDA SSD streaming: run the cached experts while the miss reads are in flight (+6 to +12 % decode) | closed | `5e46ff5` | 28 | 2026-09-25 | superseded by #1083 (wrong branch) (§7) |
-| #1073 | Speed up DeepSeek V4.1 Flash on Metal | open | `3d3c83b` | 55 | 2026-09-25 | the chosen line for the decode glue zone. `adopt`: 2 -> `30` (measured and reverted, see Commits), 6 in `60` (the short sweep and the three index batches, all kept: see Commits), in `70` (`d95f8b6`, `edceb7a`, `d8d1523` cut by call site, `1923131`, `a3f6f31`, `c6f4086`'s test, plus the head text of `0ac42d6`, `8be1005` and `a15028e` where the port needed it): kept; `e768396` and `4fbbc4a`'s head half measured neutral (history); `drop: output`: 5, and the short sweep over token-major tails; `history`: 6 `two-macs`, 3 `quant`; 9 DSpark commits never; the rest drop, not reachable or `next sync` (see Commits). Claims are resident M3 Ultra (Q2 decode 19.8 -> 36.2 t/s); on M5, under streaming, the kept `70` steps are bitwise and their S4 sites alone give decode +5.7..+6.2% (see `perf-record.md`) |
+| #1073 | Speed up DeepSeek V4.1 Flash on Metal | open | `cad7933` | 58 | 2026-10-11 | the chosen line for the decode glue zone. `adopt`: 2 -> `30` (measured and reverted, see Commits), 6 in `60` (the short sweep and the three index batches, all kept: see Commits), in `70` (`d95f8b6`, `edceb7a`, `d8d1523` cut by call site, `1923131`, `a3f6f31`, `c6f4086`'s test, plus the head text of `0ac42d6`, `8be1005` and `a15028e` where the port needed it): kept; `e768396` and `4fbbc4a`'s head half measured neutral (history); `drop: output`: 5, and the short sweep over token-major tails; `history`: 6 `two-macs`, 3 `quant`; 9 DSpark commits `open`, assigned by `310`; the three commits after `3d3c83b` touch only code the child does not take (see Commits); the rest drop, not reachable or `next sync` (see Commits). Claims are resident M3 Ultra (Q2 decode 19.8 -> 36.2 t/s); on M5, under streaming, the kept `70` steps are bitwise and their S4 sites alone give decode +5.7..+6.2% (see `perf-record.md`) |
 | #1067 | Metal V4.1 decode: one command-buffer wait per token, Engram reads on threads | open | `dceba87` | 5 | 2026-09-25 | `history: resident`: the flush (also `chip`: pre-M5 only) and the batched decode require `!streaming` (see Commits); `d1738d2` `adopt` (`130`). Claims 17.9 -> 26.1 t/s resident Q4 (§3) |
 | #1061 | metal: decode-shaped V4.1 indexer kernels for long contexts | open | `6856a23` | 1 | 2026-09-25 | `drop: output`: MMA decode scorer with a different f32 summation order. Given up: about 1-3 ms per token at 32K, 5-12 ms at 128K, estimated. A bitwise rewrite is possible: keep `score_one_direct`'s reduction, stream many rows per simdgroup. `80` measured the live scorer at 0.18 ms per token at 2K, 0.45 ms at 8K and 1.37 ms at 32K: the rewrite's gate is closed for the target mix (§6) |
 | #1060 | metal: radix-select top-k for the V4.1 indexer | open | `be6a8ce` | 1 | 2026-09-25 | `drop: output`: differs from the bitonic network on tied scores (set and order). Given up: under 1 ms per token at 32K, 2-4 ms at 128K, estimated; measured on this machine at 435K (§6) |
@@ -271,7 +282,7 @@ summary's `§n` names the section of those notes.
 `06ba1c5` and `3cba8f0` are GLM (not reachable); `849e039` is docs. Both #1090
 and #1042 define `kernel_dsv41_mul_mv_q8_0_f32_bf16`, in different files.
 
-### #1073 (head `3d3c83b`)
+### #1073 (head `cad7933`)
 
 | Commit | Subject | Verdict | Reason |
 |---|---|---|---|
@@ -309,10 +320,13 @@ and #1042 define `kernel_dsv41_mul_mv_q8_0_f32_bf16`, in different files.
 | `5432223` | Keep the resident Q4_K expert tiles to the DeepSeek V4.1 shape | history: quant | Q4_K, pre-M5, resident |
 | `e49643f` | Run the DeepSeek V4.1 shared expert beside the routed experts on Metal | history: quant | MXFP4, resident |
 | `5c2dac7` | End the tensor parallelism bind line | next sync | a log newline |
+| `4f80638` | Keep the DeepSeek V4.1 wide index scorer exact and off the GLM path | history: long | fixes `4b1b151`'s wide scorer, which the child does not take: `fp contract(off)` in its head sum, and an FP4-only gate. That claims the wide kernel exact for V4.1's FP4 query and keys, which would lift `4b1b151`'s `drop: output` after a bitwise check. The kernel runs from 8192 index rows, so contexts from 32K tokens at ratio 4 |
+| `ff95f53` | Reset the radix top-k scratch for new row counts and keep it to DeepSeek V4.1 | drop: output | fixes and scopes `af7c02b`'s radix select, which the child does not take (ties by ascending id) |
+| `cad7933` | Keep the DeepSeek V4.1 matrix rows, idle prefill and DSpark checks off other models | drop | scopes code the child does not take: the matrix rows of `262b4a6` and `a6b50ff`, and `7da9535`'s idle prefill quantum (all `drop: output`). Its `--dspark` check goes with the DSpark commits |
 
 The other commits: the nine DSpark commits (`a60edc6`, `c674b19`, `1e3bcf8`,
-`bd85ba6`, `b7bcccd`, `1c69206`, `fd70919`, `258ad33`, `66dff86`) are never
-taken, `66dff86` matters only for reaching the head state of `d8d1523`;
+`bd85ba6`, `b7bcccd`, `1c69206`, `fd70919`, `258ad33`, `66dff86`) are `open`,
+assigned by `310`; `66dff86` also matters for reaching the head state of `d8d1523`;
 `8d73a0e` is `drop` (turns off `tp_shard`, breaking the 2 x 128 GB layout);
 `dc81436` is not reachable (Q4/MXFP4 fallback); `7d89c59` is `drop` (test
 plumbing for `4b1b151`'s scorer); `c4b66b9` is `drop` (the function it
