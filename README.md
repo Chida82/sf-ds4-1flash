@@ -535,6 +535,13 @@ non-interactive output, and `--regrade-trace FILE` scores an existing trace
 without generating again. Sources and licenses are in [EVAL_DATA.md](EVAL_DATA.md).
 For inference correctness and release checks, read [testing](docs/TESTING.md).
 
+The `eval/` harness measures a directional-steering intervention as an A/B of a
+base run against a steered run across five axes (refusal removal, benign fidelity,
+over-refusal, capability, breadth), with two mandatory controls and the published
+V4.1 anchors kept in separate protocol columns. `make eval-refusal-selfcheck` runs
+its model-less logic checks; `make eval-refusal` runs the full model-backed loop.
+See [refusal validation](docs/REFUSAL_VALIDATION.md).
+
 ## Detailed Guides
 
 - [The model and vision](docs/MODELS.md): downloads, memory, and the encoder.
@@ -544,6 +551,7 @@ For inference correctness and release checks, read [testing](docs/TESTING.md).
 - [Coding agent clients](docs/CLIENTS.md): Pi, OpenCode, Codex CLI, and Claude Code.
 - [Performance](docs/PERFORMANCE.md): reproducible measurements and recorded baselines.
 - [Testing and development](docs/TESTING.md): regression tests, debugging, and model-building tools.
+- [Refusal validation](docs/REFUSAL_VALIDATION.md): the A/B steering-validation harness and its two protocols.
 
 Read [CONTRIBUTING.md](CONTRIBUTING.md) before sending a pull request.
 

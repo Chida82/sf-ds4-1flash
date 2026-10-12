@@ -424,6 +424,29 @@ test-quality-api: tests/test_quality_api.c gguf-tools/quality-testing/score_offi
 	./tests/test_quality_api
 	python3 tests/test_collect_official.py
 
+.PHONY: eval-refusal eval-refusal-selfcheck
+# Refusal-removal validation harness (OpenSpec 402). Model-backed: follows the
+# gguf/ symlinks like the other model targets and runs long SSD-streaming arms.
+# With no model it prints the prerequisite and stops. Pass flags via EVALFLAGS,
+# e.g. `make eval-refusal EVALFLAGS="--steer dir-steering/out/v41-fused.f32 --ffn 2"`.
+eval-refusal: $(BIN) $(BIN)-eval
+	python3 eval/run.py $(EVALFLAGS)
+# Model-less logic checks of the harness itself (datasets, scorers, controls).
+eval-refusal-selfcheck:
+	python3 eval/common.py
+	python3 eval/datasets_harmful.py
+	python3 eval/datasets_benign.py
+	python3 eval/datasets_overrefusal.py
+	python3 eval/datasets_capability.py
+	python3 eval/compose.py
+	python3 eval/generate.py
+	python3 eval/score_keyword.py
+	python3 eval/score_judge.py
+	python3 eval/score_strongreject.py
+	python3 eval/score_kl.py
+	python3 eval/score_capability.py
+	python3 eval/run.py --self-check
+
 ds4.o ds4_cpu.o ds4_server.o ds4_server_cpu.o ds4_test.o \
 ds4_cpu_test_hooks.o tests/test_session_state.o \
 tests/test_session_state_gpu.o: ds4_tool_text.h
