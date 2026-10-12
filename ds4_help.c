@@ -213,6 +213,7 @@ static void print_steering(FILE *fp, const help_colors *c) {
     opt(fp, c, "--dir-steering-file FILE", "Load one f32 direction vector per layer.");
     opt(fp, c, "--dir-steering-ffn F", "Apply steering after FFN outputs. Default with file: 1");
     opt(fp, c, "--dir-steering-attn F", "Apply steering after attention outputs. Default: 0");
+    opt(fp, c, "--allow-v41-steering", "Lift the V4.1 startup refusal for --dir-steering-file (single-box Metal).");
     fputc('\n', fp);
 }
 

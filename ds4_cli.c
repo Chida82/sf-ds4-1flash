@@ -1928,6 +1928,8 @@ static cli_config parse_options(int argc, char **argv) {
             }
         } else if (!strcmp(arg, "--dir-steering-file")) {
             c.engine.directional_steering_file = need_arg(&i, argc, argv, arg);
+        } else if (!strcmp(arg, "--allow-v41-steering")) {
+            c.engine.allow_v41_steering = true;
         } else if (!strcmp(arg, "--expert-profile")) {
             c.engine.expert_profile_path = need_arg(&i, argc, argv, arg);
         } else if (!strcmp(arg, "--dir-steering-ffn")) {

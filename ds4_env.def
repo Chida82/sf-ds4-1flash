@@ -6,6 +6,7 @@
  * hooks). State: any for operational and test, unset for the rest.
  * ds4_env.h turns this into the startup report's table; `make env-check`
  * fails on a read name missing here or a line nothing reads any more. */
+DS4_ENV(DS4_ALLOW_V41_STEERING, enable, unset, "Opt into V4.1 directional steering: lift the --dir-steering-file startup refusal (single-box Metal only)")
 DS4_ENV(DS4_BATCHED_FFN, enable, unset, "CPU reference prefill: opt into batched routed FFN across tokens")
 DS4_ENV(DS4_BATCHED_ROPE_MAX, tuning, unset, "CPU reference prefill: max tokens for batched prefix RoPE (default 4096, 0-65536)")
 DS4_ENV(DS4_BENCH_DISABLE_SNAPSHOT, disable, unset, "Bench: skip session snapshot/restore after generation and replay prefixes instead")

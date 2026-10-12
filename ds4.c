@@ -30134,7 +30134,10 @@ static int ds4_engine_open_internal(ds4_engine **out,
             opt->distributed.role == DS4_DISTRIBUTED_NONE &&
             !load_slice &&
             !opt->first_token_test && !opt->metal_graph_test &&
-            (!opt->directional_steering_file || !opt->directional_steering_file[0]) &&
+            /* sf: the opt-in lifts only this steering term; the refusal below and
+             * every other condition stay upstream's, byte for byte (SPEC rule #4). */
+            (opt->allow_v41_steering || getenv("DS4_ALLOW_V41_STEERING") != NULL ||
+             !opt->directional_steering_file || !opt->directional_steering_file[0]) &&
             e->power_percent == 100 && opt->context_size <= 1048576;
         if (!supported) {
             fprintf(stderr, "ds4: V4.1 requires Metal or single-GPU CUDA per rank (optional network tensor parallelism); "

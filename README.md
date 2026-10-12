@@ -510,9 +510,9 @@ after you type `yes`. **Know what it does before installing:**
 Using it, like the rest of this project, is your own responsibility.
 
 Directional steering is present in the build and documented under
-[dir-steering/](dir-steering/README.md), but DeepSeek V4.1 Flash does not
-support it: passing `--dir-steering-file` makes the engine refuse to start,
-exactly as it does upstream.
+[dir-steering/](dir-steering/README.md). DeepSeek V4.1 Flash refuses it by
+default -- passing `--dir-steering-file` makes the engine refuse to start,
+exactly as upstream -- unless `--allow-v41-steering` is given.
 
 `--prefix-file FILE` preloads complete `USER:` / `ASSISTANT:` pairs before
 the live conversation. A turn marker must start a line, roles must alternate,

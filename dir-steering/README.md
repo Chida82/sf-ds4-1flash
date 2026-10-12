@@ -12,13 +12,19 @@ y = y - scale * direction[layer] * dot(direction[layer], y)
 Positive scale removes the represented direction. Negative scale amplifies it.
 With no steering file or zero scales, ds4 follows the normal inference path.
 
-**DeepSeek V4.1 Flash does not support steering.** The engine refuses to start
+**DeepSeek V4.1 Flash refuses steering by default.** The engine refuses to start
 when `--dir-steering-file` is passed, exactly as it does upstream:
 
 ```text
 ds4: V4.1 requires Metal or single-GPU CUDA per rank (optional network tensor
 parallelism); DSpark, steering and legacy diagnostics are not supported
 ```
+
+`--allow-v41-steering` (or `DS4_ALLOW_V41_STEERING=1`) lifts only this refusal, on
+single-box Metal; every other unsupported condition still refuses, and the message
+above is byte-for-byte unchanged without the opt-in. The site the V4.1 control
+vectors are applied at is added by a later change -- until then the opt-in is for
+bring-up only.
 
 The tooling, the file format and the runtime options below are kept unchanged
 (SPEC.md §B: steering stays in every child even where the model rejects it), so
