@@ -6,14 +6,16 @@ to `/tmp`.
 
 ## 1. Converter
 
-- [ ] 1.1 `dir-steering/tools/controlvector_to_f32.py`: read a GGUF `controlvector`,
-  assert arch `controlvector` and 39 `direction.<N>` (fp32, 5120, unit norm), write
-  `.f32` 40x5120 (L0 zeros, `direction.N`->layer N) and a `.json` sidecar (hook,
-  `alpha_default`, `content_sha256`, base revision, provenance). Verify on a synthetic
-  3-layer GGUF fixture that the bytes and indexing are exact (a `__main__` assert
-  self-check, no framework).
-- [ ] 1.2 Refuse a mismatched vector: wrong arch, wrong width, missing `direction.1`,
-  or a non-unit row past a tolerance. Verify each exits naming the cause.
+- [x] 1.1 `dir-steering/tools/controlvector_to_f32.py`: reads a GGUF `controlvector`,
+  asserts arch `controlvector` + `model_hint deepseek_v41` + `hook residual_stream_post_layer`
+  and 39 `direction.<N>` (fp32, 5120, unit norm), writes `.f32` 40x5120 (L0 zeros,
+  `direction.N`->layer N) and a `.json` sidecar (hook, `alpha_default`, `content_sha256`,
+  base revision, provenance, non-monotone/L1-6 caveats). Self-check on a synthetic
+  GGUF fixture asserts bytes + indexing exact. Confirmed end-to-end on the real msuiche
+  GGUF: 819200 B, all 39 rows L2 norm 1.0000.
+- [x] 1.2 Refuses a mismatched vector: wrong arch, wrong model_hint, wrong hook, missing
+  `direction.1`, wrong width, or a non-unit row past tolerance — each exits naming the
+  cause (all six verified in the self-check).
 
 ## 2. Residual-stream hook
 
