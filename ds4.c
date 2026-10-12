@@ -23975,7 +23975,15 @@ static bool ds41_before_attention_batch(ds41_gpu_graph *g, ds41_prefill_row *b,
     const bool mixed = il ?
         ds4_gpu_hc_weighted_sum_split_tensor(b->x, b->residual, b->ffn_split, DS4_N_EMBD, DS4_N_HC) :
         ds4_gpu_hc_weighted_sum_tensor(b->x, b->residual, b->pre, DS4_N_EMBD, DS4_N_HC);
-    return mixed && ds4_gpu_dsv41_quantize(b->x, DS4_N_EMBD, count, DS4_V41_BF16) &&
+    if (!mixed) return false;
+    /* sf: 401 residual steering on the prefill/batch before-attention fold (b->x is f32
+     * here, before the quantize), mirroring the decode path so the prompt is steered too.
+     * Off (scale 0 / env) leaves b->x untouched -> bitwise identical. */
+    if (g->residual_scale != 0.0f && g->residual_dirs &&
+        !getenv("DS4_METAL_DISABLE_V41_RESIDUAL_STEERING") &&
+        !ds4_gpu_directional_steering_project_tensor(b->x, g->residual_dirs, il,
+            DS4_N_EMBD, count, g->residual_scale)) return false;
+    return ds4_gpu_dsv41_quantize(b->x, DS4_N_EMBD, count, DS4_V41_BF16) &&
         ds41_norm_batch(b->norm, b->x, m, l->attn_norm, count);
 }
 

@@ -44,10 +44,13 @@ below msuiche's null gate).
   `ds4_session_create` (freed in `ds41_graph_free`); `cpu_load_directional_steering` now
   loads the file for the Metal path too when residual is active. Off keeps the fast path
   (bitwise identical).
-- [ ] 2.3 CPU reference + PREFILL/BATCH coverage — REMAINING. CPU:
-  `cpu_directional_steering_project_rows(scratch->attn_cur, dirs, il, 1, scale)` after the
-  fold (ds4.c:11595). Prefill/batch: mirror in `ds41_hc_mix_batch` (b->x fold). The decode
-  path alone steers only generated tokens, not the prompt representation.
+- [~] 2.3 PREFILL/BATCH coverage DONE: `ds41_before_attention_batch` projects `b->x` (f32,
+  before the quantize) on the attention-side fold, so the prompt is steered too (verified:
+  OFF bitwise identical, ON 0.5 alters output + coherent, with prefill+decode). The
+  per-row prefill route goes through `ds41_hc_mix` (already steered). REMAINING: the CPU
+  reference (`cpu_directional_steering_project_rows(scratch->attn_cur, dirs, il, 1, scale)`
+  after ds4.c:11595, reference path only) and the token-major `ds41_decoder_prepare` fold
+  (only hit for very long prompts ~24.5K+; the typical 1k-10k path is covered).
 - [x] 2.4 `--dir-steering-residual F` in CLI/server/help + `ds4_engine_options` field +
   engine field/copy + the disable env (classified, env-check 503). Setting it sets
   `directional_steering_scale_set` so a file does not also default `ffn=1`. (bench has no
