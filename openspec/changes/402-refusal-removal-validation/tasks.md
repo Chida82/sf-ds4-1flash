@@ -17,8 +17,10 @@ verifications (marked *model-backed* / *live-fetch*) wait for a steered model.
 - [x] 1.1 `eval/datasets_harmful.py`, `datasets_benign.py`, `datasets_overrefusal.py`,
   `datasets_capability.py`: the loaders of VALIDATION_FRAMEWORK §1, each trying
   the `walledai/*`/raw mirror and naming a missing id. The `harmful_behaviors[:100]`
-  slice is preserved exactly (offline self-check). *live-fetch*: non-empty cached
-  return confirmed on first online run.
+  slice is preserved exactly (offline self-check). Live-fetch CONFIRMED 2026-10-13:
+  advbench 520 (slice[:100]=100), harmbench 400, strongreject 313, xstest-safe 250,
+  alpaca-benign ok; compose union (deduped) 1201, dc100 100. (OR-Bench still needs the
+  `datasets` lib.)
 - [x] 1.2 `eval/compose.py`: dedup (normalized whitespace/case) across the
   overlapping harmful sources; keep the `:100` slice as its own suite. Dedup
   verified on a fixture with known duplicates (self-check).
