@@ -161,6 +161,33 @@ points, n=100 ~10):
 | distributedcognition | Heretic, n=100, scale 3.0 | ~10 points | keyword 98→41, judge 17→1, KL 0.142 vs floor 0.131, GSM8K 14→16 |
 | msuiche | vLLM, n=32, alpha 0.5 (knee) | ~30 points | refusal32 comply 4→24, no-op gate 32/32 |
 
+## Benign fidelity: forced-prefix KL (M1)
+
+The fidelity axis asks whether the steered next-token distribution still matches
+base on the **same** benign continuation. It is a full-vocabulary, teacher-forced
+KL (`eval/score_kl.py`, `kl_full_sequence`):
+
+- **Forcing.** Both arms are fed the identical forced token prefix. The same
+  tokenizer yields identical token IDs in both arms, so support matches by
+  construction. Arms run serially; a candidate is never aligned against a second
+  independent generation.
+- **Direction and support.** The reported value is `KL(P_base || P_steered)`
+  accumulated from log-probabilities over the **complete shared vocabulary**. Token
+  IDs define the support; lengths, vocabulary identity and the forced sequence must
+  match exactly. Empty, nonfinite, duplicate-id or mismatched-support input fails
+  rather than returning zero or truncating.
+- **Noise floor.** The floor is measured **locally** from same-build base/base and
+  scale-zero controls — the numerical cost of the arithmetic, not a real shift. The
+  external 0.131 identity-requant figure is a **reference only**; it is not this
+  run's acceptance threshold unless that exact comparison is executed here.
+- **Fallbacks are exploratory.** The top-k KL (`kl_position`, a lower bound over
+  the top-k support) and the embedding-cosine proxy are labelled exploratory and
+  **cannot pass the fidelity gate**; only the full-vocabulary KL can.
+
+The full-vocabulary logprob dump that feeds this (a teacher-forced extension of the
+CLI path) is task `5.1`; until it lands, the fidelity gate's model-backed numbers
+(`5.3`) stay unmeasured and the scorer is exercised only on fixtures.
+
 ## External reproductions (feasibility)
 
 A published reproduction needs all of: exact prompt IDs, template, generation
