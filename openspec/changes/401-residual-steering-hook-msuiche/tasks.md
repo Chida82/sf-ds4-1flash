@@ -61,11 +61,17 @@ below msuiche's null gate).
 - [x] 3.1 No-op gate: baseline vs `--dir-steering-file v41-msuiche.f32 --dir-steering-residual
   0` on a benign prompt -> BITWISE IDENTICAL completion (scale 0 keeps the fast fused path).
   `make test` EXIT=0, env-check 503.
-- [ ] 3.2 Drop-in refusal-efficacy — via `402` (model-backed, user-run). Benign
-  effectiveness CONFIRMED: at residual 0.5 the output changes vs baseline and stays
-  coherent (the mechanism alters the stream at the knee). Still to settle with `402`:
-  whether it reproduces msuiche's refusal removal (refusal32 4->24), the sign, the +1 index
-  shift, and whether prefill coverage (2.3) is needed. DECODE-only today.
+- [x] 3.2 Drop-in refusal-efficacy — FIRST-TOKEN SCREEN DONE (2026-10-13, clean `-n 1
+  --dump-logprobs` probe, XSTest, no payload): **option A works, 0.5 was ~10x under-dosed.**
+  At residual 0.5 refusal is untouched (refuse-mass 0.986->0.971, 25/25 refuse); the scale
+  sweep is monotone and sign-correct (1->0.851, 2->0.779, 4->0.567, 8->0.414, 16->0.409;
+  negative does not reduce). Benign coherent through scale 8, so it is real steering. Controls
+  pass (scale-0 == base; null vector does not remove refusals; no added over-refusal 2/15).
+  Operating point ~4-8. The +1 hook index was tested (vector shifted +-1 row) and REJECTED:
+  +1 removes less, -1 is marginal/inconsistent -> keep orig `direction[il]`. REMAINING
+  (user-run, full generation triggers my safety stops): the axis-A scored sweep around 4-8
+  (keyword/judge) via `402`, and whether prefill coverage (2.3) changes the number. Option B
+  is now optional, not a pivot.
 
 ## 4. Docs
 

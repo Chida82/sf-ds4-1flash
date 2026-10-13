@@ -24,10 +24,10 @@ plus a converter from the GGUF `controlvector` to the `.f32` the runtime loads.
   40x5120 (layer 0 zeros; `direction.N` -> layer N, no offset) and a `.json` sidecar
   (hook=`residual_stream_post_layer`, `alpha_default`, `content_sha256`, base
   revision, provenance).
-- **msuiche drop-in.** Load the converted vector at `--dir-steering-residual 0.5`
-  (= msuiche alpha; ds4 positive scale removes the direction, matching
-  `h -= alpha*(h.d)d`). The non-monotone alpha and the L1-6 null-gate caveat are
-  carried in the sidecar and the docs.
+- **msuiche drop-in.** Load the converted vector with `--dir-steering-residual`
+  (ds4 positive scale removes the direction, matching `h -= alpha*(h.d)d`). Effective
+  scale at this transient-fold site is ~4-8, NOT msuiche's 0.5 alpha (measured a near
+  no-op here, 2026-10-13). The L1-6 null-gate caveat is carried in the sidecar and docs.
 - **No-op gate.** Scale 0 / no file -> no tensor allocated -> bitwise identical.
 
 ## Capabilities

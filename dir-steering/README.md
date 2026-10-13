@@ -42,6 +42,14 @@ format example.
 --dir-steering-residual F  apply steering at the V4.1 post-HC-fold residual; default is 0
 ```
 
+Effective scale at the residual site is ~4-8 for the msuiche vector, **not** its
+published 0.5 alpha. Measured 2026-10-13 (first-token refusal probe): at 0.5 the
+refusal is untouched (a near no-op), while 4 halves the first-token refusal mass and 8
+roughly quarters it, with benign prompts still fully coherent. The 0.5 knee was msuiche's
+value at their own application point (the residual that carries forward); this hook edits
+the *transient* HC fold `g->x`, which is partly washed out, so it needs more magnitude for
+the same downstream effect. Do not port 0.5 here.
+
 Three application sites, each with its own scale, chosen to match the vector's own
 derivation point:
 

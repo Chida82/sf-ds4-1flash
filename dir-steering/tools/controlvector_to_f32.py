@@ -155,7 +155,9 @@ def convert(gguf_path, out_path=None, n_layers=N_LAYERS, n_embd=N_EMBD,
         "f32_sha256": hashlib.sha256(data).hexdigest(),
         "sign_convention": "ds4 +scale removes the direction (h -= scale*(h.d)d)",
         "caveats": [
-            "alpha is NON-monotone: 0.5 is the knee; 1.0 code-switches (zh); 2.0 regresses.",
+            "alpha is NON-monotone AT MSUICHE'S OWN SITE: 0.5 knee; 1.0 code-switches (zh); 2.0 regresses.",
+            "AT ds4's --dir-steering-residual (transient g->x fold) the scale maps differently: "
+            "measured 2026-10-13, 0.5 is a near no-op; effective ~4-8; benign coherent through 8.",
             "layers 1-6 sit below the null gate; do not raise alpha blindly (see 403/405).",
         ],
     }

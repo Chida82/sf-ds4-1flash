@@ -9,7 +9,7 @@ the engram read. `--dir-steering-residual F` SHALL apply `y -= F * d[L] * dot(d[
 there on layers 1-39. The `ffn_out` and `attn_out` points SHALL be unchanged.
 
 #### Scenario: Edit lands at the fold, not at ffn_out
-- **WHEN** a steering file is loaded with `--dir-steering-residual 0.5` and the
+- **WHEN** a steering file is loaded with a non-zero `--dir-steering-residual` and the
   opt-in
 - **THEN** a graph dump shows the projection applied to the post-HC-fold stream and
   not to `ffn_out`
