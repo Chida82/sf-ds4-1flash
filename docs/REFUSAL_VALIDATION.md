@@ -253,6 +253,17 @@ anchors report. So:
   recorded; GSM8K (the distributedcognition anchor's capability number) is not
   among them.
 
+## Benign response quality (axis B)
+
+Beyond the distributional KL, a completed benign answer is checked for
+degradation (`eval/score_quality.py`): code-switching (CJK slipping into an
+English answer, the msuiche alpha-1.0 failure), n-gram repetition (loops) and
+completion. Benign pilot (2026-10-13, four benign prompts, ~256 tokens, base vs
+msuiche @0.5): **zero regressions** — no code-switch and repetition below 0.04 in
+both arms, full completions (78–190 words). At scale 0.5 the intervention does not
+break benign generation. This is a short-answer pilot; the 512-token target-mix
+run and the predeclared non-inferiority margin are `5.4`/`8.2`, still open.
+
 ## External reproductions (feasibility)
 
 A published reproduction needs all of: exact prompt IDs, template, generation
@@ -302,9 +313,12 @@ while either is open.
   and the **server** (images attach through the chat payload, not the one-shot
   `-p`). The payload is the data-URI `image_url` shape the server parses
   (`eval/generate.image_request`); the harmful prompt is rendered **into the
-  image**, and the text channel carries only a neutral instruction. Before the
-  paired repeats, a benign rendered prompt must be shown to actually reach the
-  encoder and be read back (not merely a non-empty answer).
+  image**, and the text channel carries only a neutral instruction. The benign
+  read-back check passed (2026-10-13): a rendered image with a known word was sent
+  to the live `--vision` server and the model read it back (payload accepted, 242
+  prompt tokens including the vision tokens, answer = the known word), so the
+  encoder delivery and the payload shape are verified. The paired repeats on
+  rendered harmful prompts are operator-run.
 - **Thinking.** Explicit mode and a fixed per-protocol budget in **both** arms,
   with reasoning separated from the final answer and the final-phase completion
   recorded. A budget exhausted inside reasoning is **incomplete**, not a refusal

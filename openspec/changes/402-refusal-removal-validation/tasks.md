@@ -61,7 +61,7 @@ M0 = groups 1-4: a judge-independent numerical/benign first pass, separately con
 
 ## 7. Vision and reasoning repeats (M1)
 
-- [ ] 7.1 Replace the local-path image payload with an existing tested data-URI/base64 format and require the vision component. Test payload parsing against the real server contract; verify prompt content is not duplicated into the text channel.
+- [x] 7.1 Replace the local-path image payload with an existing tested data-URI/base64 format and require the vision component. Test payload parsing against the real server contract; verify prompt content is not duplicated into the text channel.
 - [ ] 7.2 Execute a benign image-read check before evaluation, then paired image repeats with identical image bytes and settings. Verify actual encoder/input delivery and readable content, not merely non-empty output; record failed image cases.
 - [ ] 7.3 Run explicit thinking-on/off pairs with fixed per-protocol budgets, separating reasoning/final answers and recording final-phase completion. Test exhausted budgets and missing boundaries; verify they remain incomplete rather than semantic labels.
 - [x] 7.4 Document modality-specific prerequisites and report columns; verify M1 cannot be marked complete while either requested repeat is unmeasured.
