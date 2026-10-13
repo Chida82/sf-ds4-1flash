@@ -216,6 +216,25 @@ a real, measurable benign shift above that floor. This is a short-answer pilot o
 three prompts; the fuller multi-prompt, longer-answer run and the predeclared
 non-inferiority margin are tasks `5.3`/`5.4`, still open.
 
+## Capability coverage (axis D)
+
+The child's `sf-ds4-1flash-eval` (`--suite core|hard|all`) is the capability
+runner, but its embedded cases are **MMLU-Pro, OlympiadBench, LiveBench and NIST
+Juliet** (code), not the classic MMLU / GSM8K / ARC-c / TruthfulQA the published
+anchors report. So:
+
+- `core`/`hard` is **not** MMLU/GSM8K/ARC-c/TruthfulQA coverage and must not be
+  relabeled as such. The requested standard benchmarks are a **missing
+  prerequisite**; they would have to be connected explicitly, not inferred from
+  `core`.
+- the MMLU **ethics cluster** separation (`eval/datasets_capability.py`,
+  `MMLU_ETHICS_SUBJECTS`) names standard-MMLU subjects, which the embedded suite
+  does not run; it becomes measurable only once standard MMLU is connected.
+- what axis D can measure today is a steered-vs-base delta on the embedded
+  MMLU-Pro/OlympiadBench/LiveBench/Juliet cases, with benchmark membership
+  recorded; GSM8K (the distributedcognition anchor's capability number) is not
+  among them.
+
 ## External reproductions (feasibility)
 
 A published reproduction needs all of: exact prompt IDs, template, generation
