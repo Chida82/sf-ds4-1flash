@@ -197,11 +197,24 @@ The dump that feeds this is the CLI's teacher-forced path with an extra flag:
 Each file holds, per scored position, the forced token id and the full log-softmax
 over the vocabulary (`score_kl.load_full_binary`, `kl_full_dense_sequence`). The
 dump's forced-token logprobs reproduce the CLI's printed `nll` and every row sums
-to 1. Pilot on one benign 65-token text, 16 positions, vocab 129280 (2026-10-13):
-base vs base **0.0** at every position (the deterministic floor), base vs msuiche
-@0.5 mean **0.0376** (per position 0.005–0.099), NLL 35.61 → 39.67. One prompt is
-a pilot: the multi-prompt floor, the residual-zero arm and the per-prompt
-aggregates are task `5.3`, still unmeasured.
+to 1 (vocab 129280).
+
+Benign pilot (2026-10-13, msuiche @0.5, rev 2, Q2 streaming, 22–24 scored
+positions each):
+
+| Text | floor KL(base‖base) | KL(base‖steer @0.5) |
+|---|---|---|
+| library | 0.000000 | 0.0607 |
+| soup recipe | 0.000000 | 0.0478 |
+| mountain train | 0.000000 | 0.0429 |
+
+Per-prompt mean 0.0505. The **local floor is 0** (teacher forcing is deterministic,
+so base vs base is zero at every position, and a residual-zero arm equals base
+because the engine does not load the vector at scale 0); the external 0.131
+identity-requant figure is **not** this run's threshold. The intervention produces
+a real, measurable benign shift above that floor. This is a short-answer pilot on
+three prompts; the fuller multi-prompt, longer-answer run and the predeclared
+non-inferiority margin are tasks `5.3`/`5.4`, still open.
 
 ## External reproductions (feasibility)
 
