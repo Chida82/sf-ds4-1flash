@@ -8,8 +8,10 @@ flagged fallback when logprobs are unavailable.
 
 Run `python3 eval/score_kl.py` for the offline self-checks.
 """
+import array
 import json
 import math
+import struct
 import sys
 import tempfile
 from pathlib import Path
@@ -125,6 +127,70 @@ def kl_full_sequence(base_seq, steered_seq):
     return {"mean_kl": sum(vals) / len(vals), "per_position": vals, "n": len(vals)}
 
 
+# --- dense full-vocab dump (CLI --perplexity-dump, task 5.1) ------------------
+# The CLI writes a compact binary: b"DLP1", int32 vocab, int32 steps, then per
+# step int32 forced_token_id and vocab float32 log-softmax values. Dense arrays
+# (index == token id) avoid a 128k-entry dict per position.
+
+DUMP_MAGIC = b"DLP1"
+
+
+def load_full_binary(path):
+    """Read a --perplexity-dump file into {vocab, forced:[ids], steps:[array('f')]}."""
+    data = Path(path).read_bytes()
+    if data[:4] != DUMP_MAGIC:
+        raise KLInputError(f"bad magic {data[:4]!r}, expected {DUMP_MAGIC!r}")
+    vocab, steps = struct.unpack_from("<ii", data, 4)
+    if vocab <= 0 or steps < 0:
+        raise KLInputError(f"bad header vocab={vocab} steps={steps}")
+    off = 12
+    row = 4 + vocab * 4
+    if len(data) != off + steps * row:
+        raise KLInputError(f"size {len(data)} != header {off + steps * row}")
+    forced, out = [], []
+    for _ in range(steps):
+        (fid,) = struct.unpack_from("<i", data, off)
+        off += 4
+        a = array.array("f")
+        a.frombytes(data[off:off + vocab * 4])
+        off += vocab * 4
+        forced.append(fid)
+        out.append(a)
+    return {"vocab": vocab, "forced": forced, "steps": out}
+
+
+def kl_full_dense_position(base_lp, steer_lp):
+    """KL(base || steered) over dense full-vocab logprob arrays (index == id)."""
+    if len(base_lp) != len(steer_lp):
+        raise KLInputError(f"vocab mismatch: {len(base_lp)} vs {len(steer_lp)}")
+    if not base_lp:
+        raise KLInputError("empty distribution")
+    out = 0.0
+    for blp, slp in zip(base_lp, steer_lp):
+        if not (math.isfinite(blp) and math.isfinite(slp)):
+            raise KLInputError("non-finite logprob")
+        p = math.exp(blp)
+        if p > 0:
+            out += p * (blp - slp)
+    return max(out, 0.0)
+
+
+def kl_full_dense_sequence(base_dump, steer_dump):
+    """Full-vocab KL over two dense dumps. The forced token ids and vocab must
+    match exactly (identical teacher-forced prefix in both arms)."""
+    if base_dump["vocab"] != steer_dump["vocab"]:
+        raise KLInputError("vocab size differs between arms")
+    if base_dump["forced"] != steer_dump["forced"]:
+        raise KLInputError("forced token sequences differ between arms")
+    b, s = base_dump["steps"], steer_dump["steps"]
+    if len(b) != len(s):
+        raise KLInputError(f"step count differs: {len(b)} vs {len(s)}")
+    if not b:
+        raise KLInputError("empty sequence")
+    vals = [kl_full_dense_position(bp, sp) for bp, sp in zip(b, s)]
+    return {"mean_kl": sum(vals) / len(vals), "per_position": vals, "n": len(vals)}
+
+
 def report_kl(base_seq, steered_seq, noise_floor):
     kl = kl_sequence(base_seq, steered_seq)
     return {"kl": kl, "noise_floor": noise_floor,
@@ -218,6 +284,46 @@ def _selfcheck():
     s2 = {1: math.log(0.45), 2: math.log(0.35), 3: math.log(0.20)}
     r = kl_full_sequence([full], [s2])
     assert r["n"] == 1 and r["mean_kl"] > 0 and r["mean_kl"] < 0.1, r
+
+    # --- dense dump round-trip (task 5.1 format) -----------------------------
+    def _mk_dump(path, vocab, steps):
+        # steps: list of (forced_id, [logprobs])
+        buf = bytearray(DUMP_MAGIC)
+        buf += struct.pack("<ii", vocab, len(steps))
+        for fid, lps in steps:
+            buf += struct.pack("<i", fid)
+            buf += array.array("f", lps).tobytes()
+        Path(path).write_bytes(buf)
+
+    lp = [math.log(0.5), math.log(0.3), math.log(0.2)]
+    with tempfile.TemporaryDirectory() as d:
+        bp, sp = Path(d) / "base.bin", Path(d) / "steer.bin"
+        _mk_dump(bp, 3, [(1, lp), (2, lp)])
+        _mk_dump(sp, 3, [(1, lp), (2, lp)])
+        bd, sd = load_full_binary(bp), load_full_binary(sp)
+        assert bd["vocab"] == 3 and bd["forced"] == [1, 2] and len(bd["steps"]) == 2
+        # self-KL across identical dumps is ~0
+        rr = kl_full_dense_sequence(bd, sd)
+        assert rr["n"] == 2 and rr["mean_kl"] < 1e-6, rr
+        # a shifted steered dump gives positive KL
+        lp2 = [math.log(0.2), math.log(0.3), math.log(0.5)]
+        _mk_dump(sp, 3, [(1, lp2), (2, lp2)])
+        rr = kl_full_dense_sequence(bd, load_full_binary(sp))
+        assert rr["mean_kl"] > 0, rr
+        # forced-sequence mismatch between arms fails
+        _mk_dump(sp, 3, [(9, lp), (2, lp)])
+        try:
+            kl_full_dense_sequence(bd, load_full_binary(sp))
+            assert False
+        except KLInputError as e:
+            assert "forced" in str(e)
+        # a truncated file is rejected
+        (Path(d) / "trunc.bin").write_bytes(bp.read_bytes()[:-4])
+        try:
+            load_full_binary(Path(d) / "trunc.bin")
+            assert False
+        except KLInputError as e:
+            assert "size" in str(e)
     print("score_kl.py self-check: OK")
 
 

@@ -184,9 +184,24 @@ KL (`eval/score_kl.py`, `kl_full_sequence`):
   the top-k support) and the embedding-cosine proxy are labelled exploratory and
   **cannot pass the fidelity gate**; only the full-vocabulary KL can.
 
-The full-vocabulary logprob dump that feeds this (a teacher-forced extension of the
-CLI path) is task `5.1`; until it lands, the fidelity gate's model-backed numbers
-(`5.3`) stay unmeasured and the scorer is exercised only on fixtures.
+The dump that feeds this is the CLI's teacher-forced path with an extra flag:
+
+```sh
+./sf-ds4-1flash --ssd-streaming --ctx 2048 --perplexity-file benign.txt \
+  --perplexity-dump base.bin -n 64
+./sf-ds4-1flash --ssd-streaming --ctx 2048 --perplexity-file benign.txt \
+  --perplexity-dump steer.bin -n 64 \
+  --allow-v41-steering --dir-steering-file dir-steering/out/v41-msuiche.f32 --dir-steering-residual 0.5
+```
+
+Each file holds, per scored position, the forced token id and the full log-softmax
+over the vocabulary (`score_kl.load_full_binary`, `kl_full_dense_sequence`). The
+dump's forced-token logprobs reproduce the CLI's printed `nll` and every row sums
+to 1. Pilot on one benign 65-token text, 16 positions, vocab 129280 (2026-10-13):
+base vs base **0.0** at every position (the deterministic floor), base vs msuiche
+@0.5 mean **0.0376** (per position 0.005–0.099), NLL 35.61 → 39.67. One prompt is
+a pilot: the multi-prompt floor, the residual-zero arm and the per-prompt
+aggregates are task `5.3`, still unmeasured.
 
 ## External reproductions (feasibility)
 
