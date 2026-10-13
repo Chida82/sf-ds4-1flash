@@ -56,6 +56,75 @@ def kl_sequence(base_seq, steered_seq):
     return sum(kl_position(base_seq[i], steered_seq[i]) for i in range(n)) / n
 
 
+# --- full-vocabulary forced-prefix KL (OpenSpec 402, task 5.2, design D7) -----
+# A reported full KL must use the complete shared vocabulary on identical forced
+# prefixes. Empty, nonfinite, duplicate-id or mismatched-support input fails; a
+# top-k-only list cannot be passed here and called a full KL.
+
+class KLInputError(ValueError):
+    pass
+
+
+def validate_full_dist(logprob_dict):
+    """A single-position full distribution: non-empty, finite, and (as logprobs)
+    normalized to ~1. Raises KLInputError otherwise."""
+    if not logprob_dict:
+        raise KLInputError("empty distribution")
+    total = 0.0
+    for t, lp in logprob_dict.items():
+        if not math.isfinite(lp):
+            raise KLInputError(f"non-finite logprob for id {t}")
+        total += math.exp(lp)
+    if not (0.98 <= total <= 1.02):
+        raise KLInputError(f"distribution not full/normalized (sum p = {total:.4f}); "
+                           "a top-k slice cannot be a full KL")
+    return True
+
+
+def load_full_dump(path):
+    """Full-vocabulary per-step distributions from a dump that carries every
+    vocab entry. Rejects duplicate ids within a step. Returns [{id: logprob}]."""
+    dump = json.loads(Path(path).read_text())
+    out = []
+    for s in dump["steps"]:
+        d = {}
+        for e in s["top_logprobs"]:
+            tid = e["token"]["id"]
+            if tid in d:
+                raise KLInputError(f"duplicate id {tid} in a step")
+            d[tid] = e["logprob"]
+        out.append(d)
+    return out
+
+
+def kl_full_position(base_lp, steered_lp):
+    """KL(base || steered) at one position over the FULL shared vocabulary. Both
+    distributions must cover the same token ids (identical support). Accumulates
+    in a numerically stable form from log-probabilities."""
+    validate_full_dist(base_lp)
+    validate_full_dist(steered_lp)
+    if base_lp.keys() != steered_lp.keys():
+        raise KLInputError("base and steered cover different vocab support")
+    out = 0.0
+    for t, blp in base_lp.items():
+        p = math.exp(blp)
+        if p <= 0:
+            continue
+        out += p * (blp - steered_lp[t])  # p * log(p/q), stable from logprobs
+    return max(out, 0.0)
+
+
+def kl_full_sequence(base_seq, steered_seq):
+    """Mean full-vocabulary KL over a forced-token sequence. Lengths must match
+    exactly (a shorter/empty sequence fails, never truncates to the shorter)."""
+    if len(base_seq) != len(steered_seq):
+        raise KLInputError(f"sequence length mismatch: {len(base_seq)} vs {len(steered_seq)}")
+    if not base_seq:
+        raise KLInputError("empty sequence")
+    vals = [kl_full_position(b, s) for b, s in zip(base_seq, steered_seq)]
+    return {"mean_kl": sum(vals) / len(vals), "per_position": vals, "n": len(vals)}
+
+
 def report_kl(base_seq, steered_seq, noise_floor):
     kl = kl_sequence(base_seq, steered_seq)
     return {"kl": kl, "noise_floor": noise_floor,
@@ -93,6 +162,62 @@ def _selfcheck():
     seq = load_dump(tmp)
     assert seq == [{7: -0.1, 9: -2.4}, {9: -0.05}], seq
     assert abs(kl_sequence(seq, seq)) < 1e-9
+
+    # --- full-vocab KL regressions (task 5.2, design D7) ---------------------
+    # self-KL is ~0
+    full = {1: math.log(0.5), 2: math.log(0.3), 3: math.log(0.2)}
+    assert abs(kl_full_position(full, full)) < 1e-12
+    # the near-tie swap: 0.500001 <-> 0.499999 over a 2-token full vocab is ~0,
+    # NOT the ~0.69 (or ~20.7) a top-1 selection would fabricate.
+    base = {1: math.log(0.500001), 2: math.log(0.499999)}
+    steer = {1: math.log(0.499999), 2: math.log(0.500001)}
+    assert kl_full_position(base, steer) < 1e-6, kl_full_position(base, steer)
+    # taking each distribution's top-1 and calling it full KL is rejected: a
+    # degenerate {1:1.0} vs {2:1.0} is different support (and would be a huge KL)
+    try:
+        kl_full_position({1: math.log(1.0)}, {2: math.log(1.0)})
+        assert False, "different support must fail"
+    except KLInputError as e:
+        assert "support" in str(e)
+    # a top-k slice (sum p < 1) cannot pass as a full distribution
+    try:
+        validate_full_dist({1: math.log(0.4), 2: math.log(0.3)})
+        assert False
+    except KLInputError as e:
+        assert "top-k" in str(e) or "normalized" in str(e)
+    # empty / unequal-length sequences fail, never truncate
+    try:
+        kl_full_sequence([full], [full, full])
+        assert False
+    except KLInputError as e:
+        assert "length mismatch" in str(e)
+    try:
+        kl_full_sequence([], [])
+        assert False
+    except KLInputError:
+        pass
+    # duplicate ids within a step are rejected on load
+    dupe = ('{"steps":[{"top_logprobs":['
+            '{"token":{"id":5},"logprob":-0.1},'
+            '{"token":{"id":5},"logprob":-0.2}]}]}')
+    tmp2 = Path(tempfile.mkdtemp()) / "dup.json"
+    tmp2.write_text(dupe)
+    try:
+        load_full_dump(tmp2)
+        assert False
+    except KLInputError as e:
+        assert "duplicate" in str(e)
+    # nonfinite logprob fails validation
+    try:
+        kl_full_position({1: 0.0, 2: float("-inf"), 3: float("nan")},
+                         {1: 0.0, 2: 0.0, 3: 0.0})
+        assert False
+    except KLInputError:
+        pass
+    # a real near-equal full dist gives a small positive KL
+    s2 = {1: math.log(0.45), 2: math.log(0.35), 3: math.log(0.20)}
+    r = kl_full_sequence([full], [s2])
+    assert r["n"] == 1 and r["mean_kl"] > 0 and r["mean_kl"] < 0.1, r
     print("score_kl.py self-check: OK")
 
 
