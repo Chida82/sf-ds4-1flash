@@ -133,6 +133,22 @@ def _expect(meta, key, want):
         raise Refuse(f"{key}={got!r}, need {want!r}")
 
 
+def _layer_id_set(ids):
+    """Coerce a layer-id metadata value to a set of ints. GGUF stores it either
+    as an int array (-> list) or, as msuiche's file does, a comma-separated
+    string. Raises Refuse on anything else."""
+    if isinstance(ids, str):
+        parts = [p for p in re.split(r"[,\s]+", ids.strip()) if p]
+    elif isinstance(ids, (list, tuple)):
+        parts = ids
+    else:
+        raise Refuse(f"glp.layer_ids_zero_based has unexpected type {type(ids).__name__}")
+    try:
+        return {int(p) for p in parts}
+    except (TypeError, ValueError):
+        raise Refuse(f"glp.layer_ids_zero_based {ids!r} is not a list of integers")
+
+
 def validate(g, n_layers, n_embd, norm_tol):
     """Return rows[n_layers][n_embd] or raise Refuse. Nothing is written here."""
     _expect(g.meta, "general.architecture", "controlvector")
@@ -157,9 +173,11 @@ def validate(g, n_layers, n_embd, norm_tol):
     if count is not None and count != len(wanted):
         raise Refuse(f"controlvector.layer_count={count}, but {len(wanted)} directions are required")
     ids = g.meta.get("glp.layer_ids_zero_based")
-    if ids is not None and sorted(ids) != sorted(wanted):
-        raise Refuse("glp.layer_ids_zero_based does not list exactly layers "
-                     f"1..{n_layers - 1}")
+    if ids is not None and _layer_id_set(ids) != wanted:
+        # The key is a msuiche misnomer: despite "zero_based" it lists the 1-based
+        # direction indices, and is stored as a comma string, not a GGUF int array.
+        raise Refuse(f"glp.layer_ids_zero_based {ids!r} does not list exactly "
+                     f"layers 1..{n_layers - 1}")
     rows = [[0.0] * n_embd for _ in range(n_layers)]  # row 0 stays zero
     for idx in sorted(seen):
         name = seen[idx]
@@ -261,13 +279,14 @@ def _fixture_row(n, w):
 def _write_fixture(path, n_dirs, n_embd, *, arch="controlvector",
                    hint="deepseek_v41", hook=SOURCE_HOOK, bad_width=None,
                    drop=(), extra=(), duplicate=None, unit=True, poison=None,
-                   layer_count=None, truncate=0):
+                   layer_count=None, truncate=0, extra_meta=()):
     kv = [("general.architecture", 8, arch),
           ("controlvector.model_hint", 8, hint),
           ("controlvector.layer_count", 4, n_dirs if layer_count is None else layer_count),
           ("glp.hook_point", 8, hook),
           ("glp.alpha_default", 6, 0.5),
           ("glp.content_sha256", 8, "deadbeef")]
+    kv += list(extra_meta)
     names = [f"direction.{i}" for i in range(1, n_dirs + 1) if i not in drop]
     names += list(extra)
     if duplicate:
@@ -327,6 +346,14 @@ def _selfcheck():
         assert meta["f32"]["shape"] == [4, 4]
         assert meta["f32"]["sha256"] == hashlib.sha256(data).hexdigest()
         assert meta["source"]["gguf_sha256"] == hashlib.sha256(fx.read_bytes()).hexdigest()
+        # glp.layer_ids_zero_based as msuiche ships it: a comma string of the
+        # 1-based direction indices (not a GGUF int array). It must convert.
+        fx2 = d / "cv_ids.gguf"
+        _write_fixture(fx2, n_dirs=3, n_embd=4,
+                       extra_meta=[("glp.layer_ids_zero_based", 8, "1,2,3")])
+        o2, _, _ = convert(fx2, d / "cv_ids.f32", n_layers=4, n_embd=4)
+        assert o2.exists() and len(o2.read_bytes()) == 4 * 4 * 4
+        assert _layer_id_set("1,2,3") == {1, 2, 3} == _layer_id_set([1, 2, 3])
         # refusals: nothing written, cause named
         for kwargs, needle in [
             (dict(arch="llama"), "architecture"),
@@ -345,6 +372,8 @@ def _selfcheck():
             (dict(poison=float("nan")), "non-finite"),
             (dict(poison=float("inf")), "non-finite"),
             (dict(truncate=8), "past the end"),
+            (dict(extra_meta=[("glp.layer_ids_zero_based", 8, "1,2,4")]),
+             "layer_ids_zero_based"),
         ]:
             bad = d / "bad.gguf"
             _write_fixture(bad, n_dirs=3, n_embd=4, **kwargs)

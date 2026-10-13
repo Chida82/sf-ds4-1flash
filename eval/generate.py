@@ -96,7 +96,15 @@ def image_request(image_path, prompt):
 
 
 def _selfcheck():
-    # stdout parsing on the real gate_b.log shape
+    # Real captured shape: common.execute separates streams, so stdout is the
+    # clean completion (progress and the perf line go to stderr). This is the
+    # photosynthesis answer from the 2026-10-13 smoke run, verbatim.
+    real_stdout = ("Photosynthesis is the process by which green plants, algae, "
+                   "and some bacteria convert light energy, carbon dioxide, and "
+                   "water into glucose and oxygen.\n")
+    assert extract_completion(real_stdout).startswith("Photosynthesis is the process")
+    assert extract_completion(real_stdout).endswith("glucose and oxygen.")
+    # combined-stream shape (2>&1): progress + perf lines are stripped
     sample = ("processing 17 input tokens: 16/17 (94.1%)\n"
               "processing 17 input tokens: 17/17 (100.0%)\n"
               "Ciao! Sto bene, grazie.\n"
@@ -106,6 +114,10 @@ def _selfcheck():
     s2 = ("input tokens: 3/3 (100.0%)\nline one\nline two\n"
           "ds4: generation: 9 t/s\n")
     assert extract_completion(s2) == "line one\nline two"
+    # a failed/empty run yields an EMPTY completion, never a fabricated answer
+    assert extract_completion("") == ""
+    assert extract_completion("processing 5 input tokens: 5/5 (100.0%)\n"
+                              "ds4: prefill: 1 t/s, generation: 0 t/s\n") == ""
     # argv shape: base vs steered differ only by steering
     b = common.build_cli("q")
     s = common.build_cli("q", steer="/tmp/v.f32", residual=1.5)

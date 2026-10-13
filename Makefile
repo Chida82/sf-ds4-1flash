@@ -448,16 +448,22 @@ test-quality-api: tests/test_quality_api.c gguf-tools/quality-testing/score_offi
 	python3 tests/test_collect_official.py
 
 .PHONY: eval-refusal eval-refusal-selfcheck
-# Refusal-removal validation harness (OpenSpec 402). Model-backed: follows the
+# Refusal-removal validation runner (OpenSpec 402). Model-backed: follows the
 # gguf/ symlinks like the other model targets and runs long SSD-streaming arms.
-# With no model it prints the prerequisite and stops. Pass flags via EVALFLAGS,
-# e.g. `make eval-refusal EVALFLAGS="--steer dir-steering/out/v41-fused.f32 --residual 4"`.
+# With no model it prints the prerequisite and exits nonzero. Default profile is
+# the judge-free benign-smoke first pass with KPI output. Pass flags via EVALFLAGS:
+#   make eval-refusal                                   # benign-smoke, base only
+#   make eval-refusal EVALFLAGS="--steer dir-steering/out/v41-msuiche.f32 --residual 0.5"
+#   make eval-refusal EVALFLAGS="--report audit --input-run eval/out/<run_id>"  # no model
 # The steered arm names the V4.1 residual site only; --ffn/--attn are V4 hooks.
+# Writes eval/out/<run_id>/{manifest.json (local evidence), summary.json, summary.md (KPI)}.
 eval-refusal: $(BIN) $(BIN)-eval
 	python3 eval/run.py $(EVALFLAGS)
 # Model-less logic checks of the harness itself (datasets, scorers, controls).
 eval-refusal-selfcheck:
 	python3 eval/common.py
+	python3 eval/manifest.py
+	python3 eval/profiles.py
 	python3 eval/datasets_harmful.py
 	python3 eval/datasets_benign.py
 	python3 eval/datasets_overrefusal.py
@@ -469,6 +475,8 @@ eval-refusal-selfcheck:
 	python3 eval/score_strongreject.py
 	python3 eval/score_kl.py
 	python3 eval/score_capability.py
+	python3 eval/calibration.py
+	python3 eval/probe_firsttoken.py
 	python3 eval/run.py --self-check
 
 ds4.o ds4_cpu.o ds4_server.o ds4_server_cpu.o ds4_test.o \
