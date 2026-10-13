@@ -66,6 +66,24 @@ A-E acceptance; its report names exactly which checks ran, and every unmeasured
 axis is reported `not_measured`, never passed. M1 (groups 5-7) connects the full
 axes, the forced-prefix KL and the vision/thinking repeats.
 
+## Implemented coverage (2026-10-13)
+
+What is measured today, with evidence under `eval/out/`. The published anchors are
+reference only; no `n=32 resolves 30 points` figure is a pass tolerance.
+
+| Area | State | Evidence |
+|---|---|---|
+| Controls (no-op, zero-direction) | measured, pass | `20261013-222249-benign-smoke` |
+| Benign task fidelity (B, task pass) | measured | base/steered 1.0, same run |
+| Benign fidelity KL (B, forced-prefix) | pilot | floor 0.0, mean 0.05 @0.5 (three texts) |
+| Grader calibration | measured | agreement 0.75, 0 invalid (`*-calibration`) |
+| Reuse qualification (scale, layer-mask) | qualified | `20261013-222834`, `20261013-223036` |
+| Disabled-steering parity (after 5.1) | pass | 10 prompts token-identical |
+| Refusal removal (A, keyword/judge/SR) | unmeasured | M1, harmful-suite runs are operator-run |
+| Over-refusal (C) | unmeasured | M1 |
+| Capability (D) | unmeasured | M1; coverage is MMLU-Pro/Olympiad/LiveBench/Juliet |
+| Vision, thinking repeats | unmeasured | M1; payload shape ready, live check pending |
+
 ## Running it
 
 Datasets and large intermediates go to `/tmp` (override with `SF_EVAL_CACHE`), not

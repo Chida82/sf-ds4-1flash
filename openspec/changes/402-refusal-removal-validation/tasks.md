@@ -57,7 +57,7 @@ M0 = groups 1-4: a judge-independent numerical/benign first pass, separately con
 - [x] 6.4 Map the requested MMLU/GSM8K/ARC-c/TruthfulQA cases to existing coverage and connect missing datasets rather than relabeling `core`. Verify subject/case membership, ethics-cluster definition and aggregate denominators; publish missing prerequisites explicitly.
 - [ ] 6.5 Execute paired capability runs and hand-audit a stratified response sample. Record prompt-paired intervals and predeclared margins; without adequate coverage/margins the result remains report-only or inconclusive.
 - [x] 6.6 Assess feasibility of each published reproduction using design D6's exact-protocol checklist. Execute a feasible reproduction or record the specific unavailable artifact/protocol fields; verify neither an unavailable reproduction nor a local hook mismatch is called a harness failure.
-- [ ] 6.7 Update axis/protocol documentation with the implemented coverage and evidence references. Verify separate protocol columns and no hardcoded generic 'n=32 resolves 30 points' acceptance tolerance.
+- [x] 6.7 Update axis/protocol documentation with the implemented coverage and evidence references. Verify separate protocol columns and no hardcoded generic 'n=32 resolves 30 points' acceptance tolerance.
 
 ## 7. Vision and reasoning repeats (M1)
 
