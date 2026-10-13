@@ -51,3 +51,20 @@ is recorded as a finding. Model/eval runs share the lock `/tmp/sf-ds4-1flash.loc
 - [ ] 6.1 `make test` (incl. env-check), parity on the disabled path token-identical,
   `openspec validate 405-steering-investigations --strict`. No commit or push without
   a request.
+
+## 7. Rigor upgrades to the first-token screen (added 2026-10-13)
+
+401's scale window (4-8), sign and index decisions rest on n=5 sweeps run from the
+session scratchpad. Firm them up; the screen itself becomes a repo tool in `402` 7.1.
+
+- [ ] 7.1 Re-run the scale sweep {1,2,4,8,16} and the index probe {orig,+1,-1} at n=25
+  (the full elicit set), with per-prompt variance or a bootstrap CI beside each mean.
+  Verify the n=5 conclusions (4-8 window; keep `direction[il]`) hold, or revise them
+  with the numbers cited.
+- [ ] 7.2 Lexicon-free metric: Jensen-Shannon divergence between the base and steered
+  top-20 first-token distributions, reported as a second column beside the lexicon
+  mass. Verify it ranks the scales in the same order as the mass, or explain the
+  disagreement.
+- [ ] 7.3 Benign coherence at scale 16 (the mass plateaus at 16 vs 8: possible early
+  regression). One invocation per benign prompt; verify whether 16 is inside or past
+  the usable window.

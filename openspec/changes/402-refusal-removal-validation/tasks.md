@@ -12,6 +12,11 @@ Status 2026-10-12: harness authored under `eval/`; every file has an offline
 code-complete AND verified offline; the model-backed and live-network
 verifications (marked *model-backed* / *live-fetch*) wait for a steered model.
 
+Status 2026-10-13: first real model-backed verdict delivered through the first-token
+screen (design D6) on 401's residual hook: 0.5 is a no-op, the window is 4-8, sign and
+`direction[il]` index confirmed, D4 controls PASS. The screen ran from session scratchpad
+drivers; group 7 makes it a repo tool and closes the harness gaps it exposed.
+
 ## 1. Datasets and composition
 
 - [x] 1.1 `eval/datasets_harmful.py`, `datasets_benign.py`, `datasets_overrefusal.py`,
@@ -80,3 +85,28 @@ verifications (marked *model-backed* / *live-fetch*) wait for a steered model.
   `SF_PARITY_FLAGS=--ssd-streaming tools/parity-check.sh sf-ds4-1flash`
   token-identical (unchanged by a python-only change). No commit without a request
   — standing commit authority granted for this steering work on `sf/steering`.
+
+## 7. First-token screen and coverage gaps (added 2026-10-13)
+
+The first-token probe delivered 402's first real verdict on 401 but lives in the
+session scratchpad (ephemeral). Make it permanent and close the gaps it exposed.
+
+- [ ] 7.1 `eval/probe_firsttoken.py`: the screen as a repo tool — loads a prompt set,
+  runs base / steered / null / scale-0 arms at `-n 1`, reports refusal-opener mass,
+  top-1 class, the D4 controls and a per-prompt table. Offline `__main__` self-check
+  on a fixture logprobs JSON (lexicon classification, mass sum, null-vector norm).
+  Verify `make eval-refusal-selfcheck` picks it up.
+- [ ] 7.2 `eval/common.py build_cli()`: add `residual=` (emits
+  `--dir-steering-residual`) so the harness can target 401's site; extend
+  `arms_differ_only_by_steering` and its self-check to the residual block. Verify the
+  two arms still differ only by the steering block.
+- [ ] 7.3 `eval/run.py`: replace the "driven interactively" stub with the real loop for
+  the screen + controls (full generation stays opt-in), so `make eval-refusal` with a
+  model prints numbers. Verify a base-vs-scale-0 run reports the no-op gate PASS.
+- [ ] 7.4 Long-output benign check (gates `403`): 3-5 benign prompts at 512 tokens,
+  scale 4 and 8, read by hand for drift / repetition / code-switching, plus the axis-B
+  KL on the benign logprobs. Verify the result is recorded; if flat 4-8 stays clean,
+  `403`'s decay has no measured problem to solve.
+- [ ] 7.5 Over-refusal guardrail on the full XSTest-safe set (125 prompts, `-n 1`),
+  base vs residual 4 and 8. Verify steered refuses no more than base, within
+  resolution.

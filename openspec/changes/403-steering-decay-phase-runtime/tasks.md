@@ -3,6 +3,13 @@
 Depends on `401` (residual hook) and `400`. The sweep (3.2) needs the converted
 msuiche vector and shares the model lock; `402`'s harness is the judge.
 
+**Gate (2026-10-13): do not start until `402` task 7.4 has measured flat-scale drift on
+long outputs.** 401's efficacy screen put the working window at ~4-8 on the residual
+site (0.5 is a no-op there) and found benign output coherent through scale 8 at 90
+tokens; whether a flat 4-8 scale distorts 512-token outputs is unmeasured. If it does
+not, this change solves no measured problem and is archived without code; if it does,
+that result is its baseline and its acceptance criterion.
+
 ## 1. Smoothstep schedule
 
 - [ ] 1.1 `directional_steering_residual_scale_at(start, decay_tokens, final, generated)`
@@ -35,8 +42,10 @@ msuiche vector and shares the model lock; `402`'s harness is the judge.
 - [ ] 3.1 No-op gate: `--dir-steering-residual-decay-tokens 0` with no think file
   reproduces `401` exactly; scale 0 is bitwise identical. Verify
   `make test-deepseek41-decode-switch` on the relevant switch.
-- [ ] 3.2 Calibration sweep (needs the vector; shares the lock): start in ~{0.3,0.5,0.7},
-  decay-tokens in ~{10,20,40}, final in ~{0,0.05,0.1}, at `--temp 0.1` fixed seed,
+- [ ] 3.2 Calibration sweep (needs the vector; shares the lock): start in ~{4,6,8}
+  (the measured residual-site window; the earlier {0.3,0.5,0.7} were msuiche-site
+  values and are no-ops here), decay-tokens in ~{10,20,40}, final in ~{0,1,2}, at
+  `--temp 0.1` fixed seed,
   scored by `402` on the A axis (removal) and B/C (collateral). Verify the knee is kept
   (smallest start that removes refusals without code-switching), NOT the extreme; record
   the chosen values and that the 0731 numbers were not used.
@@ -44,8 +53,9 @@ msuiche vector and shares the model lock; `402`'s harness is the judge.
 ## 4. Docs
 
 - [ ] 4.1 `dir-steering/README.md`: the schedule, the phase split, the think flags, and
-  the V4.1 non-monotone warning (0.5 knee; do not port the 0731 alpha). Verify no doc
-  reuses the 0731 start/decay as a V4.1 default.
+  the V4.1 scale note (residual-site window ~4-8; msuiche's 0.5 is a no-op there; do
+  not port the 0731 alpha). Verify no doc reuses the 0731 start/decay, or 0.5, as a
+  V4.1 default.
 - [ ] 4.2 Provenance in `docs/upstream-prs.md`/registry (the `teacher-forced` branch of
   ds4): not in source comments.
 

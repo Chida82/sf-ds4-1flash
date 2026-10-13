@@ -68,6 +68,19 @@
 - HF ids move; loaders try the `walledai/*` mirrors and name the missing id.
   Datasets and large intermediates live under `/tmp`, not the repo.
 
+### D6. The first-token screen is the standard pre-gate (added 2026-10-13)
+- **Choice.** Every candidate (vector, scale, index, fusion) is screened first
+  with the first-token probe: `-n 1 --dump-logprobs`, refusal-opener probability
+  mass and top-1 class, base vs steered plus the two D4 controls. One invocation
+  costs ~7 s on this machine (the SSD-streaming open is fast), so a 25-prompt x
+  2-arm screen is ~6 min and generates no payload. Only candidates that move the
+  first token go on to the full-generation axes (A keyword/judge, B KL, C, D).
+- **Why.** It settled 401's scale (0.5 is a no-op -> window 4-8), its sign, and
+  rejected the +1 index in one evening, cheaply and cleanly. Full generation is
+  the expensive confirmation, not the explorer.
+- **Rejected.** Full generation on every candidate first: slow, and the
+  harmful-generation step is the one the agent cannot run.
+
 ## Risks / Trade-offs
 
 - **[Judge is the base model, which was steered in the B arm]** -> judge with a
