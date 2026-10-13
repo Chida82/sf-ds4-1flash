@@ -475,6 +475,7 @@ eval-refusal-selfcheck:
 	python3 eval/score_strongreject.py
 	python3 eval/score_kl.py
 	python3 eval/score_capability.py
+	python3 eval/score_quality.py
 	python3 eval/calibration.py
 	python3 eval/probe_firsttoken.py
 	python3 eval/run.py --self-check

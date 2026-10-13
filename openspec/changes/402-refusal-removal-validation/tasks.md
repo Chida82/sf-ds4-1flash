@@ -70,7 +70,7 @@ M0 = groups 1-4: a judge-independent numerical/benign first pass, separately con
 
 - [x] 8.1 Run the complete model-less self-check target and `make test`, reading the tests that actually ran, then `openspec validate 402-refusal-removal-validation --strict`. Recheck Makefile targets after edits.
 - [ ] 8.2 Execute the final M1 protocol on the corrected, identified `401` build when all required resources are available. Audit the manifest and report against every spec scenario; keep blocked model-backed tasks open rather than claiming completion from M0.
-- [ ] 8.3 If frontend/test-driver C changes were needed, verify the normal disabled-steering inference path and the project's parity gate on the integrated candidate. Record the tested build; do not label a Python-only assumption as a model-backed parity run.
+- [x] 8.3 If frontend/test-driver C changes were needed, verify the normal disabled-steering inference path and the project's parity gate on the integrated candidate. Record the tested build; do not label a Python-only assumption as a model-backed parity run.
 - [x] 8.4 After 4.9, document the verified runner/profile/schema contract and a concrete invocation/result-consumption template for future steering proposals in `docs/REFUSAL_VALIDATION.md`. Verify later changes can reference this runner with their own intervention identity, data split, KPIs and margins rather than create another framework. Mark full-benchmark reuse qualified only after its M1 checks, and keep intervention-specific correctness/acceptance mandatory. Numerical/benign reuse documentation need not wait for M1.
 
 ## Workflow follow-up
