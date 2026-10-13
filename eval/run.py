@@ -29,6 +29,8 @@ import manifest
 import profiles
 import generate
 import score_keyword
+import score_judge
+import calibration as calib
 
 # Published V4.1 anchors, kept as REFERENCE only (design D6), never pass/fail
 # thresholds. Two protocols, never blended (n=32 resolves ~30 points, n=100 ~10).
@@ -278,6 +280,36 @@ def render_stored(run_dir, report):
     return "\n".join(out) + "\n"
 
 
+# --- grader calibration execution (task 3.4) ---------------------------------
+
+def run_calibration(out_dir, judge_exec=None):
+    """Run the frozen base judge over the fixed annotated sample and record
+    per-class agreement and disagreements (model-backed). judge_exec lets a test
+    inject a fake judge; by default it spawns the model unsteered."""
+    judge_exec = judge_exec or (lambda argv: common.execute(argv))
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    labels, evidence = [], []
+    for s in calib.CALIBRATION:
+        argv = score_judge.judge_argv(s["request"], s["response"])
+        res = judge_exec(argv)
+        raw = generate.extract_completion(res.get("stdout", ""))
+        label = score_judge.parse_judge(raw)
+        labels.append(label)
+        evidence.append({"id": s["id"], "gold": s["gold"], "judge": label,
+                         "returncode": res.get("returncode"), "raw": raw})
+    golds = [s["gold"] for s in calib.CALIBRATION]
+    conf = calib.confusion(golds, labels)
+    dis = calib.disagreements(calib.CALIBRATION, labels)
+    kpi = {"schema": manifest.SCHEMA_VERSION, "kind": "grader-calibration",
+           "n": conf["n"], "valid": conf["valid"], "invalid": conf["invalid"],
+           "agreement": conf["agreement"], "n_disagreements": len(dis),
+           "matrix": {f"{g}->{j}": c for (g, j), c in conf["matrix"].items()}}
+    (out_dir / "calibration.json").write_text(_json(kpi))
+    (out_dir / "calibration_evidence.json").write_text(_json(evidence))
+    return kpi
+
+
 # --- prerequisite / main -----------------------------------------------------
 
 def prerequisite_ok():
@@ -302,10 +334,24 @@ def main(argv=None):
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--out", default=str(common.OUT))
     ap.add_argument("--input-run", help="render a stored run; launches no model")
+    ap.add_argument("--calibrate", action="store_true",
+                    help="run the frozen judge over the annotated calibration sample")
     args = ap.parse_args(argv)
 
     if args.self_check:
         _selfcheck()
+        return 0
+
+    if args.calibrate:
+        ok, missing = prerequisite_ok()
+        if not ok:
+            print("calibration prerequisites missing:")
+            for m in missing:
+                print(f"  - {m}")
+            return 2
+        run_id = time.strftime("%Y%m%d-%H%M%S") + "-calibration"
+        kpi = run_calibration(Path(args.out) / run_id)
+        print(_json(kpi))
         return 0
 
     # stored-result rendering rejects conflicting generation options (design D1)
@@ -443,6 +489,19 @@ def _selfcheck():
             raise subprocess.TimeoutExpired("cmd", 1)
         _, st = run_arm(timeout, "q", steer=None, residual=0.0)
         assert st == "timeout"
+
+        # grader calibration with a fake judge that returns the gold label
+        def fake_judge(argv):
+            # the judge prompt embeds the request (unique per sample); map back by
+            # it, not the response, which the judge prompt sanitizes.
+            prompt = argv[-1]
+            for s in calib.CALIBRATION:
+                if s["request"] in prompt:
+                    return {"stdout": s["gold"] + "\n", "returncode": 0}
+            return {"stdout": "DEFLECT\n", "returncode": 0}
+        kpi = run_calibration(d / "cal", judge_exec=fake_judge)
+        assert kpi["agreement"] == 1.0 and kpi["invalid"] == 0
+        assert kpi["n"] == len(calib.CALIBRATION)
 
     print("run.py self-check: OK")
 
