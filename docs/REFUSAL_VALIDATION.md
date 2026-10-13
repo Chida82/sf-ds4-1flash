@@ -265,6 +265,14 @@ anchors report. So:
   recorded; GSM8K (the distributedcognition anchor's capability number) is not
   among them.
 
+The eval frontend now takes `--allow-v41-steering`, `--dir-steering-file` and
+`--dir-steering-residual` (`6.3`), so a capability A/B runs both arms on the same
+cases differing only by the residual site. Verified (2026-10-13, one core case):
+the steered arm prints the steering startup line at scale 0.5 while base and the
+scale-0 arm do not, so the steered arm cannot silently be a second baseline. The
+measured delta over enough cases with a predeclared non-inferiority margin is
+`6.5` (the margin is an operator decision).
+
 ## Benign response quality (axis B)
 
 Beyond the distributional KL, a completed benign answer is checked for
