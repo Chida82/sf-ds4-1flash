@@ -56,7 +56,7 @@ M0 = groups 1-4: a judge-independent numerical/benign first pass, separately con
 - [ ] 6.3 Connect actual steered capability execution to the child's existing eval cases/grader, adding only the residual/gate options needed in the eval frontend if necessary. Test parser fixtures from real eval output and run a base/zero-scale pair; verify the steered arm cannot accidentally be a second baseline.
 - [ ] 6.4 Map the requested MMLU/GSM8K/ARC-c/TruthfulQA cases to existing coverage and connect missing datasets rather than relabeling `core`. Verify subject/case membership, ethics-cluster definition and aggregate denominators; publish missing prerequisites explicitly.
 - [ ] 6.5 Execute paired capability runs and hand-audit a stratified response sample. Record prompt-paired intervals and predeclared margins; without adequate coverage/margins the result remains report-only or inconclusive.
-- [ ] 6.6 Assess feasibility of each published reproduction using design D6's exact-protocol checklist. Execute a feasible reproduction or record the specific unavailable artifact/protocol fields; verify neither an unavailable reproduction nor a local hook mismatch is called a harness failure.
+- [x] 6.6 Assess feasibility of each published reproduction using design D6's exact-protocol checklist. Execute a feasible reproduction or record the specific unavailable artifact/protocol fields; verify neither an unavailable reproduction nor a local hook mismatch is called a harness failure.
 - [ ] 6.7 Update axis/protocol documentation with the implemented coverage and evidence references. Verify separate protocol columns and no hardcoded generic 'n=32 resolves 30 points' acceptance tolerance.
 
 ## 7. Vision and reasoning repeats (M1)
@@ -64,7 +64,7 @@ M0 = groups 1-4: a judge-independent numerical/benign first pass, separately con
 - [ ] 7.1 Replace the local-path image payload with an existing tested data-URI/base64 format and require the vision component. Test payload parsing against the real server contract; verify prompt content is not duplicated into the text channel.
 - [ ] 7.2 Execute a benign image-read check before evaluation, then paired image repeats with identical image bytes and settings. Verify actual encoder/input delivery and readable content, not merely non-empty output; record failed image cases.
 - [ ] 7.3 Run explicit thinking-on/off pairs with fixed per-protocol budgets, separating reasoning/final answers and recording final-phase completion. Test exhausted budgets and missing boundaries; verify they remain incomplete rather than semantic labels.
-- [ ] 7.4 Document modality-specific prerequisites and report columns; verify M1 cannot be marked complete while either requested repeat is unmeasured.
+- [x] 7.4 Document modality-specific prerequisites and report columns; verify M1 cannot be marked complete while either requested repeat is unmeasured.
 
 ## 8. Integration
 

@@ -161,6 +161,34 @@ points, n=100 ~10):
 | distributedcognition | Heretic, n=100, scale 3.0 | ~10 points | keyword 98→41, judge 17→1, KL 0.142 vs floor 0.131, GSM8K 14→16 |
 | msuiche | vLLM, n=32, alpha 0.5 (knee) | ~30 points | refusal32 comply 4→24, no-op gate 32/32 |
 
+## External reproductions (feasibility)
+
+A published reproduction needs all of: exact prompt IDs, template, generation
+settings, model artifact/quantization, intervention site/method and grader
+protocol (design D6). Assessed against both anchors, **neither is reproducible
+here**, for concrete reasons — and a local mismatch is a *different intervention*,
+never a harness failure:
+
+- **distributedcognition (Heretic, n=100).** A **weight-edited** full-precision
+  artifact (`distributedcognition/DeepSeek-V4.1-Flash-abliterated`, ~340 GB of
+  safetensors). This child runs a **runtime projective edit** on the Q2 GGUF, not
+  a weight edit, and has no full-precision runtime. Unavailable fields: the fp
+  model artifact at runtime, the Heretic weight-edit method, and the exact grader
+  protocol. AdvBench[:100] prompts are available; the intervention and artifact
+  are not. Recorded as reference.
+- **msuiche (vLLM, n=32, alpha 0.5).** Derived and applied at
+  `residual_stream_post_layer` (the post-layer HC fold, **pre-engram**), served on
+  the `dsv41-feat` vLLM branch on 4×H200 at full precision. This child applies the
+  vector at `v41_attn_input_weighted_fold_post_engram` (**after** engram) on Metal
+  Q2 — a different application hook (the converter sidecar records the two as not
+  equivalent) and a different serving stack. The `refusal32`/`cyber32`/`benign32`
+  suites are private. Unavailable fields: the serving stack, the application hook,
+  and the prompt sets. Recorded as reference.
+
+The anchors therefore calibrate expectations, not acceptance; running the local
+weighted-fold edit at a nominal source alpha and getting a different number is not
+a harness bug.
+
 ## Failures are explicit
 
 A timeout, nonzero child exit, empty or malformed output, or a count mismatch is a
@@ -172,6 +200,23 @@ exhausted before a final answer is **incomplete**, not a refusal.
 About ~10 completions per class per axis are meant to be read by hand (through the
 audit view): automation drifts from truth, and the judge/keyword gap is reported,
 never hidden.
+
+## Vision and thinking repeats (M1 prerequisites)
+
+Both repeats are M1 and currently **unmeasured**; M1 cannot be reported complete
+while either is open.
+
+- **Vision.** Needs the vision GGUF (`--vision gguf/DeepSeek-V4.1-Flash-Vision.gguf`)
+  and the **server** (images attach through the chat payload, not the one-shot
+  `-p`). The payload is the data-URI `image_url` shape the server parses
+  (`eval/generate.image_request`); the harmful prompt is rendered **into the
+  image**, and the text channel carries only a neutral instruction. Before the
+  paired repeats, a benign rendered prompt must be shown to actually reach the
+  encoder and be read back (not merely a non-empty answer).
+- **Thinking.** Explicit mode and a fixed per-protocol budget in **both** arms,
+  with reasoning separated from the final answer and the final-phase completion
+  recorded. A budget exhausted inside reasoning is **incomplete**, not a refusal
+  verdict.
 
 ## Reuse by later steering proposals
 
