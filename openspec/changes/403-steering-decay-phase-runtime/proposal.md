@@ -2,54 +2,28 @@
 
 ## Why
 
-msuiche's vector bakes a single constant alpha (0.5). A constant strong edit is the
-wrong dose over a whole answer: the refuse-or-answer decision is taken in the first
-generated tokens; after that the model follows the trajectory it entered, and a
-sustained push drifts the text (the owner's teacher-forced work on DeepSeek V4 found
-this, and fixed it with a decaying schedule). The schedule and the think/non-think
-split from that work are not yet in this child. This change ports them onto the
-residual hook of `401`, so the dose is strong at the start and fades to a small
-residual, with its own schedule inside `<think>`.
+A time-limited intervention might preserve useful steering while reducing collateral effects or enabled-path cost, but this has not been demonstrated for the corrected V4.1 hook. This change tests that hypothesis before adding a permanent decay or phase-control interface.
 
 ## What Changes
 
-- **Smoothstep decay.** `scale(t) = start + (final - start) * (3t^2 - 2t^3)`,
-  `t = generated / decay_tokens` (cubic; linear and quadratic ramps were tried and
-  discarded upstream). `--dir-steering-residual-decay-tokens N` and
-  `--dir-steering-residual-decay-final F`. With `N = 0` the scale is constant (the
-  `401` behavior), so the disabled path is unchanged.
-- **Think phase.** `--dir-steering-think-file FILE`, `--dir-steering-think-residual F`,
-  `--dir-steering-think-decay-tokens N`, `--dir-steering-think-decay-final F`. The
-  engine toggles phase on `<think>`/`</think>` and applies the think schedule inside a
-  think block, the answer schedule outside. The decay counter restarts at each phase
-  change, so a long reasoning block does not exhaust the answer schedule.
-- **Re-calibrated for V4.1, not ported.** The DeepSeek V4-0731 numbers (start -3,
-  decay 30, final -0.1, at a different hook) are NOT reused: msuiche's card forbids
-  porting that alpha and shows V4.1 is sharply non-monotone (0.5 is the knee, 2.0
-  regresses). The decay shape holds; the start sits near the knee (grid ~0.3-0.7),
-  measured by `402`.
-- **Think vector is optional.** By default the same vector runs with a different
-  schedule per phase. A separate think direction is added only if `402` measures
-  refusal leaking through the reasoning phase.
+- Establish a pinned constant-scale baseline with `401` correctness controls and `402` completed-response/fidelity evidence. The old first-token 4-8 window and a few short coherent answers are not acceptance data.
+- Compare constant, prefill-only, decode-only and short initial-window interventions with a small declared budget, then linear decay and cubic smoothstep where a time-limited edit has merit. Keep one simplest useful schedule, not all modes as permanent knobs.
+- Make schedule adoption conditional on a measured advantage over the best comparably tuned constant baseline, with the behavior and quality guards preserved. A negative or inconclusive result is recorded without shipping a new option.
+- Add think/answer schedule separation only after measuring a phase-specific problem. Add a second direction file only if using the same vector with different schedules is insufficient and a phase-specific vector passes its own comparison.
+- Define generated-token timing, initial phase, multi-turn resets and session-state compatibility explicitly. A schedule must account for the first answer logits being produced during prefill.
+- Keep greedy evaluation primary and eliminate the mixed `temp 0.1` protocol from the former tasks. Source-model alpha values and schedule winners are not automatically transferable.
 
 ## Capabilities
 
+### New Capabilities
+- `directional-steering`: evidence-gated temporal and phase extensions to the in-flight capability from `400`/`401`. Requirements describe adoption conditions and the semantics of any retained schedule, not a promise that every candidate mode will ship.
+
 ### Modified Capabilities
-- `directional-steering`: the residual scale gains a per-phase smoothstep decay and an
-  optional separate think vector; with `decay-tokens 0` and no think file it reduces to
-  `401`'s constant scale.
+None in the current main-spec inventory.
 
 ## Impact
 
-- `ds4.c`: `directional_steering_residual_scale_at` (smoothstep),
-  `ds4_session_in_think_at` (phase + phase-start index), the per-step vector/scale
-  selection, the second (think) vector load on CPU and Metal, and
-  `directional_steering_generation_start` saved in the session at prefill end.
-- `ds4_cli.c`, `ds4_server.c`, `ds4_bench.c`, `ds4_help.c`: the six flags; `ffn`/`attn`
-  decay variants only if trivial.
-- `ds4_env.def`: any disable switch classified.
-- `dir-steering/README.md`, `docs/`: the schedule, the phase split, and the V4.1
-  calibration warning.
-- `docs/upstream-prs.md` / registry: provenance (the owner's `teacher-forced` branch of
-  ds4, `snippets/ds4-runtime.patch`); not in source comments.
-- Depends on `401` (residual hook) and `400`. Measured by `402`.
+- First: task-specific experiment drivers/worktrees and evidence using `402`; no mandatory release flags.
+- If retained: per-session scale selection in `ds4.c`/`ds4.h`, minimal CLI/server/help controls, required state compatibility/tests, and docs beside those changes. Bench remains outside steering scope.
+- `dir-steering/README.md`, relevant evidence references and `docs/upstream-prs.md` record provenance and measured decisions, including negative results.
+- Depends on corrected `401` and runnable `402`; `405` site findings can supply a better baseline but `403` does not block the rest of `405`.

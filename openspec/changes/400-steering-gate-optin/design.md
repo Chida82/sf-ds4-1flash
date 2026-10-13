@@ -2,49 +2,45 @@
 
 ## Context
 
-- The V4.1 support gate (`ds4.c:30133-30146`) refuses `--dir-steering-file` with the
-  upstream line "V4.1 requires Metal ... DSpark, steering and legacy diagnostics are
-  not supported ...". SPEC §4 keeps that text verbatim; a past "tidy" of it broke the
-  docs that quote it and added a sync conflict for nothing.
-- The GPU graph already carries the steering hooks
-  (`metal_graph_apply_directional_steering_ffn/_attn`, wired in the V4.1
-  decode/prefill phases), and the CPU path too. Only the gate blocks startup.
-- Upstream always refuses steering on V4.1. Lifting it is a child divergence by
-  owner decision, for `401`-`405`.
+See proposal.md for scope. The opt-in is already present in CLI/server options and the engine predicate. The default refusal was previously checked byte-for-byte; build and env-check success were reported. The 65-token state comparison and default-path parity remain unexecuted in the recorded work.
+
+The former design incorrectly described legacy `metal_graph_*` steering hooks as live V4.1 hooks. V4.1 allocates `ds41_graph`; accepting a file alone does not activate those hooks. `401` owns application and errors for unsupported active sites.
 
 ## Goals / Non-Goals
 
-**Goals:**
-- Start V4.1 with a steering file behind an explicit opt-in.
-- Keep the refusal text byte-identical for the default path.
-- Disabled path bitwise identical.
+**Goals:** finish a narrowly scoped admission change and leave repeatable evidence of unchanged default behavior.
 
-**Non-Goals:**
-- The correct application site (that is `401`).
-- Any default-on behavior.
+**Non-Goals:** make FFN/attention steering work on V4.1, add steering to the bench, demonstrate refusal removal, or change cache compatibility.
 
 ## Decisions
 
-### D1. An explicit opt-in, not a silent lift
-- A flag + env the user must set. The refusal is the default. This keeps upstream's
-  contract for anyone who does not ask for steering, and makes the divergence
-  visible at the call site.
+### D1. CLI and server only
 
-### D2. Drop one term, keep the rest
-- The opt-in removes only the `directional_steering_file` clause from `supported`.
-  Distributed, load_slice, the tests, power and context limits still refuse, because
-  the steering hooks are only validated for single-box Metal.
+Keep the existing engine option shared by both frontends. Remove bench promises from these artifacts and future user-facing documentation, not the bench binary. Adding a bare opt-in to a frontend that cannot request steering serves no purpose.
 
-### D3. Marked divergence, rerere replays
-- The gate edit is `sf:`-marked. At each upstream sync it conflicts; rerere replays
-  the resolution (SPEC rule #3). Accepted as a permanent conflict site, the price of
-  steering on V4.1.
+### D2. Preserve presence semantics
+
+The existing test is `getenv("DS4_ALLOW_V41_STEERING") != NULL`. Retain it to avoid an unrelated behavior change. Test unset, empty, `0`, and `1`; the latter three opt in. The CLI flag independently opts in. Tests must clear inherited variables explicitly so a developer's environment cannot bypass the default-refusal case.
+
+### D3. Only one support-check term changes
+
+The permission applies only to the steering-file clause. Test the supported single-box Metal configuration and at least one independently unsupported setting, such as power below 100, with the opt-in present. No error-message cleanup is part of this change. The final integration test may use `--dir-steering-residual 0` to isolate admission from the unsupported default FFN site addressed by `401`.
+
+### D4. Separate evidence levels
+
+- Model-less/frontend regression: option spelling, environment semantics and exact error text where an existing test seam can exercise them.
+- Engine smoke check: the default rejection still exits 1; the opt-in clears only that condition.
+- Model-backed no-op: opt-in without a file, then a file with explicit zero scales, versus baseline; 65 decoded steps with identical logits, KV and Engram. Reuse the existing graph-test comparison machinery.
+- Default-path upstream parity: run separately on the final integrated build, without an opt-in.
+
+If a case needs a model, label it model-backed rather than writing a mock that purports to prove engine behavior. A generated completion matching baseline is weaker evidence than a state comparison.
 
 ## Risks / Trade-offs
 
-- **[A sync rewords the refusal]** → the string is quoted in
-  `tests/parity_prompts.txt` and the docs; env-check and parity catch a drift.
-  Resolve by keeping upstream's new wording verbatim and re-applying the one-term
-  drop.
-- **[Opt-in given but wrong site applied]** → `401` lands the correct hook; until
-  then the flag is for plumbing only, documented as such.
+- [Ambient opt-in masks a regression] -> construct clean subprocess environments for negative cases.
+- [Later `401` site validation changes a smoke command] -> use explicit residual scale zero for admission-only checks; retain the no-opt-in upstream refusal precedence.
+- [A composite task hides unrun verification] -> track implementation, regression coverage and model-backed acceptance separately.
+
+## Migration Plan
+
+Keep option names and presence semantics. Update descriptions to admission-only and narrow the frontend list. There is no data migration. Disabling the flag and unsetting the environment variable restore the default gate.

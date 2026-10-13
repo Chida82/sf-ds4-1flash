@@ -2,87 +2,69 @@
 
 ## Context
 
-- **Two sources, one basis.** Both directions are HC-collapsed single-5120 residual
-  directions for the same checkpoint. msuiche sits at the post-layer fold (`401`'s
-  `residual_stream_post_layer`); distributedcognition's `refusal_directions.pt` sits
-  at the layer input (`attn_norm` input). Same residual stream, one sub-layer apart.
-- **`.pt` is directions, not weights.** distributedcognition ships both the full
-  abliterated model and the measured per-layer directions. This change reads the
-  directions and ignores the `wo_b`/`shared_experts.w2` weight edits — the runtime is
-  projective (`401`), not a weight patch.
-- **The `.pt` is a rich dict (verified).** Keys: `directions` plus per-layer `snr`,
-  `cos_sim`, `composite`, `quality`, `n_layers`, `thinking_mode`="chat". Load it with
-  torch in a disposable `/tmp` venv (torch is not installed system-wide; no global
-  install) and read `directions`; the quality fields feed `405`'s per-layer gating.
-- **Layer ranges differ (verified).** msuiche covers L1-39; distributedcognition's
-  abliteration `target_range` is L4-36 (`abliteration_config.json`), edits on
-  `attn.wo_b` + `ffn.shared_experts.w2`. Fusion overlaps on L4-36; on L1-3 and L37-39
-  only msuiche has a direction.
-- **Site cosine warning (FUSION §3).** A low per-layer cosine between the two can mean
-  "different site", not "different concept". The depth offset must be handled before
-  reading the cosine as redundancy vs complementarity.
-- **Fusion algebra (FUSION §4).** Sign-align, unit-norm, per-layer cosine; high →
-  denoise `normalize(a+b)`; low → subspace via SVD, top-k basis. Orthogonal-residual
-  test: `r = a - (a·b)b`; keep the second basis only if ablating `r` measurably lowers
-  refusal on a held-out harmful set.
+See proposal.md for scope. The existing script reads one matching-size storage from a torch ZIP, aligns signs, searches offsets and emits denoise/ortho/subspace_k1. Historical input conversion and an offline algebra check were reported successful. The reported median cosines were 0.579, 0.688 and 0.779 at offsets -1, 0 and +1; no complete behavioral selection followed.
+
+Those numbers concern source-to-source vector geometry. `401`'s application is a weighted attention-input fold, not a verified copy of either published derivation site. A best offset does not establish a sublayer equivalence or change `401`'s runtime index.
+
+Current algebra/validation gaps: denoise does not normalize B before addition; the zero orthogonal-residual case falls back to A; reported residual norms are computed after normalization; identical-source SVD can include a zero second basis vector; one assert ends in `or True`. The serialized tensor's shape/stride/key are not established merely by finding storage of the right byte length.
 
 ## Goals / Non-Goals
 
-**Goals:**
-- Candidate fused vectors that `402` can rank against msuiche-alone.
-- An offset-aware, measurement-gated fusion, not a blind sum.
+**Goals:** validated rank-1 candidates, honest diagnostics and a fair comparison with the strongest single-source baseline.
 
-**Non-Goals:**
-- The runtime site (`401`) and dose schedule (`403`).
-- The measurement harness (`402`).
-- Reproducing distributedcognition's weight-edit abliteration.
+**Non-Goals:** reproduce weight-edit abliteration, implement a multi-direction runtime, derive new vectors, assume low cosine proves complementary behavior, or ship a general torch checkpoint loader.
 
 ## Decisions
 
-### D1. Fuse into one residual vector, by default
-- **Choice.** Re-express distributedcognition's layer-input direction at the fold
-  depth (offset search) and fuse into one `.f32` applied at `401`'s residual hook.
-- **Rejected.** Two separate hooks (each direction at its own site) doubles the
-  runtime edit and the dose search; kept only as a fallback if the cosine stays low
-  after the offset, which would mean the two are genuinely complementary.
+### D1. A narrow, fail-closed source adapter
 
-### D2. Denoise vs subspace by cosine, after the offset
-- High cosine → the two agree → `normalize(a+b)` (denoise, rank 1). Low cosine →
-  subspace basis k=1,2,3. The orthogonal-residual test decides whether
-  distributedcognition's component survives; a failing residual means drop it and ship
-  msuiche-alone.
+For the msuiche input, use the validated converter output and its content/shape metadata. Validate finite rows, explicit zeros/masks and row dimensions before algebra.
 
-### D3. Offset search, not assumed alignment
-- Try layer offsets in {-1, 0, +1}: distributedcognition's layer L input is near
-  msuiche's layer L-1 output. The offset that maximizes the median per-layer cosine is
-  used; report it in the sidecar.
+For the `.pt`, inspect the tensor descriptor without executing pickle. Bind the narrow storage reader to the reviewed source content hash and verified `directions` key, dtype, shape, stride, storage offset, byte order and storage entry. Record that reviewed layout/hash with provenance and tests. Reject an unrecognized source revision/layout instead of guessing by storage size or implementing a generic pickle VM. Standard-library `pickletools` can aid inspection; an unreadable/gated artifact is a named prerequisite, not permission to invent metadata. Synthetic fixtures exercise extraction through the same validated layout contract.
 
-### D4. Pure-algebra tool, self-checked
-- `fuse_directions.py` is vector algebra over 40×5120 arrays: a `__main__` assert
-  self-check on tiny fixtures (sign-align, denoise norm, SVD basis shape). No model,
-  no framework, no new dependency.
+No generic `pickle.load` on downloaded content. A one-off inspection requiring additional tools must use a disposable task environment, not a persistent host dependency. The normal supported-artifact extraction remains dependency-light.
 
-### D5. Measurement is the gate, the knee is the target
-- Every candidate goes through `402`. Keep the candidate that beats msuiche-alone on A
-  with B/C/D unmoved; prefer the lowest rank that achieves it (collateral rises with
-  rank). No candidate is kept on cosine alone.
+The published abliteration target range L4-36 describes weight edits; it is not evidence that measured directions outside that range are missing. Determine actual tensor rows and documented source masks from the inspected artifact. Report both measured availability and any deliberate experimental mask separately.
 
-### D6. Partial overlap: msuiche-alone outside L4-36
-- **Choice.** Fuse only where both have a direction (L4-36). On L1-3 and L37-39 keep
-  msuiche's direction unchanged; the sidecar records the per-layer source. Weight the
-  fusion by distributedcognition's published per-layer `composite`/`snr` where it
-  helps, gated by `402`.
-- **Rejected.** Extrapolating distributedcognition past its measured range, or zeroing
-  msuiche on L1-3/L37-39 to match the shorter range — both discard signal one source
-  actually has.
+### D2. Source offset is a hypothesis with a fixed comparison mask
+
+For offsets -1, 0 and +1, compare `A[L]` with `B[L+offset]`, unit-normalizing and sign-aligning before cosine. Use a common valid-layer comparison mask across offsets when selecting the median so edge exclusions cannot silently bias the winner; record the mask, counts and excluded rows. If there is no adequate common support, report that the automatic offset is unresolved and require an explicit experiment choice rather than silently selecting the first offset.
+
+Record the selected offset and all candidate medians. Preserve the historical +1 result as historical geometry; a stricter mask/loader may change it. Neither the offset nor high cosine validates applying B at A's site. Runtime-site/index experiments remain `405`'s responsibility.
+
+### D3. Only distinct rank-1 outputs
+
+For a valid pair, set `a=unit(A[L])`, `b=unit(B[L+offset])`, flip b when their dot product is negative, and compute `unit(a+b)` for denoise. The sign of a projective direction alone is immaterial; sign alignment matters when adding sources.
+
+Where B has no valid pair, the production denoise candidate keeps A's validated row and records the fallback. Where A is masked/absent, keep that row zero; do not unexpectedly activate a layer outside the declared anchor mask.
+
+Do not emit `subspace_k1`: for these equal-weight aligned unit inputs it is the same denoise direction. Do not advertise k=3 from two per-layer directions, and do not flatten a rank-2 basis into a format whose runtime applies one row. Keep no unused generic SVD/rank interface merely for later work.
+
+### D4. Orthogonal residual is a diagnostic, not a fallback model
+
+Compute `r = b - dot(a,b)*a` only where both sources have valid aligned rows. Save `||r||` before normalization. If the row is unpaired or `||r|| <= 1e-6` for these unit inputs, emit an all-zero diagnostic row and mark it absent; otherwise emit `unit(r)`. The threshold must appear in metadata and fixtures, so floating-point noise from nearly identical rows does not become a full-strength random-looking direction.
+
+Do not substitute A when r is zero: that changes 'no new component' into 'apply the original component'. A rank-1 ortho-only run can characterize the residual but cannot by itself prove that adding it to A improves a two-direction intervention. This change does not implement that rank-2 experiment.
+
+### D5. Metadata and finite geometry before writing
+
+Record source content hashes and inspected layout identifiers, original derivation hooks, application hook/revision from `401`, offset/comparison mask, per-layer original norms/cosines/source selection, pre-normalization residual norms and output hash/shape. Validate every input/candidate before publishing outputs; reject malformed/empty unsupported inputs without partial candidate files.
+
+Write candidates to a fresh output directory for comparisons. Stop generating the duplicate filename; do not automatically delete pre-existing user files from an earlier run. Document that stale generated outputs must not be counted as new candidates. All-zero diagnostic files are valid controls and must not be normalized into nonzero rows.
+
+### D6. Compare against both sources fairly
+
+Produce/identify A-alone and transported B-alone comparator files at the same explicit runtime site, alongside denoise and ortho diagnostic. They are local runtime interventions, not replicas of either external weight-edited model. Preserve per-candidate masks and hashes in `402` manifests.
+
+Use one development/holdout split, the same primary metric/guard margins and comparable scale-search budgets for each eligible production candidate. Do not compare a tuned fusion against A at an inherited unsuitable alpha. Select a candidate once on development data, then evaluate it against the best single-source comparator on holdout. Retain fusion only on the declared benefit with B/C/D non-inferior; otherwise keep the stronger measured single source and record the negative/inconclusive result. E remains a domain report, not a blended score.
 
 ## Risks / Trade-offs
 
-- **[Low cosine is site, not concept]** → the offset search and the orthogonal-residual
-  test separate the two before any denoise/subspace choice.
-- **[Over-rank adds collateral]** → k is searched 1→3 and gated by `402`'s B/C/D, not
-  maximized.
-- **[Gated `.pt`]** → needs the user's `HF_TOKEN` and the Responsible Use Agreement on
-  the distributedcognition repo; the tool's self-check runs on fixtures without it.
-- **[Non-monotone alpha inherited]** → the fused vector's dose is still set at `401`/
-  `403`; 0.5 is msuiche's knee and higher regresses. The sidecar carries the caveat.
+- [Gated/revised serialized source] -> supported-content/layout contract, explicit rejection and a pending prerequisite when inspection is unavailable.
+- [Unit normalization amplifies tiny residual noise] -> retain raw residual norms and zero below the documented threshold.
+- [Offset search overfits geometry or behavior] -> fixed comparison mask, separated tuning/holdout and no equivalence claim.
+- [Extra runtime rank seems an easy follow-up] -> outside scope; first finish the fair rank-1 comparison.
+
+## Migration Plan
+
+Correct loader/algebra and their tests before regenerating candidate files and rerunning `402`. Old denoise/subspace_k1 outputs count as one geometric candidate, not two confirmations. Update candidate naming and provenance alongside the tool. No runtime or cache migration occurs except the changed vector content naturally receiving a new `401` identity.

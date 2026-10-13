@@ -2,51 +2,28 @@
 
 ## Why
 
-Two V4.1 refusal directions exist for the same base model
-(`deepseek-ai/DeepSeek-V4.1-Flash` rev `fb2764a5`, hidden 5120), and both are
-single-stream HC-collapsed residual directions:
-
-- **msuiche**: the `.f32` from `401`'s converter, measured and applied at the
-  post-layer fold (`residual_stream_post_layer`, `401`'s site), alpha knee 0.5.
-- **distributedcognition**: `refusal_directions.pt`, per-layer directions measured at
-  the HC-collapsed residual stream (`attn_norm` input, i.e. the layer input), 128
-  harmful vs 128 harmless, orthogonalized against the harmless mean.
-
-They differ only in depth (layer-input vs post-layer-output of the same residual
-stream), so a per-layer fusion is well-posed, and the owner wants a broad removal.
-Fusing them (FUSION §4) can beat either alone — but only if measured, so this change
-produces candidate vectors and `402` judges them. It is the "modify the vector" step
-and runs after `402`.
+Two external V4.1 direction sets provide a testable fusion hypothesis, not proof that their derivation sites are interchangeable. The existing tool needs distinct, correctly formed candidates and a comparison against both single-source baselines before fusion can be accepted.
 
 ## What Changes
 
-- **Fusion tool.** `dir-steering/tools/fuse_directions.py`: reads msuiche's `.f32` and
-  distributedcognition's `.pt`, sign-aligns and unit-norms each per-layer pair, scans
-  a small layer offset (the two sites are one sub-layer apart), and emits fused `.f32`
-  candidates — `denoise` (`normalize(a+b)` where the per-layer cosine is high) and
-  `subspace` k=1,2,3 (SVD basis where it is low) — each with a `.json` sidecar
-  (method, k, offset, sources, provenance).
-- **Selection by measurement.** Each candidate is a drop-in for `401`'s residual hook;
-  `402` scores it. A candidate is kept only if it beats msuiche-alone on axis A
-  without worsening B/C/D. Rank k is searched, not maximized (more rank removes more
-  but adds collateral).
-- **Directions, not weights.** The `.pt` holds residual directions; this change uses
-  them directly, not distributedcognition's `wo_b`/`shared_experts.w2` weight edits.
-- **No runtime change.** Application is `401` (site) and `403` (dose); this change is
-  tooling only.
+- Validate the known source tensor layouts, layer availability and finite values; normalize each participating row explicitly before fusion. Do not infer measured direction availability from the range of weights edited by a source publication.
+- Keep the small source-to-source layer-offset search and record its geometric evidence, without treating its best cosine as proof of runtime-hook indexing or efficacy.
+- Emit one `denoise` rank-1 candidate and one correctly defined orthogonal-residual diagnostic, plus reproducible single-source comparator files/metadata where conversion is needed.
+- **BREAKING candidate cleanup:** stop emitting `subspace_k1` as a second candidate because it duplicates denoise for aligned unit inputs. Remove the promise that rank-2/3 subspaces fit in a one-direction-per-layer f32 file; two input directions span at most rank 2.
+- Make a missing/zero orthogonal residual remain zero, record its norm before normalization, and test degenerate inputs rather than asserting success unconditionally.
+- Compare fusion against both single-source vectors at the same declared application site, with comparable tuning budgets and held-out evaluation through `402`. A negative fusion result is a valid completion, not a reason to add runtime rank.
 
 ## Capabilities
 
 ### New Capabilities
-- `steering-vectors`: offline tooling that derives, converts and fuses V4.1 steering
-  direction files, judged by `402`.
+- `steering-vectors`: validated offline direction conversion/alignment/fusion, with interpretable candidate metadata and measurement-gated selection.
+
+### Modified Capabilities
+None.
 
 ## Impact
 
-- `dir-steering/tools/fuse_directions.py` (new): pure vector algebra, a `__main__`
-  assert self-check, no model and no new dependency beyond what the repo already uses.
-- `dir-steering/README.md`: the fusion workflow and the candidate naming.
-- `docs/upstream-prs.md` / registry: provenance (msuiche GLP-39; distributedcognition
-  grimjim norm-preserving biprojected abliteration); not in source comments.
-- Depends on `401` (converter + residual site) and `402` (to judge). Benefits from
-  `403` (tunable dose). No `ds4.c` change.
+- `dir-steering/tools/fuse_directions.py`, its model-less checks and candidate sidecars.
+- `dir-steering/README.md` and source/provenance entries in `docs/upstream-prs.md`, updated with implementation.
+- Depends on `401` for input/application identity and on `402` for acceptance. No dependency on `403`; a pinned constant-scale protocol is sufficient.
+- No production engine/kernel change, no generic pickle execution and no required global dependency. Rank greater than one and permanent second hooks are outside this change.

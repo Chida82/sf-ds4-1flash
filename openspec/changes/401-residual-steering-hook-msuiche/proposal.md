@@ -2,51 +2,31 @@
 
 ## Why
 
-The V4.1 control vectors are applied at a specific site. msuiche's card is explicit:
-the hook is `residual_stream_post_layer` — on this architecture (hc_mult=4) the
-post-layer hyper-connection fold reduced to a single 5120 stream by the mean over
-the four hc copies, taken pre-engram, derived and applied there. "A reader that
-applies only [the `ffn_out_pre_residual`] hook must refuse this file." ds4's existing
-steering hooks are `ffn_out` (pre-residual) and `attn_out` — the wrong site for these
-vectors. To use msuiche's (and any `residual_stream_post_layer`) vector, V4.1 needs a
-steering application point at the post-HC-fold, pre-engram, single-stream residual,
-plus a converter from the GGUF `controlvector` to the `.f32` the runtime loads.
+V4.1 needs an explicitly defined steering intervention whose effect does not silently depend on the prefill route or cached state. The existing fold edit is a useful experimental baseline, but it is not the published mean-residual, pre-Engram intervention and has not established full behavioral efficacy.
 
 ## What Changes
 
-- **Residual-stream hook.** A steering application point at the post-HC-fold (mean
-  over the 4 hc copies), pre-engram, single 5120 stream, in the V4.1 graph (Metal)
-  and the CPU reference. `--dir-steering-residual F` (default 0), applied as
-  `y -= F * d[L] * dot(d[L], y)` at that site. The existing `--dir-steering-ffn/-attn`
-  are unchanged, for `ffn_out_pre_residual`-style vectors.
-- **Converter.** `dir-steering/tools/controlvector_to_f32.py`: reads a GGUF
-  `controlvector` (39 `direction.<N>`, fp32, 5120, unit norm), writes ds4 `.f32`
-  40x5120 (layer 0 zeros; `direction.N` -> layer N, no offset) and a `.json` sidecar
-  (hook=`residual_stream_post_layer`, `alpha_default`, `content_sha256`, base
-  revision, provenance).
-- **msuiche drop-in.** Load the converted vector with `--dir-steering-residual`
-  (ds4 positive scale removes the direction, matching `h -= alpha*(h.d)d`). Effective
-  scale at this transient-fold site is ~4-8, NOT msuiche's 0.5 alpha (measured a near
-  no-op here, 2026-10-13). The L1-6 null-gate caveat is carried in the sidecar and docs.
-- **No-op gate.** Scale 0 / no file -> no tensor allocated -> bitwise identical.
+- Define `--dir-steering-residual F` as a projective edit of the **weighted attention-input HC fold**, after Engram on layers that use it, before attention normalization. Keep the existing direct layer mapping as the baseline, not as a proven source-hook correspondence.
+- Check whether decode, batch prefill and decoder-key reconstruction place the fold rounding on different sides of the projection. If a route-agreement test shows a difference beyond FP32 tolerance, align them to one order and bump the intervention revision; otherwise record the agreement and change nothing. The unsteered path is preserved exactly either way, and no recorded evidence is invalidated by assertion.
+- Finish missing `ds41_decoder_prepare` coverage, including ordinary wide sweeps around 3-4K tokens, and provide an isolated CPU reference for the edit without enabling full CPU V4.1 inference.
+- Harden conversion and runtime input validation; distinguish source-hook metadata from actual application-hook metadata. Preserve one raw 40x5120 f32 matrix and zero rows for masked layers.
+- **BREAKING diagnostic correction:** keep legacy FFN/attention flags and `/steer`, but reject unsupported active V4.1 uses instead of reporting success without an edit. CLI/server are the steering frontends; no bare bench flag.
+- Refuse active steering together with persistent KV reuse and snapshot save/load until a steering identity exists; existing caches are never touched. The identity descriptor is deferred to the change that first needs steered persistent state.
+- Establish state-level no-op controls, enabled-path coverage tests and measured enabled overhead. Behavioral acceptance uses `402`; alternative HC sites belong to `405`.
 
 ## Capabilities
 
+### New Capabilities
+- `directional-steering`: additional contracts for the capability introduced by in-flight `400`: the weighted-fold intervention, vector validation, unsupported-site diagnostics and the steering/persistent-state guard. These are ADDED requirements; no durable main spec exists yet.
+
 ### Modified Capabilities
-- `directional-steering`: adds the `residual_stream_post_layer` application point for
-  V4.1 and the control-vector converter; the existing ffn/attn points are unchanged.
+None in the current main-spec inventory.
 
 ## Impact
 
-- `ds4.c`: the CPU reference projection at the fold site; the V4.1 graph wiring that
-  passes the residual-steering scale.
-- `ds4_metal.m` / `metal/`: the Metal projection at the post-HC-fold tensor (reuse
-  `ds4_gpu_directional_steering_project_tensor`; no new kernel if the fold tensor is
-  addressable).
-- `ds4_cli.c`, `ds4_server.c`, `ds4_bench.c`, `ds4_help.c`: `--dir-steering-residual`.
-- `ds4_env.def`: any new disable env for the site.
-- `dir-steering/tools/controlvector_to_f32.py` (new), `dir-steering/README.md` (the
-  site table).
-- `docs/upstream-prs.md` / registry: provenance (msuiche GLP-39, grimjim method); not
-  in source comments.
-- Depends on `400` (the gate opt-in).
+- `ds4.c`, `ds4.h`: V4.1 graph paths, engine validation, isolated reference and the steering/persistent-state guard.
+- `ds4_cli.c`, `ds4_server.c`, `ds4_help.c`: accurate site/error descriptions.
+- `ds4_kvstore.c/.h`: untouched; the guard rejects the combination before any cache access.
+- `ds4_metal.m` and existing Metal kernels only if a test proves a wrapper change necessary; reuse the projection kernel first.
+- `dir-steering/tools/controlvector_to_f32.py`, graph/kernel tests, Makefile test wiring, env classification and relevant docs.
+- Depends on `400`. Correctness tests do not wait for the complete `402` benchmark; `402` can be integrated in parallel. No schedule, fused vector or published-efficacy replication is required to finish this runtime change.

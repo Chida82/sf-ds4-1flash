@@ -1,67 +1,29 @@
 # Tasks
 
-Depends on `401` (residual hook) and `400`. The sweep (3.2) needs the converted
-msuiche vector and shares the model lock; `402`'s harness is the judge.
+No temporal implementation is complete. Depends on corrected `401` and the applicable `402` protocol. Former mandatory smoothstep/think tasks are now conditional. A conditional item is checked only after implementation plus its stated check, or after recording an evidence-backed not-retained decision under design D4; an unrun experiment is not a negative result. The task groups below replace the old 0.1-temperature sweep and outdated source-alpha grid.
 
-**Gate (2026-10-13): do not start until `402` task 7.4 has measured flat-scale drift on
-long outputs.** 401's efficacy screen put the working window at ~4-8 on the residual
-site (0.5 is a no-op there) and found benign output coherent through scale 8 at 90
-tokens; whether a flat 4-8 scale distorts 512-token outputs is unmeasured. If it does
-not, this change solves no measured problem and is archived without code; if it does,
-that result is its baseline and its acceptance criterion.
+## 1. Constant baseline and bounded temporal experiment
 
-## 1. Smoothstep schedule
+- [ ] 1.1 Pin the corrected site/revision, vector, mask, decoding, development/holdout split and acceptance margins using `402`. Run the long-output benign pilot and identify the best constant comparator with a declared budget; verify raw evidence and full-response/fidelity metrics exist rather than relying on old first-token findings.
+- [ ] 1.2 Implement task-local constant/prefill-only/decode-only/initial-window candidates using the existing graph/test machinery, without exposing permanent release flags. Add a small timing/state fixture; verify the declared first-token semantics and unchanged disabled behavior for each arm.
+- [ ] 1.3 Run the bounded temporal comparison at greedy temp 0 with matched prompt policy and comparable tuning budgets. Retain complete-response, benign, over-refusal and capability evidence; verify no screen-only result is used for adoption and report any measured enabled cost separately.
+- [ ] 1.4 If a time-limited intervention shows merit, compare a simple linear ramp with cubic smoothstep on the same development protocol and verify on holdout. Otherwise record the failed/unresolved temporal gate with evidence and do not build the release schedule.
+- [ ] 1.5 Record the baseline, candidate definitions, uncertainty and retained/not-retained decision in this design's results section and the appropriate evidence reference; update `dir-steering/README.md` only to describe an actual result or available mechanism. Verify no inherited alpha range or curve is called the V4.1 winner without measurement.
 
-- [ ] 1.1 `directional_steering_residual_scale_at(start, decay_tokens, final, generated)`
-  in `ds4.c`: cubic `start + (final-start)*(3t^2 - 2t^3)`, `t = generated/decay_tokens`,
-  clamped to `[0,1]`; `decay_tokens == 0` returns `start`. Verify a self-check on the
-  endpoints and the monotone middle (reuse the `STEERING_SELF_CHECK` shape from
-  `runtime_core.c`).
-- [ ] 1.2 `--dir-steering-residual-decay-tokens N`, `--dir-steering-residual-decay-final F`
-  in CLI/server/bench/help, with the `ds4_engine_options` fields. Save
-  `directional_steering_generation_start` in the session at prefill end. Verify `--help`
-  lists them and `generated` is 0 on the first decoded token.
+## 2. Retain only the winning schedule (conditional on group 1)
 
-## 2. Think phase
+- [ ] 2.1 If adopted, promote the simplest winning shape with the minimal controls of design D3 and test it: endpoints, `N=0` constant fallback bitwise, finite/range validation, the predicted-position rule on the final prompt forward, per-session state with interleaved sessions, and rejection of unsupported batching and persistent prefix reuse under the `401` guard. Update help, env classification if needed and schedule documentation with it. If not adopted, record the not-retained decision with the group-1 evidence and add no flags.
 
-- [ ] 2.1 `ds4_session_in_think_at(tokens, len, think_id, end_id, &phase_start)`:
-  toggles on `<think>`/`</think>`, returns whether the next token is inside think and
-  the index where the phase began. Verify a 100-think-token case, then `</think>`,
-  starts the answer phase fresh (self-check).
-- [ ] 2.2 Per-step selection: inside think use the think vector/scale, else the answer
-  vector/scale, with `generated = len - max(generation_start, phase_start)`. Load the
-  optional `--dir-steering-think-file` on CPU and Metal. Verify the answer schedule is
-  not exhausted after a long think block.
-- [ ] 2.3 `--dir-steering-think-file FILE`, `--dir-steering-think-residual F`,
-  `--dir-steering-think-decay-tokens N`, `--dir-steering-think-decay-final F` in the
-  frontends. Classify any disable switch in `ds4_env.def`. Verify `make env-check` and
-  `--help`.
+## 3. Phase schedule and phase vector (separate conditional gates)
 
-## 3. Verify
+- [ ] 3.1 Measure thinking/final-answer outcomes under the retained schedule or constant baseline with `402`. Only on a measured phase-specific gap implement and test the same-vector phase schedule (initialized from the effective template and actual boundary token IDs; a long thinking block restarts the answer dose; missing/truncated boundaries handled explicitly) and compare it on holdout; only on a remaining measured gap consider a separately derived second vector under `401` validation. Record negative gates instead of shipping unused options, and document only retained phase controls with their evidence.
 
-- [ ] 3.1 No-op gate: `--dir-steering-residual-decay-tokens 0` with no think file
-  reproduces `401` exactly; scale 0 is bitwise identical. Verify
-  `make test-deepseek41-decode-switch` on the relevant switch.
-- [ ] 3.2 Calibration sweep (needs the vector; shares the lock): start in ~{4,6,8}
-  (the measured residual-site window; the earlier {0.3,0.5,0.7} were msuiche-site
-  values and are no-ops here), decay-tokens in ~{10,20,40}, final in ~{0,1,2}, at
-  `--temp 0.1` fixed seed,
-  scored by `402` on the A axis (removal) and B/C (collateral). Verify the knee is kept
-  (smallest start that removes refusals without code-switching), NOT the extreme; record
-  the chosen values and that the 0731 numbers were not used.
+## 4. Integration
 
-## 4. Docs
+- [ ] 4.1 Run `make test` with named test output and disabled-path parity for any runtime change, then `openspec validate 403-steering-decay-phase-runtime --strict`. If the result is research-only, record that no runtime changed and validate the evidence/plan without claiming unrun parity.
+- [ ] 4.2 Reconcile the artifacts with what was actually retained and list evidence for every conditional decision. Verify no pending experiment is marked done by assumption and no unavailable phase mode is documented as shipped.
 
-- [ ] 4.1 `dir-steering/README.md`: the schedule, the phase split, the think flags, and
-  the V4.1 scale note (residual-site window ~4-8; msuiche's 0.5 is a no-op there; do
-  not port the 0731 alpha). Verify no doc reuses the 0731 start/decay, or 0.5, as a
-  V4.1 default.
-- [ ] 4.2 Provenance in `docs/upstream-prs.md`/registry (the `teacher-forced` branch of
-  ds4): not in source comments.
+## Workflow follow-up
 
-## 5. Integration
-
-- [ ] 5.1 `make test` (incl. env-check),
-  `SF_PARITY_FLAGS=--ssd-streaming tools/parity-check.sh sf-ds4-1flash` on the disabled
-  path token-identical, `openspec validate 403-steering-decay-phase-runtime --strict`.
-  No commit or push without a request.
+- `405` event decay depends on this change only if it needs a retained temporal comparator; other `405` work is independent.
+- A research-only negative result can be finalized without new runtime code, but commit/push/archive still require an explicit request.

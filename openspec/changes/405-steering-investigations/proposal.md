@@ -2,48 +2,30 @@
 
 ## Why
 
-Steering on V4.1 (`401`) has levers whose worth only the framework (`402`) can
-settle: which layers to touch, how the dose fades, whether a second site helps. This
-change is the measured-investigation bucket. Each item ships a small knob only if
-`402` shows it helps on axis A without hurting B/C/D (config CI rule), or stays a
-documented finding. The owner wants broad removal, so one item maps how broad the
-removal already reaches across domains, and one maps where the output breaks.
+The current steering evidence cannot yet distinguish a good direction, a suitable HC site and a large generic perturbation. This change orders the investigations so that instrumentation and causal comparisons precede new runtime controls, and a negative result can finish a question without adding a feature.
 
 ## What Changes
 
-- **Per-layer scale.** An optional per-layer scale/mask over the steering direction.
-  msuiche measured the dose at 3% of the residual norm at L1 rising to 41% at L30, and
-  L1-6 sit below the derivation null gate. Steer only the layers with real good-vs-bad
-  separation; fewer layers touched means less collateral to B/C/D. OFF (no mask) is
-  bitwise identical.
-- **Event-based decay.** A guarded alternative to `403`'s fixed-token schedule: the
-  edit already computes `dot(d[L], y)`, so drop the scale once the projection returns
-  to the comply range — the model has passed the refusal decision. Adaptive per
-  prompt. OFF is bitwise.
-- **Projection log.** A read-only diagnostic env that prints `dot(d[L], y)` per layer
-  per token, to see when the model enters refusal mode. Output is never changed.
-- **Attention second channel** (conditional). A small residual-plus-tiny-attention
-  sweep vs residual alone; kept only if `402` shows it beats residual alone, else
-  dropped as a finding.
-- **Generalization map** (finding). Using `402`'s per-category axis, how far a single
-  broad vector's removal reaches across domains (msuiche measured a refusal32/benign32
-  vector transferring to cyber32 31/32 and geopolitical 32/32).
-- **Breaking-point map** (finding). The scale/decay at which the text degrades
-  (code-switching, repetition) on V4.1's non-monotone response — a tuning reference.
+- Add bounded, read-only observations of projection and activation/intervention norms, with measured overhead and an unchanged off path.
+- Compare the corrected weighted-fold baseline with task-local persistent-residual interventions: project each HC copy, or edit only their mean while preserving copy differences. These are explicitly different sites/operations, not silent replacements for `401`.
+- Test simple layer masks by zeroing rows in the existing f32 format before considering a separate continuous per-layer scale interface.
+- Derive directions at the actual runtime site on controlled benign contrast pairs and compare appropriately derived additive versus projective interventions as experiments, not interchangeable consumers of an external vector.
+- Strengthen specificity controls with multiple seeds, layer permutations and measured activation-dose matching; re-examine scale/index claims with paired uncertainty rather than requiring the old conclusions to hold.
+- Map generalization and failure modes on held-out domains, languages, templates and output lengths. Complete responses and quality guards decide usefulness; distribution shift alone does not.
+- Make event-based decay and a second attention site conditional, task-local experiments. Only event decay needs a temporal comparator from `403`; the rest of this change does not depend on it.
 
 ## Capabilities
 
+### New Capabilities
+- `directional-steering`: observable intervention diagnostics and evidence-gated experiment contracts extending in-flight `400`/`401`. Alternative mechanisms are research candidates, not promised permanent flags.
+
 ### Modified Capabilities
-- `directional-steering`: adds optional per-layer scale, an event-based decay mode and
-  a projection-log diagnostic; each off by default and bitwise when off.
+None in the current main-spec inventory.
 
 ## Impact
 
-- `ds4.c`: the per-layer scale lookup in the steering edit, the event-decay guard, the
-  projection-log env read. Each small and independently reversible.
-- `ds4_cli.c`, `ds4_server.c`, `ds4_bench.c`, `ds4_help.c`: the knobs that take a flag.
-- `ds4_env.def`: the new envs classified (`DS4_METAL_DISABLE_*` / `probe`).
-- `dir-steering/`: the per-layer scale file format and a small helper; docs.
-- `speed-bench/perf-record.md` and the registry: the generalization and breaking-point
-  findings.
-- Depends on `401` (the residual hook), `403` (the decay it guards); measured by `402`.
+- `ds4.c`, `ds4_metal.m`/existing kernels and graph tests only for bounded probes or explicitly gated experiment hooks; preserve the normal path and avoid unused release variants.
+- Existing `dir-steering/` tools for masks and locally captured directions; reuse `402` execution, metrics and manifests.
+- Results in this change's design/evidence references, appropriate `dir-steering` docs and provenance registry entries; performance records only for actual performance measurements.
+- Depends on corrected `401` and the applicable `402` milestones. `403` is a dependency only for experiments that compare against a retained temporal schedule.
+- No automatic promotion of an alternative site into the `401` baseline, no rank-2/3 runtime implementation, no mandatory new scale file or attention control.

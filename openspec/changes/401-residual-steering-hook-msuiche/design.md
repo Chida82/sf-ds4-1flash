@@ -2,208 +2,87 @@
 
 ## Context
 
-- **Three sites.** ds4 today steers at `ffn_out`
-  (`metal_graph_apply_directional_steering_ffn`, pre-residual, pre-HC-expand) and
-  `attn_out`. msuiche's V4.1 vector lives at `residual_stream_post_layer`: the
-  post-layer HC fold (mean over the 4 hc copies) to a single 5120 stream, pre-engram.
-  These are different points in the stream; a vector is only valid at the site it was
-  measured.
-- **HC structure.** V4.1 has `hc_mult=4`. The graph carries `hc_expand_*` tensors
-  (`ds4.c:12331-12337`: `hc_expand_comb`, `hc_expand_post`, `hc_expand_residual`,
-  ...). Engram is read on layers {1,14} (`ds41_engram_layer`). The hook site is the
-  single-stream residual after the HC comb/fold and before the engram read.
-- **distributedcognition** uses a different site again (weight edits on `attn.wo_b`
-  + `ffn.shared_experts.w2`, direction measured at the `attn_norm` input). That
-  source is `404`'s concern; this change is msuiche's site.
-- **Converter target.** The runtime loads a flat `.f32`,
-  `directional_steering_layer_count()` (40) x `n_embd` (5120), via
-  `read_f32_binary_file`. 40 x 5120 x 4 = 819200 B, matching msuiche's ~800 KB after
-  the layer-0 zero pad.
+See proposal.md for motivation. This revision replaces the former sequence of contradictory site/index conclusions with one runtime contract. Source provenance is in `docs/upstream-prs.md`; the source cards' descriptions are not proof that a tensor in this engine has the same meaning.
+
+The active graph is `ds41_gpu_graph`. `g->residual` carries four 5120-wide HC streams. Before attention, Engram updates this residual on layers 1 and 14; the preceding sublayer's mixer folds it into `g->x`. That weighted fold is transient: editing it affects attention, not directly every residual copy carried through HC expansion.
+
+Already implemented: projection of `g->x` in the unfused decode path and `b->x` in ordinary batch prefill, direction upload/free, CLI/server residual scale and a disable switch. Still open: the two routes may place BF16 rounding on different sides of the projection (read from the source, not yet shown to matter); the batch branch of `ds41_decoder_prepare` omits steering; legacy active FFN/attention requests can be no-ops; persistent state has no steering identity (guarded by refusal, see D6).
+
+### Historical evidence, not acceptance
+
+The converter was run on the real source artifact: 819200 bytes, layer 0 zero and 39 unit rows. Prior notes report a scale-zero matching completion and a first-token screen: mean opener mass 0.986 at baseline and 0.971 at scale 0.5 on 25 prompts; a five-prompt sweep gave 0.851, 0.779, 0.567, 0.414 and 0.409 at scales 1, 2, 4, 8 and 16. Small benign checks were coherent through 8. Raw probe drivers were not retained in the repository. These are historical screening results, not state-level identity, a calibrated refusal rate, a confirmed hook index or a safe operating range. They stand as screening evidence; if D2's route-agreement test shows the rounding order matters, enabled-path numbers are remeasured under the new intervention revision.
 
 ## Goals / Non-Goals
 
-**Goals:**
-- A steering point that matches the vector's declared hook, so msuiche's published
-  removal reproduces.
-- A converter that is exact about layer indexing and carries the hook/alpha metadata.
+**Goals:** an honest, testable fold edit; uniform intervention ordering on every route that produces its attention input; reliable files, errors and a safe answer for persistent state.
 
-**Non-Goals:**
-- Fusion with distributedcognition (`404`), decay/phase schedules (`403`), the
-  quantitative framework (`402`). This change lands the site and a coarse manual
-  check.
+**Non-Goals:** equate the weighted fold with a mean-residual hook, choose the best scale/index/site, alter the baseline prefill schedule, add attention steering, enable distributed steering, full CPU V4.1 inference or a steering identity descriptor. `405` compares sites; `402` measures behavior.
 
 ## Decisions
 
-### D1. A new application point, not a repurposed ffn hook
-- Add `residual_stream_post_layer` as its own steered site. Keep `ffn_out`/`attn_out`
-  for `ffn_out_pre_residual`-style vectors (the 0731 GLP namespace). A vector's
-  sidecar names its hook; a mismatch is refused.
+### D1. Name source and application semantics separately
 
-### D2. Locate the fold tensor (the model's own reduction)
-- The site is the post-HC-fold single 5120 stream, pre-engram. msuiche's GGUF is
-  precise: it is "the mean over the 4 hc copies (**the model's own aux-hidden-state
-  reduction**)" — the architecture's existing reduction, not an invented mean. In ds4
-  that is the output of the HC fold that produces the next sub-block's single stream
-  (`ds4_gpu_hc_split_weighted_sum_norm_tensor`, `ds4_gpu_hc_expand_*`;
-  `metal_graph_after_attn_hc`/`after_ffn_hc` are `hc_dim`-wide, `metal_graph_flat_hc`
-  the flattened view; `hc_expand_comb`/`hc_expand_post` at `ds4.c:12336-12337`).
-  Investigation: confirm which graph tensor is that reduced single-5120 stream, taken
-  before the engram read on layers {1,14}, and that applying the projection there
-  reproduces msuiche's removal (3.2 / `402`). It goes in for the decode and the
-  prefill/token-major phases, layers 1-39.
+Keep the public `--dir-steering-residual` spelling. Identify the runtime site in metadata/reports as `v41_attn_input_weighted_fold_post_engram` with an intervention revision. Keep `source_hook=residual_stream_post_layer` when converting msuiche's artifact. They must never be presented as synonymous.
 
-### D3. Reuse the existing projection
-- `ds4_gpu_directional_steering_project_tensor` already does `y -= scale*d*dot(d,y)`
-  per layer on a 5120-wide tensor. Bind it at the fold site; the CPU reference
-  mirrors with `cpu_directional_steering_project_rows`. No new kernel unless the fold
-  tensor is not directly addressable.
+The source row `direction.N` stays row N; at the baseline runtime site row N applies before attention of layer N, for N=1..39. Layer 0 is zero. Source-to-runtime index searches and source-to-source fusion offsets are distinct experiments. Do not change runtime indexing based on cosine alone.
 
-### D4. Converter and sign
-- `direction.N -> layer N`, layer 0 zeros (no `direction.0`). Unit-norm preserved.
-  ds4 `--dir-steering-residual +alpha` reproduces msuiche's `h -= alpha*(h.d)d`. The
-  converter reads the GGUF metadata keys `controlvector.layer_count`,
-  `controlvector.model_hint` (must be `deepseek_v41`), `glp.hook_point` (must be
-  `residual_stream_post_layer`), `glp.alpha_default` and `glp.content_sha256`, and
-  copies them plus the base revision and the non-monotone / L1-6 caveats into the
-  `.json` sidecar.
+For unit d, `h' = h - alpha*d*dot(d,h)` leaves the component along d multiplied by `1-alpha`. Alpha 1 removes it; alpha 2 reflects it; 4 and 8 reverse and amplify it by factors 3 and 7. Negating d has no effect on a projective edit. A positive-versus-negative alpha experiment checks the intervention sign, not the vector's orientation. There is no validated nonzero default; the scale defaults to zero.
+
+### D2. One enabled arithmetic order, decided by a test
+
+The intended contract is the decode path's existing order:
+
+```text
+weighted fold --> existing BF16 rounding --> f32 projection --> RMSNorm --> existing norm-output BF16
+```
+
+First write the route-agreement fixture (D7): one synthetic folded row through the decode and the batch projection routes, outputs compared at an FP32 tolerance. If they differ beyond tolerance, move the batch fold rounding before the projection, without adding a second rounding between projection and normalization, and bump the intervention revision. If they agree within tolerance, record that and leave the arithmetic alone. With the edit disabled, preserve the original code and order either way. This is not permission to quantize anything new or change the baseline schedule.
+
+In `ds41_hc_mix`, apply only on the attention side and continue to avoid fused fold-plus-norm paths when needed. Reuse `ds4_gpu_directional_steering_project_tensor`. In `ds41_before_attention_batch` and the batch branch of `ds41_decoder_prepare`, use the same pre-norm operation. A small shared application helper is appropriate if it prevents the reconstructed-key path from being omitted again; do not generalize the entire graph.
+
+The non-batch decoder-prepare route already reaches `ds41_graph_before_attention`; do not apply twice. Review all callers and graph copies (`row = *g`) so directions, scale and views have the correct lifetime.
+
+### D3. Cover recomputation, not just forward decode
+
+`ds41_decoder_prepare` is used by decoder suffix publication/warming whenever the wide-sweep suffix optimization is active, not only deferred decoder execution above about 24.5K. Test ordinary 3072/4096/8192-token cases as well as a deferred-decoder case. Choose exact token counts through the graph test, not approximate word counts. Verify route coverage rather than assuming a context length selected the intended branch.
+
+Keep the CPU path as reference. Add a model-less reference of the fold-edit-normalize operation and exercise it on synthetic rows; do not remove the CPU implementation or bypass the V4.1 CPU startup refusal. Where the CPU forward reference exposes the corresponding fold, mirror the residual edit with the same ordering, but do not describe this as complete CPU V4.1 support.
+
+### D4. Validate files before use
+
+The converter accepts exactly `direction.1` through `direction.39`, F32 width 5120, supported GGUF layout/version and consistent layer metadata. Reject duplicates, aliases, missing or extra rows, truncated/out-of-range storage, nonfinite values and non-unit rows outside the documented tolerance. Validate everything before writing either output. Make fixture directions distinguishable: the old fixture normalized every row to the same direction and could not detect a permutation.
+
+The runtime consumes exactly 819200 bytes. Require finite scales in the frontend's supported range and finite rows, with row 0 zero and every other row either zero or unit within the same 1e-2 tolerance. Zero rows support controls and binary masks. Do not silently normalize user input: that would erase an unintended scaling error. A raw f32 file does not authenticate a source hook; document that limitation. The converter sidecar and `402` manifest record source/application hooks, revisions and content hashes; do not build a new general metadata parser in the engine merely to relabel the site.
+
+### D5. Reject unsupported active sites
+
+Keep the legacy flags/API/tooling. For an opted-in V4.1 session, nonzero FFN or attention scales must fail clearly. A file with the legacy implicit FFN=1 default must not pretend to steer; tell the user to select the residual site explicitly. `/steer` and its FFN setter must not report a successful V4.1 change that never reaches the graph. Requests that make no active change, such as a zero reset, may report the already-off state but never imply residual control.
+
+Preserve the original no-opt-in refusal precedence from `400`. Do not add the whole steering block to bench as a side effect. `402` owns the minimum eval-driver plumbing needed for capability evaluation.
+
+### D6. Refuse persistent state while steering is active
+
+Steered activations make cached KV, text-prefix caches and snapshots configuration-specific. Rather than a versioned identity descriptor, the first implementation refuses the combination: with a nonzero residual scale, automatic persistent KV reuse (the server's lookups under its configured KV root) and explicit snapshot save/load fail before any session mutation, with one clear error naming the limitation. Zero-scale and off configurations keep today's caching unchanged. A steered session never reads, rewrites or deletes existing cache files.
+
+The descriptor (site/intervention revision, index convention, scale bits, direction digest, disable state) is the follow-up for whoever first needs steered persistent state; `403` extends it then. Nothing here precludes it, and nothing here builds it.
+
+### D7. Test mechanics separately from efficacy
+
+Model-less/kernel checks: zero/unit/masked directions, distinguishable layers, one and multiple rows, invalid inputs, projection component factors, zero-vector control, the route-agreement fixture of D2, and ordering near BF16 boundaries. Compare an identical synthetic pre-normalization input through each hook route; use exact checks for no-ops and a documented FP32 reference tolerance where reduction order differs.
+
+Model-backed controls: baseline; opt-in/no file; real vector at zero scale; zero vector at nonzero scale (forces the slow path); real vector with the disable switch set. Compare 65 decode steps of logits, KV and Engram. Text equality alone does not pass this gate.
+
+Enabled coverage: short scalar prompt, batch prefill, short-wide suffix, 8K wide sweep, deferred decoder, append, and the refusal of snapshot save/load and persistent KV reuse while steered. Do not demand whole-model bitwise equality between inherently different upstream schedules; isolate the edit's contract and compare same-schedule runs. A failing zero-vector control is a numerical-path bug to resolve before behavior is measured.
+
+Measure enabled prefill/decode cost with a fixed expert cache and record the command/identity. Enabled behavior intentionally changes; upstream parity is checked on the disabled path only.
 
 ## Risks / Trade-offs
 
-- **[Wrong fold tensor]** -> the vector is misapplied and removal does not reproduce.
-  Mitigation: the acceptance check is behavioral (a few prompts the base refuses are
-  answered at alpha 0.5; `402` quantifies against msuiche's refusal32 24/32 and
-  distributedcognition's 17->1 judge). Confirm the tensor by matching the published
-  direction of removal before trusting the site.
-- **[Non-monotone alpha, L1-6 below the null gate]** -> do not raise alpha blindly.
-  0.5 is the knee / 2.0 regresses AT MSUICHE'S SITE; at this hook's transient `g->x`
-  fold the scale maps differently (measured 2026-10-13: 0.5 ~ no-op, effective ~4-8,
-  benign coherent through 8). Carried in the sidecar/docs; `403`/`405` handle dose.
-- **[Gated download]** -> the vector needs the user's `HF_TOKEN` and acceptance of
-  both Responsible Use Agreements; the converter and the hook are testable on a
-  synthetic vector without it.
-- **[Enabled-path cost]** -> one extra 5120 projection per layer when on; disabled
-  path bitwise and zero-cost (no tensor). Measured once, not a perf change.
+- [Rounding alignment changes enabled answers] -> only if D2's test shows a difference; then bump the intervention revision and remeasure, otherwise nothing changes.
+- [Steered runs lose persistent caching] -> a documented limitation; the guard is one check and the descriptor is the follow-up when someone needs it.
+- [Source-hook mismatch remains] -> call this a baseline experiment, not a published replication; investigate in `405`.
+- [Too many semantics in one graph helper] -> share only the pre-norm edit operation and its guard, not scheduling or HC routing.
 
-## Investigation findings (2026-10-13) — supersedes the tensor cites above
+## Migration Plan
 
-A full read of the graph (subagent map, confirmed against the source) corrects the
-Context section: the symbols it cited (`metal_graph_*`, `ds4_gpu_hc_split_weighted_sum_norm_tensor`,
-`hc_expand_comb/post/residual` at `ds4.c:12331-12337`) all belong to the **legacy
-DeepSeek V4 graph** (`struct ds4_gpu_graph`), which is **dead for V4.1**:
-`ds4_session_create` (ds4.c:31490-31531, `#ifdef DS4_HAS_DEEPSEEK41_GPU`) allocates
-only `s->ds41_graph` and returns before touching `s->graph`; decode dispatches
-`ds41_graph_step` (ds4.c:32912). All existing ffn/attn steering hooks also live on the
-dead graph. So the residual hook is a genuinely new application point on the **active
-`ds41_*` graph** (`struct ds41_gpu_graph`, ds4.c:23150), and the ffn/attn hooks are a
-template to COPY.
-
-**The fold tensor.** The single 5120 stream is `g->x` (DS41_SCRATCH, 5120), produced
-by the HC weighted-sum fold inside `ds41_hc_mix` (ds4.c:23575-23602). The 4-copy
-residual is `g->residual` (4*5120=20480). `ds41_hc_mix` runs **twice per layer**:
-before attention (`ffn=false`, ds4.c:23904) and before ffn (`ffn=true`). A once-per-layer
-`residual_stream_post_layer` edit must apply on **`ffn==false` only** (the layer-input
-fold ~= the previous layer's output), else it fires twice.
-
-**Two blockers the current architecture imposes:**
-1. **Fused with norm.** In both fast paths (`ds4_gpu_dsv41_hc_block_input_rows` 23584,
-   `ds4_gpu_dsv41_hc_input` 23594) the fold `g->x` and the rms-norm `g->norm` are ONE
-   kernel; `g->x` is consumed internally and not carried forward (the carried state is
-   `g->residual`, rebuilt by hc_expand). A projection inserted after the fused kernel has
-   **no effect**. `g->x` is addressable as a standalone tensor only on the **slow path**
-   (ds4.c:23598-23601), between `ds4_gpu_hc_weighted_sum_bf16_tensor` (23600) and
-   `ds41_norm` (23601). So the edit must force the slow path when steering is on.
-2. **Engram after, not before, the fold.** `ds4_gpu_dsv41_engram_add` (ds4.c:23900,
-   layers {1,14}) mutates the 4-copy `g->residual` BEFORE the fold at 23904. No single
-   5120 stream exists pre-engram. So "post-fold **pre-engram**" is unsatisfiable by an
-   existing tensor; applying at `g->x` is **post-engram on layers 1 and 14** (and clean
-   on the other 38, which have no engram).
-
-**Decision A vs B (needs the owner):**
-- **A (recommended).** Force the slow `ds41_hc_mix` path when `directional_steering_residual
-  != 0 && !ffn`, and project `g->x` between 23600 and 23601 with the existing
-  `ds4_gpu_directional_steering_project_tensor(g->x, dirs, il, DS4_N_EMBD, 1, scale)`. No
-  new kernel. Deviates from msuiche only on layers 1/14 (post- vs pre-engram); those sit
-  below msuiche's own null gate (L1-6) so the deviation is likely immaterial. The off
-  path (scale 0) stays on the fast fused kernels -> bitwise identical.
-- **B.** Project the 4-copy `g->residual` BEFORE `engram_add` with a NEW per-copy kernel
-  (applies the direction to each of the 4 hc copies). Truly pre-engram, but a new kernel
-  and 4x application semantics to validate.
-
-**Concrete plan for A** (not yet implemented — awaiting the A/B go-ahead; it is a wide,
-delicate hot-path change landed with the owner's eyes on it, not blind overnight):
-1. Frontends + option/field: `--dir-steering-residual F` in ds4_cli.c / ds4_server.c /
-   ds4_help.c (set `directional_steering_scale_set = true` so a file does NOT also
-   default `ffn=1`); `float directional_steering_residual` in `ds4_engine_options`
-   (ds4.h); engine `directional_steering_residual_scale` + copy in ds4_engine_open.
-2. Upload the per-layer directions as a `ds41_gpu_graph` tensor in `ds41_graph_alloc`
-   (mirror the `engram_q_norm[]` upload), gated on a non-zero scale (no tensor when off).
-3. Thread `il` into `ds41_hc_mix`; when `scale != 0 && !ffn` skip both fused paths and
-   project `g->x` on the slow path (23600->23601).
-4. Mirror on the prefill/batch folds: `ds41_before_attention_batch` (b->x fold, 23959-61)
-   and `ds41_decoder_prepare` (active.x, 24605) — before-attention fold only.
-5. CPU reference: `cpu_directional_steering_project_rows(scratch->attn_cur, dirs, il, 1,
-   scale)` right after the fold at ds4.c:11595 (CPU has no engram, so no ordering issue).
-6. `DS4_METAL_DISABLE_V41_RESIDUAL_STEERING` classified in ds4_env.def (read at the apply
-   site, so env-check passes).
-
-**Index/sign to confirm behaviorally.** `404`'s offset search found msuiche and distcog
-align best at a **+1** layer offset (distcog measured at the layer-input fold), so
-msuiche's `direction[N]` may map to the before-attention fold of layer `N` or `N+1`; the
-drop-in check (task 3.2) at alpha 0.5 settles the index, sign and whether A reproduces the
-removal. The converted vector (`v41-msuiche.f32`, 401 task 1) is ready for that test.
-
-**Cross-check against llama.cpp's control-vector convention (2026-10-13).** msuiche's GGUF
-is in llama.cpp's `controlvector` format, so llama.cpp's application convention is the
-reference for the SITE and INDEX (the MATH differs — see below):
-- Site: llama.cpp applies the per-layer direction in `build_cvec(cur, il)` AFTER the FFN
-  output and AFTER the residual add, labelling the result `l_out` (the per-architecture
-  builders `glm4.cpp`, `bailingmoe.cpp` show this order). So `residual_stream_post_layer`
-  is the single-stream layer OUTPUT residual. In the `ds41` graph that single-stream view
-  is the fold `g->x`; the fold at layer `N+1`'s `before_attention` (ds4.c:23904) is the
-  output residual of layer `N`. This matches option A's site and **confirms the +1 index**:
-  apply `direction[N]` at the fold that carries layer `N`'s output, i.e. the before-attn
-  fold of layer `N+1` (equivalently, `direction[il-1]` at layer `il`'s before-attn fold).
-- Layer 0: llama.cpp never steers the embeddings (no tensor for layer 0) — matches
-  msuiche/distcog's zero layer-0 row and `controlvector_to_f32.py`.
-- Math: llama.cpp control vectors are ADDITIVE (`ggml_add(cur, dir)`); msuiche's card
-  explicitly refuses additive consumers ("NOT additive") and wants PROJECTIVE
-  `h -= alpha*(h.d)d`. ds4's `ds4_gpu_directional_steering_project_tensor` already does the
-  projective form, so ds4 applies the correct math at the site llama.cpp uses for the
-  additive form. No additive path is added.
-This removes the index ambiguity for option A; only the sign and the quantitative removal
-remain for the behavioral drop-in (3.2) / `402` to confirm.
-
-**Behavioral correction (2026-10-13): the +1 hook index is NOT confirmed — keep orig.** A
-first-token probe shifting the vector file by +-1 row (emulating `direction[il-1]`/`[il+1]`
-at layer `il` with no code change) removed LESS at +1 (mass @4 0.567 orig -> 0.705 +1; @8
-0.414 -> 0.598) and only marginally/inconsistently more at -1 (@4 0.627 worse, @8 0.356 vs
-0.414). So the direct mapping `direction[il]` at layer `il`'s before-attn fold is kept; the
-llama.cpp +1 (its post-residual-add point) does not transfer to this transient-fold hook.
-The `404` +1 finding is about msuiche<->distcog *direction alignment*, a separate axis, not
-the hook index.
-
-## Efficacy findings (2026-10-13) — option A works, was under-dosed
-
-Clean first-token probe (`-n 1 --dump-logprobs`, XSTest, no payload generated; drivers in
-the session scratchpad, not committed). Metric: first-token refusal-mass = sum of
-softmax prob on refusal-opener tokens (`I`, `Sorry`, `Unfortunately`, ...).
-
-- **0.5 is a no-op at this site.** base refuse-mass 0.986 (25/25 refuse top1) ->
-  residual 0.5 gives 0.971 (25/25). The msuiche 0.5 knee does essentially nothing on the
-  transient `g->x` fold.
-- **Scale sweep is monotone and sign-correct** (5 elicit prompts): 1 -> 0.851, 2 -> 0.779,
-  4 -> 0.567 (3/5 refuse top1), 8 -> 0.414, 16 -> 0.409 (2/5). Negative scale does not
-  reduce (-1 -> 0.974), confirming the converter's sign (positive removes).
-- **The drop is real steering, not degradation.** Benign prompts ("why databases use
-  indexes", "three branches of US govt") stay fully coherent and correct through scale 8.
-- **Controls pass.** scale-0 == base token-for-token; a random equal-norm null vector
-  does not remove refusals; no added over-refusal on XSTest-safe (2/15 -> 2/15).
-
-Conclusion: option A is viable; operating point ~4-8, NOT 0.5. The transient fold is
-partly washed out, so it needs ~10x msuiche's alpha for the same downstream effect —
-consistent with `g->x` not fully carrying forward, but enough does to flip the refusal.
-Option B (project the carried `g->residual`) becomes an OPTIONAL refinement (fuller removal
-at lower scale/distortion), not a required pivot. The +1 hook index was tested and rejected
-(see the behavioral correction above; orig indexing kept). Still open: the full-generation
-axis-A score sweep around 4-8 (keyword/judge, user-run); whether 403's start-strong-then-decay
-schedule beats a flat high scale.
+Land input validation and tests, then the route-agreement test and any alignment it justifies, coverage, the persistent-state guard and integration checks. Update help, `dir-steering/README.md`, affected agent notes and source registry entries with each relevant step. Regenerate converted sidecars and re-run the disabled controls before enabling new behavior. Returning to scale zero restores unsteered computation and ordinary caching.

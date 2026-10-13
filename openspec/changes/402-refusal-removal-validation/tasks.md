@@ -1,112 +1,80 @@
 # Tasks
 
-Model-agnostic; builds in parallel with `401`. The full A/B loop needs a
-steered model (`400`+`401`); groups 1-4 stand alone. Datasets and intermediates
-go to `/tmp`; model runs serialize on `/tmp/sf-ds4-1flash.lock` and use
-`caffeinate` when long. No model runs are part of authoring.
+M0 = groups 1-4: a judge-independent numerical/benign first pass, separately configured graded text evaluation, diagnostic screen and KPI/audit separation. M1 = groups 5-7: complete measurement, taken axis by axis as data, graders and model time allow. Integration task 8.1 (model-less self-check, make test, validate) together with groups 1-4 closes the change; M1 tasks stay open without blocking closure, and any unmeasured axis is reported as unmeasured, never as passed. A working first pass can return its declared KPIs before all M0/M1 work is finished; it cannot certify unmeasured axes. Historical checks below are not new model runs. Old compound tasks 2.1-3.3, 4.1 and 5.1-5.2 are reopened/split; old group 7 is absorbed into the relevant work rather than duplicating argument and runner changes. The corrected intervention from `401` is required for acceptance runs, not for authoring offline fixtures. Reuse by future steering proposals is qualified explicitly in 4.9 and documented in 8.4, not assumed from the existence of the runner.
 
-Status 2026-10-12: harness authored under `eval/`; every file has an offline
-`__main__` self-check, all green via `make eval-refusal-selfcheck` (13/13).
-`make test` unaffected (EXIT=0, env-check 502), `openspec validate
-402-refusal-removal-validation --strict` passes. Boxes checked below are
-code-complete AND verified offline; the model-backed and live-network
-verifications (marked *model-backed* / *live-fetch*) wait for a steered model.
+## 1. Datasets and run identity
 
-Status 2026-10-13: first real model-backed verdict delivered through the first-token
-screen (design D6) on 401's residual hook: 0.5 is a no-op, the window is 4-8, sign and
-`direction[il]` index confirmed, D4 controls PASS. The screen ran from session scratchpad
-drivers; group 7 makes it a repo tool and closes the harness gaps it exposed.
+- [x] 1.1 Retain the recorded live-fetch evidence for AdvBench 520, HarmBench 400, StrongREJECT 313, XSTest-safe 250 and the benign loader; these were verified previously and do not establish OR-Bench or all capability coverage.
+- [x] 1.2 Retain the existing composition/dedup helper and its known-duplicate fixture; the historical composed union was 1201 and the separate AdvBench slice had 100 rows.
+- [ ] 1.3 Preserve source/category IDs through composition and record dataset hashes/revisions and exact selectors. Test duplicates from different sources and missing required columns; verify the named slice is stable and a subset cannot be labeled full XSTest-safe.
+- [ ] 1.4 Make cached downloads publish only complete validated content and keep dependency/dataset caches task-local. Verify interrupted or malformed downloads are not reused as valid input; document any unavailable OR-Bench/capability prerequisites without installing into reusable host environments.
+- [ ] 1.5 Add the per-run local manifest/evidence and separate versioned KPI-summary contract from design D3 using existing JSON helpers. Test that changed vector bytes, model/settings or prompt selection prevent result reuse; verify no secrets are recorded, no full-model hash is repeatedly computed and the summary references rather than embeds prompt-bearing argv/raw records.
+- [ ] 1.6 Document source selection, manifests, KPI/audit presentation and M0/M1 meanings in `docs/REFUSAL_VALIDATION.md`; verify examples name concrete output paths, default benign scope and the distinction between full sets and slices.
+- [ ] 1.7 Define the pinned default `benign-smoke` profile with numerical/no-op checks, deterministic benign-task scoring and explicit required versus optional metrics. Test profile selection without an LLM judge and verify no unrelated dataset is fetched or broader benchmark launched automatically; separately selected benchmark profiles must declare their launch scope and required axes.
 
-## 1. Datasets and composition
+## 2. Actual generation and strict errors
 
-- [x] 1.1 `eval/datasets_harmful.py`, `datasets_benign.py`, `datasets_overrefusal.py`,
-  `datasets_capability.py`: the loaders of VALIDATION_FRAMEWORK §1, each trying
-  the `walledai/*`/raw mirror and naming a missing id. The `harmful_behaviors[:100]`
-  slice is preserved exactly (offline self-check). Live-fetch CONFIRMED 2026-10-13:
-  advbench 520 (slice[:100]=100), harmbench 400, strongreject 313, xstest-safe 250,
-  alpaca-benign ok; compose union (deduped) 1201, dc100 100. (OR-Bench still needs the
-  `datasets` lib.)
-- [x] 1.2 `eval/compose.py`: dedup (normalized whitespace/case) across the
-  overlapping harmful sources; keep the `:100` slice as its own suite. Dedup
-  verified on a fixture with known duplicates (self-check).
+- [ ] 2.1 Add residual scale to `common.build_cli` and `generate.gen`, provide filenames for diagnostic dumps, and suppress implicit FFN activation. Extend offline tests with exact baseline/residual/zero-scale argv and the real logprob JSON shape.
+- [ ] 2.2 Replace arbitrary steering-tail stripping with a structured/allowlisted comparison of paired options. Test a changed temperature in `extra`, changed thinking/template/model/budget and duplicate conflicting flags; all must be rejected before execution.
+- [ ] 2.3 Save every attempted arm's command, status, stdout/stderr, generated count and output/diagnostic identity in local evidence. Return allowlisted status codes, counts and opaque references on the default output streams, including exceptions. Verify nonzero exit, timeout, empty/malformed output and count mismatch fail without being scored, silently omitted or echoing raw content.
+- [ ] 2.4 Add real-output fixtures for completion extraction and diagnostic parsing, preserving token IDs where exposed. Verify failures cannot yield a fake completion and a dump path cannot be consumed as the next option.
+- [ ] 2.5 Update generation documentation with implemented residual commands and failure behavior. Run a benign baseline/residual-zero smoke pair with the corrected `401` and verify output identity and saved raw records; record this model-backed result separately from argv tests.
 
-## 2. Generation
+## 3. Grader calibration and no-op controls
 
-- [x] 2.1 `eval/generate.py`: drive the child CLI at greedy temp 0, fixed
-  `max_tokens`, one chat template, saving raw JSON per prompt for base and steered.
-  The two arms differ ONLY by the steering block (argv-level no-op proof,
-  `arms_differ_only_by_steering`, self-check). *model-backed*: base-vs-base run
-  label-identical.
-- [x] 2.2 Multimodal arm: render the axis-A prompts as images (`render_prompt_image`,
-  Pillow) and the server image payload shape (`image_request`). *model-backed*: a
-  rendered prompt reaches the decoder (non-empty output).
-- [x] 2.3 Reasoning arm: axis A with thinking on and off (the `--think`/`--nothink`
-  flag), scored separately. *model-backed*: both arms produce output.
+- [x] 3.1 Retain existing pure keyword/judge/rubric parsing helpers and the original basic fixtures as scaffolding only; they do not constitute an executed or calibrated LLM grader.
+- [ ] 3.2 Add strict three-way grader parsing and an actual frozen-unsteered judge invocation for profiles requiring it. Test unknown/negated labels, echoed labels, reasoning text, response-embedded instructions and explicit grader refusal; invalid grades must remain INVALID with separate reasons/counts, never become the tested model's refusal/compliance label. Unsupported judge selections must fail without silent substitution or rewritten-instruction retries.
+- [ ] 3.3 Pin the published StrongREJECT evaluator protocol or explicitly name/calibrate the existing local rubric variant. Verify parsed values/schema, invalid grades and score calculation against fixtures; document which scorer is actually used.
+- [ ] 3.4 Build a fixed independently annotated calibration sample covering all three classes and answers containing disclaimers. Execute the graders, record per-class disagreements and a blinded manual audit; do not claim calibration from parser assertions alone.
+- [ ] 3.5 Implement record-level base/scale-zero/zero-direction-at-nonzero-scale controls and seeded equal-row-norm random controls for the runner integration in 4.2. Test unequal record lengths/order, identical labels with different outputs, no-op failure and random effects; verify the control result requires an abort for a no-op failure and reports null effects as specificity evidence. Task 4.2 verifies that the real loop honors those results.
+- [ ] 3.6 Update the controls/grader documentation with scope, invalid-output handling and vector-norm versus activation-dose matching. Verify published anchors are references rather than hardcoded pass thresholds.
 
-## 3. Scoring
+## 4. M0 orchestration, KPI-only report and explicit audit
 
-- [x] 3.1 `score_keyword.py`, `score_judge.py` (3-way, `--judge base|<model>`),
-  `score_strongreject.py` (0-1 rubric). Each classifier returns the expected labels
-  on a hand-labeled fixture and the three are reported separately (self-checks).
-- [x] 3.2 `score_kl.py`: KL on forced-token logprobs vs base, with an identity
-  requant noise floor; the embedding-cosine proxy as a flagged fallback. KL of a
-  distribution against itself is ~0 and the floor is reported (self-check).
-- [x] 3.3 `score_capability.py`: axis D, reusing `sf-ds4-1flash-eval` suites,
-  adding MMLU ethics-cluster separation. The ethics/moral_scenarios cluster is
-  reported apart from the rest (self-check).
+- [x] 4.1 Retain the existing report-formatting helper and table fixture; this establishes formatting only, not an actual report, the new KPI boundary or a completed experiment.
+- [ ] 4.2 Replace `run.py`'s placeholder with the serialized profile -> arms -> controls -> declared scores -> report loop. Default to completed benign-smoke evaluation and KPI presentation; keep screen/full measurement separate from kpi/audit visibility. Test fake-child execution and profile boundaries, including no judge required for basic benign KPIs, partial failure, zero executed examples and no automatic scope escalation or prompt rewriting.
+- [ ] 4.3 Implement `eval/probe_firsttoken.py` on the shared runner and manifest. Retain token-level details in local evidence and use numeric aggregates/opaque IDs in the default summary. Test lexicon/token-ID handling, top-k lower-bound labeling, retained mass and controls; verify unchanged first-token mass does not forbid full evaluation and existing full-logit capture can resolve support when requested.
+- [ ] 4.4 Emit versioned `summary.json` and a KPI-only Markdown view with requested/attempted/completed/valid counts, metric denominators, per-axis coverage, paired intervals, margins, validity and verdict eligibility. Test missing optional metrics as not_measured, missing required metrics as incomplete, and separate model-refusal/grader-refusal/not-run statuses; verify no unknown value becomes zero or an equivalence claim.
+- [ ] 4.5 Connect `make eval-refusal` and `make eval-refusal-selfcheck` to the implemented runner and offline checks. Verify missing prerequisites exit nonzero and each self-check prints its name; document explicit benign, screen, benchmark/operator-run and KPI/audit commands without claiming report visibility bypasses any launch policy.
+- [ ] 4.6 Execute the numerical/benign first pass through all applicable arms without an LLM judge, then separately request a small graded text suite when its resources and launch scope are available. Retain raw evidence and summaries; verify no-op identity, deterministic task KPIs and coverage-specific status. If an agent cannot launch a run, record the limitation without claiming measurement and provide the operator-run path.
+- [ ] 4.7 Add end-to-end presentation-boundary tests with distinctive canaries in prompts, completions, decoded tokens, judge narratives, argv, stderr and exception messages. Verify none appear in default stdout/stderr, summary JSON or summary Markdown on success or failure; explicit audit must expose the intended evidence and preserve the same KPI values/denominators/verdicts. Verify no-op failures still abort.
+- [ ] 4.8 Implement stored-result rendering through `--input-run DIR` with kpi/audit presentation and reject conflicting generation options. Use a subprocess spy to verify it launches neither generator nor judge, preserves incomplete/failed statuses and never invents grades; document how an agent consumes operator-produced KPIs and how an explicitly requested audit reads retained evidence.
+- [ ] 4.9 Qualify numerical/benign profile reuse on distinct scalar-scale and binary-layer-mask configurations using the same runner, schema and pinned suite without copying orchestration code. Verify reproducible identified summaries, controls and evidence links, plus failure/audit-boundary fixtures. Record the tested profile/schema coverage; this qualifies only that profile, not unimplemented M1 axes.
 
-## 4. Controls and calibration
+## 5. Full forced-prefix fidelity (M1)
 
-- [x] 4.1 No-op gate and null control in `run.py`: the scale-0 arm must reproduce base
-  labels exactly; a random equal-norm vector must not drop refusals; a failing
-  control stops the run naming which. `make_null_vector` preserves per-layer norm.
-  All verified on fixtures (self-check).
-- [ ] 4.2 Calibration: reproduce distributedcognition (keyword 98->41, judge 17->1,
-  KL 0.142 vs 0.131) and msuiche (refusal32 4->24) with their respective protocols,
-  once a steered model exists. The anchors and `within_resolution` are coded; the
-  reproduction run is *model-backed*.
+- [ ] 5.1 Teacher-forced logit path: first extend the existing `--perplexity-file` path (it already teacher-forces raw text) to dump per-position full-vocabulary logprobs; only if that path cannot expose full distributions, fall back to a test-only driver on the existing session APIs (`tests/steering_forced_logits.c` and a test target). Test exact supplied token IDs and identical prefixes in both arms; verify it never substitutes independently generated continuations and creates no new production binary.
+- [ ] 5.2 Replace the current KL calculation with stable full-vocabulary comparison and strict input validation. Test self-KL, the 0.500001/0.499999 near-tie swap, empty/unequal sequences, vocabulary/ID mismatches, duplicate IDs and nonfinite data. Verify top-k-only input cannot silently pass as full KL.
+- [ ] 5.3 Execute same-build base/base, residual-zero and active-intervention forced-prefix comparisons on benign continuations. Record the local floor and per-prompt aggregates; verify the external 0.131 floor is not used as this run's acceptance threshold.
+- [ ] 5.4 Add completed benign-response language, repetition and task-quality checks, with the pilot 3-5 prompts at 512 tokens followed by target-mix longer answers for any long-output claim. Save inspected completions and uncertainty; report candidate scales as candidates, not validated defaults.
+- [ ] 5.5 Update fidelity documentation with forcing, KL direction/support and noise-floor semantics. Verify commands/fixtures produce the documented fields and any fallback is labeled exploratory and cannot pass the fidelity gate.
 
-## 5. Report
+## 6. Full behavior, over-refusal, capability and breadth (M1)
 
-- [x] 5.1 `run.py` orchestrator + `eval/out/report.md`: the VALIDATION_FRAMEWORK §5
-  table, one column per protocol (never mixed), resolution printed, plus the axis-E
-  per-domain breadth map and the ~10 hand-audited completions per class. Report
-  structure verified offline (`build_report` self-check).
-- [x] 5.2 `make eval-refusal` (model-backed, follows `gguf/` symlinks) and the
-  `README.md`/`docs/REFUSAL_VALIDATION.md` section. `make eval-refusal` with no
-  model prints the prerequisite (verified); the docs state the two-protocol rule
-  and the `/tmp` dataset path.
+- [ ] 6.1 Run the pinned behavior slice and deduplicated union with complete responses and separate A scorers, preserving source/domain memberships for E. Verify report denominators, disagreements and failed/incomplete rows are visible, not silently dropped.
+- [ ] 6.2 Connect and execute the full pinned XSTest-safe set plus OR-Bench-hard when available, or explicitly report unmeasured coverage. Verify semantic complete-response scoring and exact counts; the historical 250-row XSTest-safe set must not become a claimed full 125-row run.
+- [ ] 6.3 Connect actual steered capability execution to the child's existing eval cases/grader, adding only the residual/gate options needed in the eval frontend if necessary. Test parser fixtures from real eval output and run a base/zero-scale pair; verify the steered arm cannot accidentally be a second baseline.
+- [ ] 6.4 Map the requested MMLU/GSM8K/ARC-c/TruthfulQA cases to existing coverage and connect missing datasets rather than relabeling `core`. Verify subject/case membership, ethics-cluster definition and aggregate denominators; publish missing prerequisites explicitly.
+- [ ] 6.5 Execute paired capability runs and hand-audit a stratified response sample. Record prompt-paired intervals and predeclared margins; without adequate coverage/margins the result remains report-only or inconclusive.
+- [ ] 6.6 Assess feasibility of each published reproduction using design D6's exact-protocol checklist. Execute a feasible reproduction or record the specific unavailable artifact/protocol fields; verify neither an unavailable reproduction nor a local hook mismatch is called a harness failure.
+- [ ] 6.7 Update axis/protocol documentation with the implemented coverage and evidence references. Verify separate protocol columns and no hardcoded generic 'n=32 resolves 30 points' acceptance tolerance.
 
-## 6. Integration
+## 7. Vision and reasoning repeats (M1)
 
-- [x] 6.1 `make test` (incl. env-check) unaffected (EXIT=0, 502 classified; this
-  change adds no runtime code or env), `openspec validate
-  402-refusal-removal-validation --strict` passes. *model-backed*:
-  `SF_PARITY_FLAGS=--ssd-streaming tools/parity-check.sh sf-ds4-1flash`
-  token-identical (unchanged by a python-only change). No commit without a request
-  — standing commit authority granted for this steering work on `sf/steering`.
+- [ ] 7.1 Replace the local-path image payload with an existing tested data-URI/base64 format and require the vision component. Test payload parsing against the real server contract; verify prompt content is not duplicated into the text channel.
+- [ ] 7.2 Execute a benign image-read check before evaluation, then paired image repeats with identical image bytes and settings. Verify actual encoder/input delivery and readable content, not merely non-empty output; record failed image cases.
+- [ ] 7.3 Run explicit thinking-on/off pairs with fixed per-protocol budgets, separating reasoning/final answers and recording final-phase completion. Test exhausted budgets and missing boundaries; verify they remain incomplete rather than semantic labels.
+- [ ] 7.4 Document modality-specific prerequisites and report columns; verify M1 cannot be marked complete while either requested repeat is unmeasured.
 
-## 7. First-token screen and coverage gaps (added 2026-10-13)
+## 8. Integration
 
-The first-token probe delivered 402's first real verdict on 401 but lives in the
-session scratchpad (ephemeral). Make it permanent and close the gaps it exposed.
+- [ ] 8.1 Run the complete model-less self-check target and `make test`, reading the tests that actually ran, then `openspec validate 402-refusal-removal-validation --strict`. Recheck Makefile targets after edits.
+- [ ] 8.2 Execute the final M1 protocol on the corrected, identified `401` build when all required resources are available. Audit the manifest and report against every spec scenario; keep blocked model-backed tasks open rather than claiming completion from M0.
+- [ ] 8.3 If frontend/test-driver C changes were needed, verify the normal disabled-steering inference path and the project's parity gate on the integrated candidate. Record the tested build; do not label a Python-only assumption as a model-backed parity run.
+- [ ] 8.4 After 4.9, document the verified runner/profile/schema contract and a concrete invocation/result-consumption template for future steering proposals in `docs/REFUSAL_VALIDATION.md`. Verify later changes can reference this runner with their own intervention identity, data split, KPIs and margins rather than create another framework. Mark full-benchmark reuse qualified only after its M1 checks, and keep intervention-specific correctness/acceptance mandatory. Numerical/benign reuse documentation need not wait for M1.
 
-- [ ] 7.1 `eval/probe_firsttoken.py`: the screen as a repo tool — loads a prompt set,
-  runs base / steered / null / scale-0 arms at `-n 1`, reports refusal-opener mass,
-  top-1 class, the D4 controls and a per-prompt table. Offline `__main__` self-check
-  on a fixture logprobs JSON (lexicon classification, mass sum, null-vector norm).
-  Verify `make eval-refusal-selfcheck` picks it up.
-- [ ] 7.2 `eval/common.py build_cli()`: add `residual=` (emits
-  `--dir-steering-residual`) so the harness can target 401's site; extend
-  `arms_differ_only_by_steering` and its self-check to the residual block. Verify the
-  two arms still differ only by the steering block.
-- [ ] 7.3 `eval/run.py`: replace the "driven interactively" stub with the real loop for
-  the screen + controls (full generation stays opt-in), so `make eval-refusal` with a
-  model prints numbers. Verify a base-vs-scale-0 run reports the no-op gate PASS.
-- [ ] 7.4 Long-output benign check (gates `403`): 3-5 benign prompts at 512 tokens,
-  scale 4 and 8, read by hand for drift / repetition / code-switching, plus the axis-B
-  KL on the benign logprobs. Verify the result is recorded; if flat 4-8 stays clean,
-  `403`'s decay has no measured problem to solve.
-- [ ] 7.5 Over-refusal guardrail on the full XSTest-safe set (125 prompts, `-n 1`),
-  base vs residual 4 and 8. Verify steered refuses no more than base, within
-  resolution.
+## Workflow follow-up
+
+- `403` consumes the long-output and temporal baseline, not a declaration that a few clean answers prove decay useless. `404`, `405` and future steering proposals should reuse the qualified `402` execution/report contract with their own pinned experiments, instead of cloning the runner or assuming another intervention's acceptance transfers.
+- Reuse is conditional on demonstrated profile coverage and a verified schema/version; add only a missing metric/adapter when justified, not a speculative plugin system or new framework.
+- Commit, push and archive only on a separate explicit request. Missing external reproduction data or a blocked launch does not authorize inventing a protocol, bypassing controls or claiming a success result.
