@@ -9,6 +9,7 @@ V4.1 needs an explicitly defined steering intervention whose effect does not sil
 - Define `--dir-steering-residual F` as a projective edit of the **weighted attention-input HC fold**, after Engram on layers that use it, before attention normalization. Keep the existing direct layer mapping as the baseline, not as a proven source-hook correspondence.
 - Check whether decode, batch prefill and decoder-key reconstruction place the fold rounding on different sides of the projection. If a route-agreement test shows a difference beyond FP32 tolerance, align them to one order and bump the intervention revision; otherwise record the agreement and change nothing. The unsteered path is preserved exactly either way, and no recorded evidence is invalidated by assertion.
 - Finish missing `ds41_decoder_prepare` coverage, including ordinary wide sweeps around 3-4K tokens, and provide an isolated CPU reference for the edit without enabling full CPU V4.1 inference.
+- Fix the token-by-token branch of the decoder suffix, which folded warm and published rows with the decode scratch split instead of the row's carried split: found by this change's route test at 8192 tokens under fixed arithmetic, unsteered as well. The default schedule (batch attention on) never takes that branch; the later quality gate (`420`) measures the unsteered path in bits and speed.
 - Harden conversion and runtime input validation; distinguish source-hook metadata from actual application-hook metadata. Preserve one raw 40x5120 f32 matrix and zero rows for masked layers.
 - **BREAKING diagnostic correction:** keep legacy FFN/attention flags and `/steer`, but reject unsupported active V4.1 uses instead of reporting success without an edit. CLI/server are the steering frontends; no bare bench flag.
 - Refuse active steering together with persistent KV reuse and snapshot save/load until a steering identity exists; existing caches are never touched. The identity descriptor is deferred to the change that first needs steered persistent state.
@@ -18,6 +19,7 @@ V4.1 needs an explicitly defined steering intervention whose effect does not sil
 
 ### New Capabilities
 - `directional-steering`: additional contracts for the capability introduced by in-flight `400`: the weighted-fold intervention, vector validation, unsupported-site diagnostics and the steering/persistent-state guard. These are ADDED requirements; no durable main spec exists yet.
+- `prefill-schedule`: the reconstruction contract of the decoder suffix: rows warmed or published one token at a time are folded from their own carried state, so the suffix route is bitwise with the plain route under fixed arithmetic, steered or not.
 
 ### Modified Capabilities
 None in the current main-spec inventory.

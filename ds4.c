@@ -23572,6 +23572,28 @@ static bool ds41_hc_block_input_off(void) {
     return metal_graph_env_flag("DS4_METAL_DISABLE_V41_HC_BLOCK_INPUT", &cache);
 }
 
+/* sf: 401 the one steering operation of the V4.1 graph. x holds attention-input
+ * folds already rounded to BF16; the projection h -= scale*d[il]*dot(d[il],h)
+ * runs in f32 and the attention norm follows with no second rounding. Decode,
+ * batch prefill and the decoder suffix's reconstructed rows all come through
+ * here, so no route can skip the edit or order it differently. Off (scale 0,
+ * no file, or the disable switch) dispatches nothing. The row counter is read
+ * by tests to show which route steered how many rows. */
+static uint64_t ds41_steered_rows_total;
+
+static bool ds41_steering_active(const ds41_gpu_graph *g) {
+    return g->residual_scale != 0.0f && g->residual_dirs &&
+           !getenv("DS4_METAL_DISABLE_V41_RESIDUAL_STEERING");
+}
+
+static bool ds41_steer_attention_input(const ds41_gpu_graph *g, ds4_gpu_tensor *x,
+                                       uint32_t il, uint32_t rows) {
+    if (!ds41_steering_active(g)) return true;
+    ds41_steered_rows_total += rows;
+    return ds4_gpu_directional_steering_project_tensor(x, g->residual_dirs, il,
+               DS4_N_EMBD, rows, g->residual_scale) != 0;
+}
+
 /* One block's HC input: the mixer projection, then split, weighted sum with
  * the previous block's pre weights and norm; each half fused where the fused
  * kernel reproduces the separate ones. */
@@ -23584,15 +23606,12 @@ static bool ds41_hc_mix(ds41_gpu_graph *g, const ds4_model *m,
     const ds4_tensor *base = ffn ? l->hc_ffn_base : l->hc_attn_base;
     const ds4_tensor *norm = ffn ? l->ffn_norm : l->attn_norm;
     ds4_gpu_tensor *split = ffn ? g->ffn_split : g->attn_split;
-    /* sf: 401 residual_stream_post_layer steering. The single 5120 fold g->x is a
-     * standalone tensor only on the slow path (both fast kernels fuse the fold with
-     * the rms-norm), so when this layer's attention-side fold is steered we skip the
-     * two fused paths and project g->x between the weighted-sum and the norm, reusing
-     * the existing projection kernel (y -= scale*d*dot(d,y), matching msuiche's
-     * projective control vector). Off (scale 0, ffn side, or the disable env) keeps
-     * the fast paths, so the disabled path is bitwise identical. */
-    const bool steer = !ffn && g->residual_scale != 0.0f && g->residual_dirs &&
-                       !getenv("DS4_METAL_DISABLE_V41_RESIDUAL_STEERING");
+    /* sf: 401 steering of the attention-side fold. The single 5120 fold g->x
+     * is a standalone tensor only on the slow path (both fast kernels fuse the
+     * fold with the rms-norm), so a steered layer skips the two fused paths:
+     * weighted sum rounded to BF16, projection, norm. Off (scale 0, ffn side,
+     * or the disable env) keeps the fast paths, bitwise. */
+    const bool steer = !ffn && ds41_steering_active(g);
     if (!steer && fn->type == DS4_TENSOR_F16 && !ds41_hc_block_input_off() &&
         ds4_gpu_dsv41_hc_block_input_rows(g->mix, g->x, g->norm, split, residual, pre, m->map, m->size,
                                           fn->abs_offset, scale->abs_offset, base->abs_offset, norm->abs_offset,
@@ -23612,8 +23631,7 @@ static bool ds41_hc_mix(ds41_gpu_graph *g, const ds4_model *m,
               scale->abs_offset, base->abs_offset, DS4_N_HC, DS4_N_HC_SINKHORN_ITER, DS4_HC_EPS) &&
           ds4_gpu_hc_weighted_sum_bf16_tensor(g->x, residual, pre, DS4_N_EMBD, DS4_N_HC)))
         return false;
-    if (steer && !ds4_gpu_directional_steering_project_tensor(g->x, g->residual_dirs, il,
-                     DS4_N_EMBD, 1u, g->residual_scale)) return false;
+    if (steer && !ds41_steer_attention_input(g, g->x, il, 1u)) return false;
     return ds41_norm(g->norm, g->x, m, norm);
 }
 
@@ -23976,14 +23994,12 @@ static bool ds41_before_attention_batch(ds41_gpu_graph *g, ds41_prefill_row *b,
         ds4_gpu_hc_weighted_sum_split_tensor(b->x, b->residual, b->ffn_split, DS4_N_EMBD, DS4_N_HC) :
         ds4_gpu_hc_weighted_sum_tensor(b->x, b->residual, b->pre, DS4_N_EMBD, DS4_N_HC);
     if (!mixed) return false;
-    /* sf: 401 residual steering on the prefill/batch before-attention fold (b->x is f32
-     * here, before the quantize), mirroring the decode path so the prompt is steered too.
-     * Off (scale 0 / env) leaves b->x untouched -> bitwise identical. */
-    if (g->residual_scale != 0.0f && g->residual_dirs &&
-        !getenv("DS4_METAL_DISABLE_V41_RESIDUAL_STEERING") &&
-        !ds4_gpu_directional_steering_project_tensor(b->x, g->residual_dirs, il,
-            DS4_N_EMBD, count, g->residual_scale)) return false;
+    /* sf: 401 the fold is rounded first, as the decode path stores it, then
+     * steered in f32 with no second rounding before the norm (route agreement:
+     * tests/test_deepseek41_graph.c --steering-fold). Off, the quantize and
+     * the norm run as before, bitwise. */
     return ds4_gpu_dsv41_quantize(b->x, DS4_N_EMBD, count, DS4_V41_BF16) &&
+        ds41_steer_attention_input(g, b->x, il, count) &&
         ds41_norm_batch(b->norm, b->x, m, l->attn_norm, count);
 }
 
@@ -24629,7 +24645,11 @@ static bool ds41_decoder_prepare(ds41_gpu_graph *g, const ds4_model *m,
             ds4_gpu_hc_weighted_sum_split_tensor(active.x, active.residual, active.ffn_split,
                                                 DS4_N_EMBD, DS4_N_HC) :
             ds4_gpu_hc_weighted_sum_tensor(active.x, active.residual, active.pre, DS4_N_EMBD, DS4_N_HC);
+        /* sf: 401 reconstructed rows take the same edit as directly processed
+         * ones; the token-major branch below reaches it through
+         * ds41_graph_before_attention. */
         if (ok && batch_attention) ok = ds4_gpu_dsv41_quantize(active.x, DS4_N_EMBD, count, DS4_V41_BF16) &&
+            ds41_steer_attention_input(g, active.x, il, count) &&
             ds41_norm_batch(active.norm, active.x, m, l->attn_norm, count);
         if (ok && batch_publish)
             ok = ds41_attention_publish_batch(g, &active, m, l, il, initial_start + off, count);
@@ -24646,6 +24666,12 @@ static bool ds41_decoder_prepare(ds41_gpu_graph *g, const ds4_model *m,
             if (!batch_attention) {
                 row.residual = g->rows_view[t].residual;
                 row.pre = g->rows_view[t].pre;
+                /* sf: 401 every layer after the first folds with the previous
+                 * sublayer's split: this row's carried one, not the decode
+                 * scratch the graph copy points at, which folded warm and
+                 * published rows with stale weights (--decoder-suffix and
+                 * --steering-routes at 8192 under fixed arithmetic). */
+                row.ffn_split = g->rows_view[t].ffn_split;
                 ok = ds41_graph_before_attention(&row, m, l, il);
             }
             if (ok && publish) {
@@ -25915,6 +25941,66 @@ static void cpu_directional_steering_project_rows(
     }
 }
 
+/* sf: 401 the V4.1 steering site. The runtime edits each layer's weighted HC
+ * attention-input fold, after Engram on layers 1 and 14 and before the
+ * attention norm. The msuiche vector was derived at the post-layer residual
+ * (`residual_stream_post_layer`), a different tensor: converted sidecars name
+ * both and the engine prints this one. The revision changes whenever the
+ * enabled arithmetic does (2: the fold is rounded to BF16 before the
+ * projection on every route). */
+#define DS41_STEERING_SITE "v41_attn_input_weighted_fold_post_engram"
+#define DS41_STEERING_REVISION 2u
+#define DS41_STEERING_NORM_TOL 1e-2
+
+static float ds41_bf16_round(float value) {
+    uint32_t bits;
+    memcpy(&bits, &value, sizeof(bits));
+    if ((bits & 0x7f800000u) != 0x7f800000u) bits += 0x7fffu + ((bits >> 16) & 1u);
+    bits &= 0xffff0000u;
+    memcpy(&value, &bits, sizeof(value));
+    return value;
+}
+
+/* The enabled fold edit in plain C: the fold rounded to BF16 as the graph
+ * stores it, then h -= scale*d*dot(d,h) in f32; the attention norm follows
+ * with no second rounding. Every Metal route agrees with this within f32
+ * reduction tolerance (tests/test_deepseek41_graph.c --steering-fold). It is
+ * a reference for synthetic rows; CPU V4.1 inference stays refused. The
+ * graph test is its only caller. */
+static DS4_MAYBE_UNUSED void ds41_steer_fold_reference(float *x, const float *dirs, uint32_t il,
+                                                       uint32_t rows, float scale) {
+    for (uint64_t i = 0; i < (uint64_t)rows * DS4_N_EMBD; i++) x[i] = ds41_bf16_round(x[i]);
+    cpu_directional_steering_project_rows(x, dirs, il, rows, scale);
+}
+
+/* A direction matrix usable at the V4.1 site: finite, row 0 zero, every other
+ * row zero (a masked layer) or unit within DS41_STEERING_NORM_TOL. Nothing is
+ * normalized on the user's behalf: a scaled row would hide a conversion error
+ * inside the scale. */
+static bool ds41_steering_dirs_valid(const float *dirs, uint32_t n_layers, const char *path) {
+    for (uint32_t il = 0; il < n_layers; il++) {
+        const float *row = dirs + (uint64_t)il * DS4_N_EMBD;
+        double norm2 = 0.0;
+        for (uint32_t i = 0; i < DS4_N_EMBD; i++) {
+            if (!isfinite(row[i])) {
+                fprintf(stderr, "ds4: %s: row %u has a non-finite value\n", path, il);
+                return false;
+            }
+            norm2 += (double)row[i] * row[i];
+        }
+        if (il == 0 && norm2 != 0.0) {
+            fprintf(stderr, "ds4: %s: row 0 must be all zero (layer 0 has no direction)\n", path);
+            return false;
+        }
+        if (norm2 != 0.0 && fabs(sqrt(norm2) - 1.0) > DS41_STEERING_NORM_TOL) {
+            fprintf(stderr, "ds4: %s: row %u has L2 norm %.4f; need 1 within %g, or an all-zero row\n",
+                    path, il, sqrt(norm2), DS41_STEERING_NORM_TOL);
+            return false;
+        }
+    }
+    return true;
+}
+
 static bool cpu_load_directional_steering(ds4_engine *e) {
     if (!e ||
         (e->directional_steering_attn_scale == 0.0f &&
@@ -25928,16 +26014,31 @@ static bool cpu_load_directional_steering(ds4_engine *e) {
         fprintf(stderr, "ds4: directional steering needs --dir-steering-file\n");
         return false;
     }
+    if (!isfinite(e->directional_steering_attn_scale) ||
+        !isfinite(e->directional_steering_ffn_scale) ||
+        !isfinite(e->directional_steering_residual_scale)) {
+        fprintf(stderr, "ds4: directional steering scales must be finite\n");
+        return false;
+    }
 
     const uint32_t n_layers = directional_steering_layer_count();
     if (n_layers == 0) return false;
     const uint64_t n = (uint64_t)n_layers * DS4_N_EMBD;
     e->directional_steering_dirs = xmalloc((size_t)n * sizeof(e->directional_steering_dirs[0]));
-    if (!read_f32_binary_file(path, e->directional_steering_dirs, n)) {
+    /* sf: 401 the matrix is checked here, at engine open, before any session
+     * uploads it to the graph. */
+    if (!read_f32_binary_file(path, e->directional_steering_dirs, n) ||
+        !ds41_steering_dirs_valid(e->directional_steering_dirs, n_layers, path)) {
         free(e->directional_steering_dirs);
         e->directional_steering_dirs = NULL;
         fprintf(stderr, "ds4: failed to load directional steering vectors from %s\n", path);
         return false;
+    }
+    if (e->directional_steering_residual_scale != 0.0f) {
+        fprintf(stderr, "ds4: V4.1 residual steering: %s at %s rev %u, scale %g\n",
+                path, DS41_STEERING_SITE, DS41_STEERING_REVISION,
+                (double)e->directional_steering_residual_scale);
+        return true;
     }
     fprintf(stderr, "ds4: CPU directional steering enabled: %s attn=%g ffn=%g\n",
             path,
@@ -28520,6 +28621,23 @@ static bool ds4_layer_payload_range_valid(uint32_t layer_start, uint32_t layer_e
     return n_layers != 0 && layer_start <= layer_end && layer_end < n_layers;
 }
 
+/* sf: 401 a steered session's KV, prefix caches and snapshots belong to one
+ * steering configuration, which no payload records yet. Refuse every save
+ * and load before any mutation; zero-scale sessions keep today's behaviour,
+ * and the server does not open its disk cache at all while steered. */
+static bool ds41_steering_refuses_persistence(const ds4_session *s, char *err, size_t errlen) {
+#if !defined(DS4_NO_GPU) && defined(DS4_HAS_DEEPSEEK41_GPU)
+    if (!s || !s->ds41_graph_ready || s->ds41_graph.residual_scale == 0.0f ||
+        !s->ds41_graph.residual_dirs) return false;
+    payload_set_err(err, errlen, "session payloads and snapshots are not supported while "
+                    "directional steering is active: no steering identity is recorded");
+    return true;
+#else
+    (void)s; (void)err; (void)errlen;
+    return false;
+#endif
+}
+
 int ds4_session_save_layer_payload(ds4_session *s, FILE *fp,
                                    uint32_t layer_start, uint32_t layer_end,
                                    char *err, size_t errlen) {
@@ -28528,6 +28646,7 @@ int ds4_session_save_layer_payload(ds4_session *s, FILE *fp,
         payload_set_err(err, errlen, "invalid session layer payload save");
         return 1;
     }
+    if (ds41_steering_refuses_persistence(s, err, errlen)) return 1;
     if (ds4_session_is_cpu(s)) {
         payload_set_err(err, errlen, "distributed layer payloads require the graph backend");
         return 1;
@@ -28664,6 +28783,7 @@ int ds4_session_load_layer_payload(ds4_session *s, FILE *fp,
         payload_set_err(err, errlen, "invalid session layer payload load");
         return 1;
     }
+    if (ds41_steering_refuses_persistence(s, err, errlen)) return 1;
     if (ds4_session_is_cpu(s)) {
         payload_set_err(err, errlen, "distributed layer payloads require the graph backend");
         return 1;
@@ -29126,6 +29246,7 @@ int ds4_session_save_payload(ds4_session *s, FILE *fp, char *err, size_t errlen)
         payload_set_err(err, errlen, "session has no valid checkpoint to save");
         return 1;
     }
+    if (ds41_steering_refuses_persistence(s, err, errlen)) return 1;
     if (s->distributed) {
         return ds4_dist_session_save_payload(s->distributed, s, fp, err, errlen);
     }
@@ -29207,6 +29328,7 @@ int ds4_session_load_payload(ds4_session *s, FILE *fp, uint64_t payload_bytes, c
         payload_set_err(err, errlen, "invalid session payload load");
         return 1;
     }
+    if (ds41_steering_refuses_persistence(s, err, errlen)) return 1;
     if (s->distributed) {
         return ds4_dist_session_load_payload(s->distributed, s, fp, payload_bytes, err, errlen);
     }
@@ -29398,6 +29520,7 @@ int ds4_session_save_snapshot(ds4_session *s, ds4_session_snapshot *snap, char *
         payload_set_err(err, errlen, "invalid session snapshot save");
         return 1;
     }
+    if (ds41_steering_refuses_persistence(s, err, errlen)) return 1;
     if (s->distributed) {
         payload_set_err(err, errlen, "distributed session snapshots are not supported yet");
         return 1;
@@ -29444,6 +29567,7 @@ int ds4_session_load_snapshot(ds4_session *s, const ds4_session_snapshot *snap, 
         payload_set_err(err, errlen, "invalid session snapshot load");
         return 1;
     }
+    if (ds41_steering_refuses_persistence(s, err, errlen)) return 1;
     if (s->distributed) {
         payload_set_err(err, errlen, "distributed session snapshots are not supported yet");
         return 1;
@@ -30170,6 +30294,18 @@ static int ds4_engine_open_internal(ds4_engine **out,
         if (!supported) {
             fprintf(stderr, "ds4: V4.1 requires Metal or single-GPU CUDA per rank (optional network tensor parallelism); "
                             "DSpark, steering and legacy diagnostics are not supported (maximum context 1048576)\n");
+            ds4_engine_close(e);
+            *out = NULL;
+            return 1;
+        }
+        /* sf: 401 the FFN and attention hooks live on the V4 graph, which V4.1
+         * never allocates: a nonzero scale there would be accepted and change
+         * nothing. The one live V4.1 site is the residual one. The CLI and
+         * server turn a file alone into --dir-steering-ffn 1. */
+        if (e->directional_steering_ffn_scale != 0.0f || e->directional_steering_attn_scale != 0.0f) {
+            fprintf(stderr, "ds4: V4.1 steering applies only at --dir-steering-residual F; "
+                            "--dir-steering-ffn and --dir-steering-attn are V4 hooks with no effect on this model "
+                            "(a file alone implies --dir-steering-ffn 1)\n");
             ds4_engine_close(e);
             *out = NULL;
             return 1;
@@ -31665,6 +31801,17 @@ int ds4_session_set_directional_steering_ffn(ds4_session *s, float scale) {
                 "ds4: live steering changes are not supported for distributed or network tensor-parallel sessions\n");
         return 1;
     }
+#if !defined(DS4_NO_GPU) && defined(DS4_HAS_DEEPSEEK41_GPU)
+    /* sf: 401 V4.1 has no live steering control: the FFN hook is V4 graph
+     * code, and the residual site is fixed at engine open. Zero is already
+     * the state, so it is not a change. */
+    if (s->ds41_graph_ready) {
+        if (scale == 0.0f) return 0;
+        fprintf(stderr, "ds4: live FFN steering is not supported on V4.1; "
+                        "the residual site has no live control\n");
+        return 1;
+    }
+#endif
 
     bool loaded = s->engine->directional_steering_dirs != NULL;
 #ifndef DS4_NO_GPU

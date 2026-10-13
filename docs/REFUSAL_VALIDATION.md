@@ -66,6 +66,14 @@ make eval-refusal-selfcheck
 make eval-refusal EVALFLAGS="--steer dir-steering/out/v41-fused.f32 --residual 4 --protocol both"
 ```
 
+**Intervention identity.** The steered arm runs at the `401` site,
+`v41_attn_input_weighted_fold_post_engram` revision 2, which the CLI prints at
+startup (`ds4: V4.1 residual steering: <file> at <site> rev <N>, scale <F>`). A
+run records that line, the vector's sha256 from the converter sidecar and the
+scale; results measured under another revision are not comparable. The
+first-token screen of 2026-10-13 (scales 0.5 to 16) predates revision 2 and is
+screening history, not acceptance.
+
 With no model present, `make eval-refusal` prints the prerequisite and stops.
 `--judge base` (default) uses the base model to classify its own output
 (distributedcognition's method); `--judge <model>` swaps in an external judge.

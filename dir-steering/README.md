@@ -3,7 +3,7 @@
 Directional steering is a runtime activation edit for DS4. A steering file is a
 flat `f32` matrix with one normalized hidden-width direction per normal
 transformer layer. During inference, ds4 can apply the edit after attention
-outputs, FFN outputs, or both:
+outputs or FFN outputs (the V4 hooks), or, on V4.1, to the attention-input fold:
 
 ```text
 y = y - scale * direction[layer] * dot(direction[layer], y)
@@ -27,9 +27,11 @@ byte-for-byte unchanged. The bench has no steering options.
 
 The opt-in is admission only: it lets the engine load a file and applies nothing.
 On V4.1 the one live site is the residual one, `--dir-steering-residual` (change
-`401`, [contract](../openspec/changes/401-residual-steering-hook-msuiche/specs/directional-steering/spec.md)).
-`--dir-steering-ffn` and `--dir-steering-attn` are hooks of the older V4 graph,
-which V4.1 never allocates: on this model they change nothing.
+`401`, [contract](../openspec/changes/401-residual-steering-hook-msuiche/specs/directional-steering/spec.md),
+described below). `--dir-steering-ffn` and `--dir-steering-attn` are hooks of
+the older V4 graph, which V4.1 never allocates: a nonzero value is refused at
+startup rather than accepted without effect, and since a file alone implies
+`--dir-steering-ffn 1` in the CLI and server, name the residual scale explicitly.
 
 The tooling, the file format and the runtime options below are kept unchanged
 (SPEC.md §B: steering stays in every child even where the model rejects it), so
@@ -41,41 +43,75 @@ format example.
 ## Runtime Options
 
 ```text
---dir-steering-file FILE   load one f32 direction per normal model layer
---dir-steering-ffn F       apply steering after FFN outputs; default is 1 when a file is provided (no effect on V4.1)
---dir-steering-attn F      apply steering after attention outputs; default is 0 (no effect on V4.1)
---dir-steering-residual F  apply steering at the V4.1 post-HC-fold residual; default is 0
+--dir-steering-file FILE   load one f32 direction per normal model layer (40x5120 on V4.1)
+--dir-steering-ffn F       apply steering after FFN outputs; default is 1 when a file is provided (V4 hook; V4.1 refuses a nonzero value)
+--dir-steering-attn F      apply steering after attention outputs; default is 0 (V4 hook; V4.1 refuses a nonzero value)
+--dir-steering-residual F  steer the V4.1 attention-input fold; default is 0
 ```
 
-Effective scale at the residual site is ~4-8 for the msuiche vector, **not** its
-published 0.5 alpha. Measured 2026-10-13 (first-token refusal probe): at 0.5 the
-refusal is untouched (a near no-op), while 4 halves the first-token refusal mass and 8
-roughly quarters it, with benign prompts still fully coherent. The 0.5 knee was msuiche's
-value at their own application point (the residual that carries forward); this hook edits
-the *transient* HC fold `g->x`, which is partly washed out, so it needs more magnitude for
-the same downstream effect. Do not port 0.5 here.
+Three application sites, each with its own scale:
 
-Three application sites, each with its own scale, chosen to match the vector's own
-derivation point:
-
-| Site | Flag | For vectors derived at |
+| Site | Flag | Model |
 |---|---|---|
-| FFN output (pre-residual) | `--dir-steering-ffn` | `ffn_out_pre_residual`-style vectors |
-| Attention output | `--dir-steering-attn` | attention-output vectors |
-| Post-HC-fold residual (V4.1) | `--dir-steering-residual` | `residual_stream_post_layer` control vectors (msuiche) |
+| FFN output (pre-residual) | `--dir-steering-ffn` | V4 graph only |
+| Attention output | `--dir-steering-attn` | V4 graph only |
+| Attention-input fold | `--dir-steering-residual` | V4.1 (`401`) |
 
-A control vector is only valid at the site it was measured; msuiche's vector
-(`residual_stream_post_layer`) is applied with `--dir-steering-residual`, and is wrong at
-`--dir-steering-ffn`. Setting `--dir-steering-residual` does not auto-enable the FFN site.
-(V4.1 residual steering currently covers the decode path; prefill/batch coverage and the
-CPU reference are follow-ups.)
+Setting `--dir-steering-residual` does not enable the FFN site, and a control
+vector is only meaningful at a site whose tensor it was derived for, which is
+the caveat of the next section.
+
+### The V4.1 site (`401`)
+
+`--dir-steering-residual F` edits the **weighted HC attention-input fold** of
+layers 1-39: the four residual streams folded into one 5120-wide row by the
+previous sublayer's mixer weights, after Engram on layers 1 and 14, before the
+attention norm. The runtime names it `v41_attn_input_weighted_fold_post_engram`,
+intervention revision 2, and prints both at startup. Row N of the file is
+applied before the attention of layer N (a direct index; row 0 is zero). The
+edit is `h -= F*d*dot(d,h)` on the fold rounded to BF16, in f32, with no second
+rounding before the norm, on every route that produces an attention input:
+decode, batch prefill and the rows the wide-sweep decoder suffix reconstructs
+(`make test-deepseek41-steering-routes`). With a unit `d`, F=1 removes the
+component along `d`, 2 reflects it, 4 and 8 multiply it by -3 and -7.
+
+This fold is transient, and it is **not** the post-layer residual
+(`residual_stream_post_layer`) the msuiche vector was derived at: the direct
+layer mapping is a baseline experiment, not a replication of the published
+result (`405` compares sites, `402` measures behaviour). The scale defaults to
+0. A first-token screen on 2026-10-13 (25 prompts) put the msuiche vector's
+useful range at this site around 4-8, with 0.5, its published alpha, a near
+no-op here; those are screening candidates, not a validated default.
+
+The file is validated at engine open, before any session exists: 40x5120 f32,
+finite, row 0 zero, every other row unit within 1e-2 or all zero (a masked
+layer). Nothing is normalized on your behalf. A raw `.f32` carries no
+provenance: keep the converter's `.json` sidecar with it.
+
+While a nonzero residual scale is active, session payloads and snapshots are
+refused and the server does not open `--kv-disk-dir` (cache entries record no
+steering identity; existing entries are left untouched). `/steer` and the live
+FFN setter refuse a nonzero value on V4.1. `DS4_METAL_DISABLE_V41_RESIDUAL_STEERING=1`
+turns the edit off, and a zero vector at any scale exercises the steered path
+without changing anything: both are bitwise the unsteered run
+(`make test-deepseek41-steering-admission`).
+
+**Cost.** Measured 2026-10-13 on this tree, same build, steering off against
+on (a unit direction at scale 4), fixed `--ssd-streaming-cache-experts 82GB`,
+a 2K-token prompt and 256 generated tokens, ABAB x4 with one CLI process per
+run: decode 24.3 -> 21.4 t/s (medians, -12%), prefill 72.3 -> 72.3 t/s
+(unchanged). The cost is not the projection kernel but the fused HC
+block-input kernels a steered layer has to skip: five dispatches per layer
+instead of one. A fused steered variant would recover it; it is not part of
+this change.
 
 The FFN output is usually the best first target because it is late enough in
 each layer to represent behavior, style, and topic signals. Attention steering
 is available for experiments, but it can be more fragile.
 
-The examples below use the FFN site. On V4.1 they refuse to start without the
-opt-in and change nothing with it; they document the tooling and the file format.
+The examples below use the FFN site. On V4.1 they refuse to start: without the
+opt-in with upstream's line, with it because the FFN site is a V4 hook. They
+document the tooling and the file format.
 
 ## Verbosity Example
 
@@ -219,10 +255,14 @@ used **projectively** (`y -= scale*d*dot(d,y)`), never as weight edits.
     --out dir-steering/out/v41-msuiche.f32
   ```
 
-  This writes a 40x5120 `.f32` (layer 0 zeros, `direction.N` -> layer N) and a
-  `.json` sidecar carrying the hook, alpha, sha256, base revision and the
-  non-monotone / L1-6 caveats. Its hook is `residual_stream_post_layer`, so it is
-  applied at the residual site (change `401`), **not** at `--dir-steering-ffn`.
+  It validates the whole file first (exactly `direction.1..39`, F32 width 5120,
+  consistent metadata, finite unit rows) and writes nothing on a refusal. The
+  output is a 40x5120 `.f32` (layer 0 zeros, `direction.N` -> layer N) and a
+  `.json` sidecar that records the source (hook `residual_stream_post_layer`,
+  alpha 0.5, sha256, base revision) separately from the application site and
+  intervention revision, and never calls the two equivalent. Apply it with
+  `--dir-steering-residual` (see the V4.1 site above), never with
+  `--dir-steering-ffn`, which V4.1 refuses.
 
 - **Fuse msuiche with distributedcognition (404).** distributedcognition's
   `refusal_directions.pt` holds per-layer directions for the same model (read

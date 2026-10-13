@@ -14667,7 +14667,14 @@ int main(int argc, char **argv) {
         }
     }
 
-    if (cfg.kv_disk_dir) {
+    if (cfg.kv_disk_dir && cfg.engine.directional_steering_residual != 0.0f) {
+        /* sf: 401 cache entries carry no steering identity: a steered server
+         * runs without the disk cache, never reads or writes under its root,
+         * and leaves existing entries untouched. */
+        server_log(DS4_LOG_DEFAULT,
+                   "ds4-server: persistent KV cache is not supported while directional steering is active; "
+                   "not opening %s (existing entries are left untouched)", cfg.kv_disk_dir);
+    } else if (cfg.kv_disk_dir) {
         kv_cache_open(&s.kv, cfg.kv_disk_dir, cfg.kv_disk_space_mb,
                       cfg.kv_cache_reject_different_quant, cfg.kv_cache);
     }

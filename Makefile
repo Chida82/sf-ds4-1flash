@@ -46,7 +46,8 @@ help:
 	@echo "  make test-mxfp4-metal  Check the MXFP4 half LUT, then run Metal MXFP4 exactness tests"
 	@echo "  make test-deepseek41-metal  Run the DeepSeek V4.1 Metal kernel tests"
 	@echo "  make test-deepseek41-decode-switch SWITCH=VAR  Decode bitwise with and without a switch"
-	@echo "  make test-deepseek41-steering-admission  Steering opt-in: no-op state check and CLI gate cases"
+	@echo "  make test-deepseek41-steering-admission  Steering opt-in and state controls, CLI/server gate cases"
+	@echo "  make test-deepseek41-steering-routes  Steering enabled on every prefill route, exact against the plain route"
 	@echo "  make test-engram         Run the Engram store tests"
 	@echo "  make clean        Remove build outputs"
 
@@ -182,9 +183,16 @@ test-deepseek41-prefill-replica: tests/test_deepseek41_graph
 # refusal line and exit status by default and under --power 50; the flag and
 # the empty/0/1 environment spellings each admit the file).
 .PHONY: test-deepseek41-steering-admission
-test-deepseek41-steering-admission: tests/test_deepseek41_graph $(BIN)
+test-deepseek41-steering-admission: tests/test_deepseek41_graph $(BIN) $(BIN)-server
 	./tests/test_deepseek41_graph deepseek-v4.1-flash.gguf --steering-admission speed-bench/promessi_sposi.txt
-	python3 tests/test_steering_admission.py deepseek-v4.1-flash.gguf --cli ./$(BIN)
+	python3 tests/test_steering_admission.py deepseek-v4.1-flash.gguf --cli ./$(BIN) --server ./$(BIN)-server
+
+# V4.1 steering enabled coverage (OpenSpec 401): with a unit direction at
+# scale 4, the short-wide, wide and deferred-decoder prefill routes leave the
+# same state as the plain batch route, with append and decode.
+.PHONY: test-deepseek41-steering-routes
+test-deepseek41-steering-routes: tests/test_deepseek41_graph
+	./tests/test_deepseek41_graph deepseek-v4.1-flash.gguf --steering-routes speed-bench/promessi_sposi.txt
 
 tests/test_deepseek41_graph.o: tests/test_deepseek41_graph.c ds4.c ds4_gpu.h ds4_engram.h
 	$(CC) $(filter-out -ffast-math,$(CFLAGS)) -Wno-unused-function -I. -c -o $@ $<
@@ -424,6 +432,9 @@ test: env-check ds4_test $(BIN)-eval q4k-dot-test mxfp4-dot-test test-session-st
 	./tests/test_deepseek41_prefill --dispatch
 	./tests/test_deepseek41_graph --prefill-expert-discard
 	./tests/test_deepseek41_graph --prefill-expert-stream
+	./tests/test_deepseek41_graph --steering-fold
+	./tests/test_deepseek41_graph --steering-file
+	python3 dir-steering/tools/controlvector_to_f32.py --self-check
 
 .PHONY: test-download-model
 test-download-model:

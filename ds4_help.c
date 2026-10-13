@@ -210,11 +210,11 @@ static void print_sampling(FILE *fp, const help_colors *c, bool full, ds4_help_t
 
 static void print_steering(FILE *fp, const help_colors *c) {
     title(fp, c, "Directional Steering");
-    opt(fp, c, "--dir-steering-file FILE", "Load one f32 direction vector per layer.");
-    opt(fp, c, "--dir-steering-ffn F", "Apply steering after FFN outputs. Default with file: 1");
-    opt(fp, c, "--dir-steering-residual F", "Apply steering at the V4.1 post-HC-fold residual (control-vector site). Default 0; ~4-8 effective for the msuiche vector (its 0.5 alpha is a near no-op at this transient fold).");
-    opt(fp, c, "--dir-steering-attn F", "Apply steering after attention outputs. Default: 0");
-    opt(fp, c, "--allow-v41-steering", "Lift the V4.1 startup refusal for --dir-steering-file (single-box Metal); admits the file, applies nothing.");
+    opt(fp, c, "--dir-steering-file FILE", "Load one f32 direction per layer: 40x5120 on V4.1, row 0 zero, other rows unit or zero.");
+    opt(fp, c, "--dir-steering-ffn F", "Apply steering after FFN outputs (V4 hook; V4.1 refuses a nonzero value). Default with file: 1");
+    opt(fp, c, "--dir-steering-residual F", "Steer the V4.1 attention-input fold (weighted HC fold, after Engram, before the norm): h -= F*d*dot(d,h). Default 0. 4 and 8 were screening candidates, not a validated default.");
+    opt(fp, c, "--dir-steering-attn F", "Apply steering after attention outputs (V4 hook; V4.1 refuses a nonzero value). Default: 0");
+    opt(fp, c, "--allow-v41-steering", "Lift the V4.1 startup refusal for --dir-steering-file (single-box Metal); admits the file, --dir-steering-residual applies the edit.");
     fputc('\n', fp);
 }
 
@@ -449,7 +449,7 @@ static void print_examples(FILE *fp, const help_colors *c, ds4_help_tool tool, c
             opt(fp, c, "quiet thermals", "./sf-ds4-1flash -p \"Summarize README\" --power 50");
         }
     } else if (topic_is(topic, "steering")) {
-        opt(fp, c, "steer FFN", "./sf-ds4-1flash -p \"Write tersely\" --dir-steering-file dir.bin --dir-steering-ffn 0.8");
+        opt(fp, c, "steer V4.1", "./sf-ds4-1flash --allow-v41-steering --dir-steering-file dir.f32 --dir-steering-residual 4 -p \"...\"");
     } else if (tool == DS4_HELP_SERVER || topic_is(topic, "api") || topic_is(topic, "kv-cache")) {
         opt(fp, c, "local API", "./sf-ds4-1flash-server --ctx 100000 --kv-disk-dir ~/.sf/ds4-1flash/kv --kv-disk-space-mb 8192");
         opt(fp, c, "curl", "curl http://127.0.0.1:8002/v1/models");

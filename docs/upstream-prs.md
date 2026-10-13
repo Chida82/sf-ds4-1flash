@@ -37,6 +37,7 @@ taken from a PR. Nothing here has been offered upstream.
 | Change | Upstream | This child | Scope |
 |---|---|---|---|
 | `400` steering admission | V4.1 refuses `--dir-steering-file` at engine open | `--allow-v41-steering` (CLI, server) or a set `DS4_ALLOW_V41_STEERING` lifts only the steering-file term of the support check; every other condition and the refusal text stay upstream's | admission only: it applies no edit and claims no effect; the V4.1 site is `401`'s |
+| `401` V4.1 steering site | no steering on the V4.1 graph; the FFN/attention hooks are V4 graph code | `--dir-steering-residual F` projects each layer's weighted HC attention-input fold, after Engram and before the attention norm (`v41_attn_input_weighted_fold_post_engram`, revision 2), on decode, batch prefill and the decoder suffix's reconstructed rows; the file is validated at engine open; nonzero FFN/attention scales and live `/steer` are refused on V4.1; a steered session refuses payloads and snapshots and the server skips `--kv-disk-dir` | a baseline experiment with a direct layer index, not a replication of the published post-layer-residual result; `402` measures behaviour, `405` compares sites |
 
 ## External steering sources (401, 404)
 
@@ -47,7 +48,7 @@ comments. Both target the same base (`deepseek-ai/DeepSeek-V4.1-Flash`, rev
 
 | Source | Artifact | Site / method | Use |
 |---|---|---|---|
-| `msuiche/DeepSeek-V4.1-Flash-abliterated-cyber-GLP-39-L1-39-a0.5` | `glp.*.gguf` controlvector, 39 `direction.N`, fp32, 5120, unit norm, alpha knee 0.5 | `residual_stream_post_layer` (post-layer HC fold, mean over 4 hc copies, pre-engram); projective `h -= alpha*(h.d)d`; captain-vector 0.1.2, `dom_per_layer` | converted by `401` (`controlvector_to_f32.py`), applied at `401`'s residual hook |
+| `msuiche/DeepSeek-V4.1-Flash-abliterated-cyber-GLP-39-L1-39-a0.5` | `glp.*.gguf` controlvector, 39 `direction.N`, fp32, 5120, unit norm, alpha knee 0.5 | `residual_stream_post_layer` (post-layer HC fold, mean over 4 hc copies, pre-engram); projective `h -= alpha*(h.d)d`; captain-vector 0.1.2, `dom_per_layer` | converted by `401` (`controlvector_to_f32.py`, sidecar records source hook and alpha apart from the application site), applied at `401`'s attention-input fold site, which is not the source hook: a baseline, not a replication |
 | `distributedcognition/DeepSeek-V4.1-Flash-abliterated` | `refusal_directions.pt`, per-layer 5120, layers 1-39 unit norm | `attn_norm` input (layer input); grimjim norm-preserving biprojected abliteration, 128 harmful vs 128 harmless, orthogonalized against the harmless mean | directions fused with msuiche by `404` (`fuse_directions.py`); the `.pt`'s weight edits (`wo_b`, `shared_experts.w2`) are NOT used |
 
 Empirical alignment (`404`, 2026-10-13): the two directions align best at a

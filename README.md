@@ -515,7 +515,8 @@ default -- passing `--dir-steering-file` makes the engine refuse to start,
 exactly as upstream -- unless the CLI or server gets `--allow-v41-steering`
 (or `DS4_ALLOW_V41_STEERING` is set, to any value). The opt-in only admits the
 file; on V4.1 an edit is applied only at the residual site,
-`--dir-steering-residual`.
+`--dir-steering-residual` (the attention-input fold, change `401`), and a
+nonzero FFN or attention scale is refused rather than ignored.
 
 `--prefix-file FILE` preloads complete `USER:` / `ASSISTANT:` pairs before
 the live conversation. A turn marker must start a line, roles must alternate,

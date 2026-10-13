@@ -76,6 +76,10 @@ Enabled coverage: short scalar prompt, batch prefill, short-wide suffix, 8K wide
 
 Measure enabled prefill/decode cost with a fixed expert cache and record the command/identity. Enabled behavior intentionally changes; upstream parity is checked on the disabled path only.
 
+### D8. Reconstructed rows fold with their carried split
+
+`ds41_decoder_prepare` restores carried rows (`residual`, `pre`, `ffn_split`, selection, mask) into the batch workspace and, with batch attention off, loops over them with a row copy of the graph that re-aims only `residual` and `pre`; `ds41_graph_before_attention` folds every layer after the first with `row.ffn_split`, which that copy left pointing at the decode scratch. The batch branch reads the carried split and is exact, which is why the route test passed at 3072 and 4096 and failed only at 8192 under fixed arithmetic, unsteered too. One assignment re-aims `row.ffn_split` at the row's carried split. The default schedule never enters this branch, so its bits and speed are untouched; `--decoder-suffix` (upstream's test, the same switches) and the route test at 8192 are the evidence, and `420` closes the series with the unsteered guards.
+
 ## Risks / Trade-offs
 
 - [Rounding alignment changes enabled answers] -> only if D2's test shows a difference; then bump the intervention revision and remeasure, otherwise nothing changes.

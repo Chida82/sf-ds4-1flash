@@ -6,7 +6,7 @@
  * hooks). State: any for operational and test, unset for the rest.
  * ds4_env.h turns this into the startup report's table; `make env-check`
  * fails on a read name missing here or a line nothing reads any more. */
-DS4_ENV(DS4_ALLOW_V41_STEERING, enable, unset, "Opt into V4.1 directional steering when set to any value, even empty or 0: lift the --dir-steering-file startup refusal (single-box Metal only; admits the file, applies nothing)")
+DS4_ENV(DS4_ALLOW_V41_STEERING, enable, unset, "Opt into V4.1 directional steering when set to any value, even empty or 0: lift the --dir-steering-file startup refusal (single-box Metal only; admits the file, --dir-steering-residual applies the edit)")
 DS4_ENV(DS4_BATCHED_FFN, enable, unset, "CPU reference prefill: opt into batched routed FFN across tokens")
 DS4_ENV(DS4_BATCHED_ROPE_MAX, tuning, unset, "CPU reference prefill: max tokens for batched prefix RoPE (default 4096, 0-65536)")
 DS4_ENV(DS4_BENCH_DISABLE_SNAPSHOT, disable, unset, "Bench: skip session snapshot/restore after generation and replay prefixes instead")
@@ -224,7 +224,7 @@ DS4_ENV(DS4_METAL_DISABLE_V41_PREFILL_ALIAS, disable, unset, "Turns off aliasing
 DS4_ENV(DS4_METAL_DISABLE_V41_READBACK_MAILBOX, disable, unset, "Polls the router batch status instead of a shared mailbox for V4.1 selected-expert ids")
 DS4_ENV(DS4_METAL_DISABLE_V41_READBACK_POLL, disable, unset, "Turns off the bounded 2 ms status poll at the V4.1 selected-id readback")
 DS4_ENV(DS4_METAL_DISABLE_V41_READBACK_SPLIT, disable, unset, "Turns off committing the V4.1 router alone so the shared expert runs during the id readback")
-DS4_ENV(DS4_METAL_DISABLE_V41_RESIDUAL_STEERING, disable, unset, "Turns off the 401 residual_stream_post_layer directional-steering edit (forces the fused fold path)")
+DS4_ENV(DS4_METAL_DISABLE_V41_RESIDUAL_STEERING, disable, unset, "Turns off the 401 V4.1 attention-input fold steering edit (--dir-steering-residual); the fused fold paths run as unsteered")
 DS4_ENV(DS4_METAL_DISABLE_V41_ROPE_QUANTIZE, disable, unset, "Turns off the fused V4.1 RoPE + quantize + store kernel")
 DS4_ENV(DS4_METAL_DISABLE_V41_ROUTER_BATCH, disable, unset, "Turns off the batched V4.1 router matmul for 32 or more tokens")
 DS4_ENV(DS4_METAL_DISABLE_V41_ROUTER_MM, disable, unset, "Turns off the mul_mm path of the batched V4.1 router for 256 or more tokens")

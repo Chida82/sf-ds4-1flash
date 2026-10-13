@@ -2556,61 +2556,302 @@ done:
     return rc;
 }
 
-/* sf: 400 admission is a no-op. Three engines in turn: no opt-in, the opt-in
- * alone, the opt-in with a direction file at explicit zero scales. Each decodes
- * 65 tokens after 511- and 2047-token prefixes; every step's logits and the
- * final KV state and Engram history must match the first engine bitwise, and
- * no direction tensor may exist. The same file without the opt-in is refused. */
+/* A 40x5120 direction file at a mkstemp template: row 0 zero and the other
+ * rows unit pseudo-random, or every row zero. */
+static bool write_steering_dirs(char *path_template, bool zero, float **out) {
+    const uint32_t layers = directional_steering_layer_count(), width = DS4_N_EMBD;
+    const uint64_t n = (uint64_t)layers * width;
+    float *dirs = xcalloc((size_t)n, sizeof(float));
+    uint32_t seed = 2026;
+    for (uint32_t il = 1; !zero && il < layers; il++) {
+        float *row = dirs + (uint64_t)il * width;
+        double norm2 = 0.0;
+        for (uint32_t i = 0; i < width; i++) {
+            seed = seed * 1664525u + 1013904223u;
+            row[i] = (float)(seed >> 8) / 16777216.0f - 0.5f;
+            norm2 += (double)row[i] * row[i];
+        }
+        const float inv = (float)(1.0 / sqrt(norm2));
+        for (uint32_t i = 0; i < width; i++) row[i] *= inv;
+    }
+    const int fd = mkstemp(path_template);
+    const bool ok = fd >= 0 &&
+        write(fd, dirs, (size_t)n * sizeof(float)) == (ssize_t)(n * sizeof(float)) && close(fd) == 0;
+    if (out) *out = dirs; else free(dirs);
+    return ok;
+}
+
+static bool steering_state_equal(ds41_gpu_graph *a, ds41_gpu_graph *b, const char *what) {
+    ds41_state_span sa[64], sb[64];
+    const uint32_t n = ds41_state_spans(a, a->pos, sa);
+    if (a->pos != b->pos || n != ds41_state_spans(b, b->pos, sb) ||
+        memcmp(&a->history, &b->history, sizeof(a->history))) {
+        fprintf(stderr, "steering: %s: position or Engram history differ\n", what);
+        return false;
+    }
+    for (uint32_t j = 0; j < n; j++) {
+        if (sa[j].bytes != sb[j].bytes ||
+            memcmp(ds4_gpu_tensor_contents(sa[j].tensor), ds4_gpu_tensor_contents(sb[j].tensor),
+                   (size_t)sa[j].bytes)) {
+            fprintf(stderr, "steering: %s: state span %u differs\n", what, j);
+            return false;
+        }
+    }
+    return true;
+}
+
+/* sf: 401 route agreement, model-less. The same synthetic fold rows through
+ * the decode route (weighted sum rounded to BF16, then the projection) and
+ * the batch route (weighted sum in f32, quantize, projection), each against
+ * the plain-C reference at f32 reduction tolerance; a masked layer and layer
+ * 0 leave the rounded fold untouched bitwise; the projection factors at
+ * scales 1, 2, 4 and 8 remove, reflect, and multiply the component by -3 and
+ * -7. The batch route's former order, projection before the quantize, is
+ * shown to differ beyond that tolerance: this is why it was aligned. */
+static int check_steering_fold(void) {
+    enum { ROWS = 5, HC = 4 };
+    const uint32_t width = DS4_N_EMBD, layers = directional_steering_layer_count();
+    const uint64_t row_bytes = (uint64_t)width * sizeof(float);
+    const uint64_t count = (uint64_t)ROWS * width;
+    const uint32_t il = 3, masked[] = {0, 7};
+    const float scales[] = {1, 2, 4, 8};
+    float *residual = NULL, *pre = NULL, *dirs = NULL, *fold = NULL, *ref = NULL;
+    float *a = NULL, *b = NULL, *c = NULL;
+    ds4_gpu_tensor *t_res = NULL, *t_pre = NULL, *t_dirs = NULL, *t_a = NULL, *t_b = NULL, *t_c = NULL;
+    ds4_gpu_tensor *v_res = NULL, *v_pre = NULL, *v_a = NULL;
+    uint32_t seed = 12345;
+    double max_ab = 0, max_ar = 0, max_br = 0, max_ac = 0, max_abs = 0;
+    int rc = 1;
+    REQUIRE(layers == 40 && width == 5120);
+    REQUIRE(ds4_gpu_init());
+    residual = xmalloc((size_t)count * HC * sizeof(float));
+    pre = xmalloc((size_t)ROWS * HC * sizeof(float));
+    dirs = xcalloc((size_t)layers * width, sizeof(float));
+    fold = xmalloc((size_t)count * sizeof(float));
+    ref = xmalloc((size_t)count * sizeof(float));
+    a = xmalloc((size_t)count * sizeof(float));
+    b = xmalloc((size_t)count * sizeof(float));
+    c = xmalloc((size_t)count * sizeof(float));
+    for (uint64_t i = 0; i < count * HC; i++) {
+        seed = seed * 1664525u + 1013904223u;
+        residual[i] = (float)(seed >> 8) / 16777216.0f * 2.0f - 1.0f;
+    }
+    for (uint32_t r = 0; r < ROWS; r++) {
+        const float weights[HC] = {0.55f, 0.25f, 0.15f, 0.05f};
+        for (uint32_t h = 0; h < HC; h++) pre[r * HC + h] = weights[(h + r) % HC];
+    }
+    for (uint32_t l = 1; l < layers; l++) {
+        float *row = dirs + (uint64_t)l * width;
+        double norm2 = 0.0;
+        if (l == masked[1]) continue;
+        for (uint32_t i = 0; i < width; i++) {
+            seed = seed * 1664525u + 1013904223u;
+            row[i] = (float)(seed >> 8) / 16777216.0f - 0.5f;
+            norm2 += (double)row[i] * row[i];
+        }
+        const float inv = (float)(1.0 / sqrt(norm2));
+        for (uint32_t i = 0; i < width; i++) row[i] *= inv;
+    }
+    /* the fold in the kernel's order: f32, streams 0..3 */
+    for (uint32_t r = 0; r < ROWS; r++) {
+        for (uint32_t d = 0; d < width; d++) {
+            float acc = 0.0f;
+            for (uint32_t h = 0; h < HC; h++)
+                acc += residual[((uint64_t)r * HC + h) * width + d] * pre[r * HC + h];
+            fold[(uint64_t)r * width + d] = acc;
+        }
+    }
+    REQUIRE((t_res = ds4_gpu_tensor_alloc(count * HC * sizeof(float))) != NULL &&
+            ds4_gpu_tensor_write(t_res, 0, residual, count * HC * sizeof(float)));
+    REQUIRE((t_pre = ds4_gpu_tensor_alloc(ROWS * HC * sizeof(float))) != NULL &&
+            ds4_gpu_tensor_write(t_pre, 0, pre, ROWS * HC * sizeof(float)));
+    REQUIRE((t_dirs = ds4_gpu_tensor_alloc((uint64_t)layers * width * sizeof(float))) != NULL &&
+            ds4_gpu_tensor_write(t_dirs, 0, dirs, (uint64_t)layers * width * sizeof(float)));
+    REQUIRE((t_a = ds4_gpu_tensor_alloc(count * sizeof(float))) != NULL);
+    REQUIRE((t_b = ds4_gpu_tensor_alloc(count * sizeof(float))) != NULL);
+    REQUIRE((t_c = ds4_gpu_tensor_alloc(count * sizeof(float))) != NULL);
+    /* the decode route, one row at a time */
+    for (uint32_t r = 0; r < ROWS; r++) {
+        REQUIRE((v_res = ds4_gpu_tensor_view(t_res, (uint64_t)r * HC * row_bytes, HC * row_bytes)) != NULL);
+        REQUIRE((v_pre = ds4_gpu_tensor_view(t_pre, (uint64_t)r * HC * sizeof(float), HC * sizeof(float))) != NULL);
+        REQUIRE((v_a = ds4_gpu_tensor_view(t_a, (uint64_t)r * row_bytes, row_bytes)) != NULL);
+        REQUIRE(ds4_gpu_hc_weighted_sum_bf16_tensor(v_a, v_res, v_pre, width, HC));
+        REQUIRE(ds4_gpu_directional_steering_project_tensor(v_a, t_dirs, il, width, 1, scales[2]));
+        ds4_gpu_tensor_free(v_res); ds4_gpu_tensor_free(v_pre); ds4_gpu_tensor_free(v_a);
+        v_res = v_pre = v_a = NULL;
+    }
+    REQUIRE(ds4_gpu_tensor_read(t_a, 0, a, count * sizeof(float)));
+    /* the batch route: fold, quantize, projection, as the graph orders it */
+    REQUIRE(ds4_gpu_hc_weighted_sum_tensor(t_b, t_res, t_pre, width, HC));
+    REQUIRE(ds4_gpu_dsv41_quantize(t_b, width, ROWS, DS4_V41_BF16));
+    REQUIRE(ds4_gpu_directional_steering_project_tensor(t_b, t_dirs, il, width, ROWS, scales[2]));
+    REQUIRE(ds4_gpu_tensor_read(t_b, 0, b, count * sizeof(float)));
+    /* the former batch order: projection, then quantize */
+    REQUIRE(ds4_gpu_hc_weighted_sum_tensor(t_c, t_res, t_pre, width, HC));
+    REQUIRE(ds4_gpu_directional_steering_project_tensor(t_c, t_dirs, il, width, ROWS, scales[2]));
+    REQUIRE(ds4_gpu_dsv41_quantize(t_c, width, ROWS, DS4_V41_BF16));
+    REQUIRE(ds4_gpu_tensor_read(t_c, 0, c, count * sizeof(float)));
+    memcpy(ref, fold, count * sizeof(float));
+    ds41_steer_fold_reference(ref, dirs, il, ROWS, scales[2]);
+    for (uint64_t i = 0; i < count; i++) {
+        max_ab = fmax(max_ab, fabs((double)a[i] - b[i]));
+        max_ar = fmax(max_ar, fabs((double)a[i] - ref[i]));
+        max_br = fmax(max_br, fabs((double)b[i] - ref[i]));
+        max_ac = fmax(max_ac, fabs((double)a[i] - c[i]));
+        max_abs = fmax(max_abs, fabs((double)ref[i]));
+    }
+    {
+        const double tol = 1e-4 * (1.0 + max_abs);
+        REQUIRE(max_ar <= tol && max_br <= tol && max_ab <= tol);
+        REQUIRE(max_ac > 1e-3);
+    }
+    /* masked layers: the rounded fold passes through bitwise */
+    for (unsigned k = 0; k < 2; k++) {
+        REQUIRE(ds4_gpu_hc_weighted_sum_tensor(t_c, t_res, t_pre, width, HC));
+        REQUIRE(ds4_gpu_dsv41_quantize(t_c, width, ROWS, DS4_V41_BF16));
+        REQUIRE(ds4_gpu_directional_steering_project_tensor(t_c, t_dirs, masked[k], width, ROWS, scales[2]));
+        REQUIRE(ds4_gpu_tensor_read(t_c, 0, c, count * sizeof(float)));
+        for (uint64_t i = 0; i < count; i++) ref[i] = ds41_bf16_round(fold[i]);
+        REQUIRE(!memcmp(c, ref, count * sizeof(float)));
+    }
+    /* projection factors: the component along d becomes (1 - scale) of it */
+    for (unsigned k = 0; k < 4; k++) {
+        const float *d = dirs + (uint64_t)il * width;
+        REQUIRE(ds4_gpu_hc_weighted_sum_tensor(t_c, t_res, t_pre, width, HC));
+        REQUIRE(ds4_gpu_dsv41_quantize(t_c, width, ROWS, DS4_V41_BF16));
+        REQUIRE(ds4_gpu_directional_steering_project_tensor(t_c, t_dirs, il, width, ROWS, scales[k]));
+        REQUIRE(ds4_gpu_tensor_read(t_c, 0, c, count * sizeof(float)));
+        for (uint32_t r = 0; r < ROWS; r++) {
+            double in = 0.0, out = 0.0;
+            for (uint32_t i = 0; i < width; i++) {
+                in += (double)d[i] * ds41_bf16_round(fold[(uint64_t)r * width + i]);
+                out += (double)d[i] * c[(uint64_t)r * width + i];
+            }
+            REQUIRE(fabs(out - (1.0 - scales[k]) * in) <= 1e-3 * (1.0 + fabs(in)));
+        }
+    }
+    printf("V4.1 steering fold: decode and batch routes agree with the reference (max |diff| %.2e, "
+           "routes %s), the former batch order differs by %.2e, masked layers exact, factors 1/2/4/8: PASS\n",
+           fmax(max_ar, max_br), max_ab == 0.0 ? "bitwise" : "within tolerance", max_ac);
+    rc = 0;
+done:
+    ds4_gpu_tensor_free(v_res); ds4_gpu_tensor_free(v_pre); ds4_gpu_tensor_free(v_a);
+    ds4_gpu_tensor_free(t_a); ds4_gpu_tensor_free(t_b); ds4_gpu_tensor_free(t_c);
+    ds4_gpu_tensor_free(t_res); ds4_gpu_tensor_free(t_pre); ds4_gpu_tensor_free(t_dirs);
+    ds4_gpu_cleanup();
+    free(residual); free(pre); free(dirs); free(fold); free(ref); free(a); free(b); free(c);
+    return rc;
+}
+
+/* sf: 401 the direction file is checked at engine open, before any session
+ * exists to upload it: exact size, finite values, row 0 zero, every other row
+ * unit within 1e-2 or all zero (a mask), finite scales. Model-less: the
+ * loader opens no model. */
+static int check_steering_file(void) {
+    const uint32_t width = DS4_N_EMBD;
+    const uint64_t n = (uint64_t)directional_steering_layer_count() * width;
+    char path[] = "/tmp/ds41-steering-file-XXXXXX";
+    float *dirs = NULL, saved;
+    ds4_engine *e = xcalloc(1, sizeof(*e));
+    int rc = 1;
+#define WRITE_DIRS(count) do { FILE *fp = fopen(path, "wb"); \
+        REQUIRE(fp && fwrite(dirs, sizeof(float), (size_t)(count), fp) == (size_t)(count) && fclose(fp) == 0); \
+    } while (0)
+#define EXPECT_LOAD(ok) do { const bool got = cpu_load_directional_steering(e); \
+        REQUIRE(got == (ok) && (e->directional_steering_dirs != NULL) == (ok)); \
+        free(e->directional_steering_dirs); e->directional_steering_dirs = NULL; } while (0)
+    REQUIRE(write_steering_dirs(path, false, &dirs));
+    memset(dirs + (uint64_t)5 * width, 0, width * sizeof(float));  /* a masked layer */
+    e->directional_steering_file = path;
+    e->directional_steering_residual_scale = 4.0f;
+    EXPECT_LOAD(true);
+    WRITE_DIRS(n - 1); EXPECT_LOAD(false);                              /* truncated */
+    saved = dirs[3 * width + 10];
+    dirs[3 * width + 10] = NAN; WRITE_DIRS(n); EXPECT_LOAD(false);
+    dirs[3 * width + 10] = INFINITY; WRITE_DIRS(n); EXPECT_LOAD(false);
+    dirs[3 * width + 10] = saved;
+    dirs[1] = 1.0f; WRITE_DIRS(n); EXPECT_LOAD(false);                  /* row 0 must be zero */
+    dirs[1] = 0.0f;
+    for (uint32_t i = 0; i < width; i++) dirs[2 * width + i] *= 1.05f;
+    WRITE_DIRS(n); EXPECT_LOAD(false);                                  /* norm 1.05 */
+    for (uint32_t i = 0; i < width; i++) dirs[2 * width + i] *= 1.005f / 1.05f;
+    WRITE_DIRS(n); EXPECT_LOAD(true);                                   /* norm 1.005 */
+    e->directional_steering_residual_scale = NAN; EXPECT_LOAD(false);
+    e->directional_steering_residual_scale = 4.0f;
+    e->directional_steering_ffn_scale = INFINITY; EXPECT_LOAD(false);
+    e->directional_steering_ffn_scale = 0.0f;
+    EXPECT_LOAD(true);
+    puts("V4.1 steering file validation: exact size, finite values, zero row 0, unit or zero rows, "
+         "finite scales: PASS");
+    rc = 0;
+done:
+    if (dirs) unlink(path);
+    free(dirs);
+    free(e->directional_steering_dirs);
+    free(e);
+    return rc;
+#undef WRITE_DIRS
+#undef EXPECT_LOAD
+}
+
+/* sf: 400/401 admission and state controls, one engine open per configuration:
+ * 0 no opt-in; 1 the opt-in alone; 2 the opt-in with a unit direction file at
+ * explicit zero scale (refused first without the opt-in); 3 a zero vector at
+ * scale 4, which runs the steered slow path through the projection with d=0;
+ * 4 the unit file at scale 4 with the disable switch set. Each decodes 65
+ * tokens after 511- and 2047-token prefixes; every step's logits and the
+ * final KV state and Engram history must match configuration 0 bitwise.
+ * Configurations 0-2 allocate no direction tensor, 3 and 4 do. Configuration
+ * 3 also checks that the live FFN setter and the payload and snapshot entry
+ * points refuse without touching the session. 16 GiB expert cache: a closed
+ * engine's cache stays wired until exit (AGENTS.md), and five opens must fit. */
 static int check_steering_admission(const char *path, const char *prompt_path) {
-    enum { STEPS = 65, PREFIXES = 2 };
+    enum { STEPS = 65, PREFIXES = 2, CONFIGS = 5 };
     const int prefixes[PREFIXES] = {511, 2047};
     float *logits[PREFIXES][STEPS] = {{0}};
     void *state[PREFIXES][64] = {{0}};
     uint64_t state_bytes[PREFIXES][64] = {{0}};
     uint32_t state_count[PREFIXES] = {0};
     unsigned char history[PREFIXES][sizeof(((ds41_gpu_graph *)0)->history)];
-    char dirs_path[] = "/tmp/ds41-steering-dirs-XXXXXX";
-    float *dirs = NULL;
+    char unit_path[] = "/tmp/ds41-steering-unit-XXXXXX";
+    char zero_path[] = "/tmp/ds41-steering-zero-XXXXXX";
+    bool unit_written = false, zero_written = false;
     ds4_engine *engine = NULL;
     ds4_session *s = NULL;
     ds4_tokens tokens = {0};
     char *prompt = NULL, err[256] = "";
     size_t prompt_bytes;
-    int fd = -1, rc = 1;
+    int rc = 1;
     unsetenv("DS4_ALLOW_V41_STEERING");
+    unsetenv("DS4_METAL_DISABLE_V41_RESIDUAL_STEERING");
     REQUIRE(read_text_file(prompt_path, &prompt, &prompt_bytes));
-    for (unsigned cfg = 0; cfg < 3; cfg++) {
-        /* 32 GiB, as the replica check: this test reopens the engine in one
-         * process, and a second 64 GiB lock-ahead while the first is still
-         * being released brushes the user wire limit. The cache changes
-         * nothing but speed. */
+    REQUIRE((unit_written = write_steering_dirs(unit_path, false, NULL)));
+    REQUIRE((zero_written = write_steering_dirs(zero_path, true, NULL)));
+    for (unsigned cfg = 0; cfg < CONFIGS; cfg++) {
+        const bool steered = cfg >= 3;
         ds4_engine_options opt = {.model_path = path, .backend = DS4_BACKEND_METAL,
             .context_size = 4096, .power_percent = 100, .ssd_streaming = true,
-            .ssd_streaming_cache_bytes = UINT64_C(32) << 30,
+            .ssd_streaming_cache_bytes = UINT64_C(16) << 30,
             .allow_v41_steering = cfg > 0,
-            .directional_steering_file = cfg == 2 ? dirs_path : NULL};
+            .directional_steering_file = cfg == 2 || cfg == 4 ? unit_path : cfg == 3 ? zero_path : NULL,
+            .directional_steering_residual = steered ? 4.0f : 0.0f};
+        if (cfg == 4) REQUIRE(setenv("DS4_METAL_DISABLE_V41_RESIDUAL_STEERING", "1", 1) == 0);
         if (cfg == 2) {
             ds4_engine_options refused = opt;
             refused.allow_v41_steering = false;
             REQUIRE(ds4_engine_open(&engine, &refused) != 0 && engine == NULL);
         }
         REQUIRE(ds4_engine_open(&engine, &opt) == 0);
-        REQUIRE(engine->directional_steering_dirs == NULL);
-        REQUIRE((engine->directional_steering_file != NULL) == (cfg == 2));
+        REQUIRE((engine->directional_steering_dirs != NULL) == steered);
+        REQUIRE((engine->directional_steering_file != NULL) == (cfg >= 2));
         if (!cfg) {
-            const uint64_t n = (uint64_t)directional_steering_layer_count() * DS4_N_EMBD;
-            REQUIRE(n > 0 && (fd = mkstemp(dirs_path)) >= 0);
-            dirs = xcalloc((size_t)n, sizeof(float));
-            for (uint64_t i = 0; i < n; i += DS4_N_EMBD) dirs[i] = 1.0f;
-            REQUIRE(write(fd, dirs, (size_t)n * sizeof(float)) == (ssize_t)(n * sizeof(float)));
-            REQUIRE(close(fd) == 0);
-            fd = -1;
             ds4_tokenize_text(engine, prompt, &tokens);
             REQUIRE(tokens.len > prefixes[PREFIXES - 1] + STEPS);
         }
         for (unsigned p = 0; p < PREFIXES; p++) {
             REQUIRE(ds4_session_create(&s, engine, 4096) == 0);
-            REQUIRE(s->ds41_graph.residual_dirs == NULL && s->ds41_graph.residual_scale == 0.0f);
+            REQUIRE((s->ds41_graph.residual_dirs != NULL) == steered &&
+                    s->ds41_graph.residual_scale == (steered ? 4.0f : 0.0f));
             ds4_tokens input = {.v = tokens.v, .len = prefixes[p], .cap = prefixes[p]};
             REQUIRE(ds4_session_sync(s, &input, err, sizeof(err)) == 0);
             for (int step = 0; step < STEPS; step++) {
@@ -2622,6 +2863,24 @@ static int check_steering_admission(const char *path, const char *prompt_path) {
                     fprintf(stderr, "steering admission: logits differ, config=%u prefix=%d step=%d\n", cfg, prefixes[p], step);
                     goto done;
                 }
+            }
+            if (cfg == 3) {
+                /* live control and persistence refuse, and touch nothing:
+                 * the state comparison below runs after these calls */
+                FILE *fp = tmpfile();
+                ds4_session_snapshot snap = {0};
+                REQUIRE(fp != NULL);
+                REQUIRE(ds4_session_set_directional_steering_ffn(s, 0.5f) != 0);
+                REQUIRE(ds4_session_set_directional_steering_ffn(s, 0.0f) == 0);
+                REQUIRE(ds4_session_save_payload(s, fp, err, sizeof(err)) != 0 && ftell(fp) == 0);
+                err[0] = 0;
+                REQUIRE(ds4_session_load_payload(s, fp, 0, err, sizeof(err)) != 0 && strstr(err, "steering"));
+                err[0] = 0;
+                REQUIRE(ds4_session_save_snapshot(s, &snap, err, sizeof(err)) != 0 && snap.ptr == NULL &&
+                        strstr(err, "steering"));
+                err[0] = 0;
+                fclose(fp);
+                REQUIRE(!memcmp(logits[p][STEPS - 1], s->logits, DS4_N_VOCAB * sizeof(float)));
             }
             ds41_gpu_graph *g = &s->ds41_graph;
             ds41_state_span spans[64];
@@ -2648,21 +2907,196 @@ static int check_steering_admission(const char *path, const char *prompt_path) {
             ds4_session_free(s); s = NULL;
         }
         ds4_engine_close(engine); engine = NULL;
+        if (cfg == 4) unsetenv("DS4_METAL_DISABLE_V41_RESIDUAL_STEERING");
+        fprintf(stderr, "V4.1 steering state control %u/%u: exact\n", cfg, CONFIGS - 1);
     }
-    puts("V4.1 steering admission: opt-in alone and with a zero-scale file, 65 exact logits and final "
-         "KV/Engram states after 511- and 2047-token prefixes, no direction tensor, refused without the opt-in: PASS");
+    puts("V4.1 steering admission and state controls: opt-in alone, unit file at scale 0, zero vector at "
+         "scale 4 (slow path), unit file with the disable switch; 65 exact logits and final KV/Engram states "
+         "after 511- and 2047-token prefixes, direction tensor only when steered, refused without the opt-in, "
+         "live FFN control and payload/snapshot refused while steered: PASS");
     rc = 0;
 done:
     if (err[0]) fprintf(stderr, "%s\n", err);
+    unsetenv("DS4_METAL_DISABLE_V41_RESIDUAL_STEERING");
     if (ds4_gpu_commands_active()) ds4_gpu_end_commands();
     ds4_session_free(s); ds4_engine_close(engine);
-    if (fd >= 0) close(fd);
-    if (dirs) unlink(dirs_path);
-    free(dirs);
+    if (unit_written) unlink(unit_path);
+    if (zero_written) unlink(zero_path);
     for (unsigned p = 0; p < PREFIXES; p++) {
         for (int step = 0; step < STEPS; step++) free(logits[p][step]);
         for (uint32_t j = 0; j < 64; j++) free(state[p][j]);
     }
+    ds4_tokens_free(&tokens);
+    free(prompt);
+    return rc;
+}
+
+/* sf: 401 enabled coverage. With a unit direction at scale 4, every prefill
+ * route must leave the same state as the plain batch route for the same
+ * tokens: the short-wide sweeps of 3072 and 4096 tokens and the 8192-token
+ * wide sweep against DS4_METAL_DISABLE_V41_DECODER_SUFFIX (which also turns
+ * the short sweep off), then a 24577-token deferred-decoder sync against
+ * DS4_METAL_DISABLE_V41_DEFER_DECODER; each followed by a 29-token append and
+ * one decode step. A route that skipped or double-applied the edit on its
+ * reconstructed rows would differ. The steered row counter records how many
+ * rows each route projected, and an unsteered pass shows the edit reached
+ * the output. Enabled output is never compared with upstream: these are
+ * same-schedule comparisons of one contract. */
+static int check_steering_routes(const char *path, const char *prompt_path) {
+    ds4_engine *engine = NULL;
+    ds4_session *control = NULL, *candidate = NULL;
+    ds4_tokens tokens = {0};
+    char *prompt = NULL, err[256] = "";
+    char unit_path[] = "/tmp/ds41-steering-unit-XXXXXX";
+    bool unit_written = false;
+    size_t prompt_bytes;
+    int rc = 1;
+    const uint32_t ctx = 32768;
+    ds4_engine_options opt = {.model_path = path, .backend = DS4_BACKEND_METAL,
+        .context_size = ctx, .power_percent = 100, .ssd_streaming = true,
+        .ssd_streaming_cache_bytes = UINT64_C(32) << 30, .allow_v41_steering = true,
+        .directional_steering_file = unit_path, .directional_steering_residual = 4.0f};
+    const char *suffix = "DS4_METAL_DISABLE_V41_DECODER_SUFFIX";
+    const char *defer = "DS4_METAL_DISABLE_V41_DEFER_DECODER";
+    unsetenv("DS4_METAL_DISABLE_V41_RESIDUAL_STEERING");
+    unsetenv(suffix);
+    unsetenv(defer);
+    REQUIRE(read_text_file(prompt_path, &prompt, &prompt_bytes));
+    REQUIRE((unit_written = write_steering_dirs(unit_path, false, NULL)));
+    REQUIRE(ds4_engine_open(&engine, &opt) == 0 && engine->directional_steering_dirs != NULL);
+    ds4_encode_chat_prompt(engine, NULL, prompt, DS4_THINK_NONE, &tokens);
+    REQUIRE(tokens.len >= 24577 + 32);
+    REQUIRE(ds4_session_create(&control, engine, ctx) == 0);
+    REQUIRE(ds4_session_create(&candidate, engine, ctx) == 0);
+    ds41_gpu_graph *a = &control->ds41_graph, *b = &candidate->ds41_graph;
+    REQUIRE(a->residual_dirs && b->residual_dirs && a->residual_scale == 4.0f && b->residual_scale == 4.0f);
+    const uint32_t counts[] = {3072, 4096, 8192};
+    for (size_t i = 0; i < sizeof(counts) / sizeof(*counts); i++) {
+        const uint32_t count = counts[i];
+        const bool wide = count >= 8192u;
+        uint64_t plain_rows, route_rows;
+        if (wide) {
+            /* The wide suffix starts at an unaligned row, so its GEMM tiles
+             * differ from the plain route's and the two are not bitwise even
+             * unsteered; check_decoder_suffix holds the arithmetic fixed for
+             * the same reason. Record the unsteered difference, then compare
+             * the steered routes with batch MoE and attention off, which
+             * sends the reconstructed rows through the token-major branch. */
+            a->residual_scale = b->residual_scale = 0.0f;
+            ds41_graph_reset(a); ds41_graph_reset(b);
+            REQUIRE(setenv(suffix, "1", 1) == 0);
+            REQUIRE(ds41_graph_prefill(a, &engine->model, &engine->weights, tokens.v, count,
+                                       NULL, NULL, (int)count, NULL, NULL));
+            REQUIRE(unsetenv(suffix) == 0);
+            REQUIRE(ds41_graph_prefill(b, &engine->model, &engine->weights, tokens.v, count,
+                                       NULL, NULL, (int)count, NULL, NULL));
+            fprintf(stderr, "V4.1 steering route count=%u unsteered, default arithmetic: %s\n", count,
+                    steering_state_equal(a, b, "unsteered wide suffix") ? "exact" : "differs (suffix tiling)");
+            a->residual_scale = b->residual_scale = 4.0f;
+            REQUIRE(setenv("DS4_METAL_DISABLE_V41_BATCH_MOE", "1", 1) == 0);
+            REQUIRE(setenv("DS4_METAL_DISABLE_V41_BATCH_ATTN", "1", 1) == 0);
+        }
+        ds41_graph_reset(a); ds41_graph_reset(b);
+        REQUIRE(setenv(suffix, "1", 1) == 0);
+        ds41_steered_rows_total = 0;
+        REQUIRE(ds41_graph_prefill(a, &engine->model, &engine->weights, tokens.v, count,
+                                   NULL, NULL, (int)count, NULL, NULL));
+        plain_rows = ds41_steered_rows_total;
+        REQUIRE(unsetenv(suffix) == 0);
+        ds41_steered_rows_total = 0;
+        REQUIRE(ds41_graph_prefill(b, &engine->model, &engine->weights, tokens.v, count,
+                                   NULL, NULL, (int)count, NULL, NULL));
+        route_rows = ds41_steered_rows_total;
+        REQUIRE(steering_state_equal(a, b, "prefill"));
+        REQUIRE(ds41_graph_logits(a, &engine->model, &engine->weights, control->logits));
+        REQUIRE(ds41_graph_logits(b, &engine->model, &engine->weights, candidate->logits));
+        REQUIRE(!memcmp(control->logits, candidate->logits, DS4_N_VOCAB * sizeof(float)));
+        if (i == 0) {
+            /* the same tokens unsteered: the edit reaches the output */
+            ds41_graph_reset(a);
+            a->residual_scale = 0.0f;
+            ds41_steered_rows_total = 0;
+            REQUIRE(ds41_graph_prefill(a, &engine->model, &engine->weights, tokens.v, count,
+                                       NULL, NULL, (int)count, NULL, NULL));
+            REQUIRE(ds41_steered_rows_total == 0);
+            REQUIRE(ds41_graph_logits(a, &engine->model, &engine->weights, control->logits));
+            REQUIRE(memcmp(control->logits, candidate->logits, DS4_N_VOCAB * sizeof(float)) != 0);
+            a->residual_scale = 4.0f;
+            ds41_graph_reset(a);
+            REQUIRE(setenv(suffix, "1", 1) == 0);
+            REQUIRE(ds41_graph_prefill(a, &engine->model, &engine->weights, tokens.v, count,
+                                       NULL, NULL, (int)count, NULL, NULL));
+            REQUIRE(unsetenv(suffix) == 0);
+            REQUIRE(steering_state_equal(a, b, "prefill again"));
+        }
+        /* append 29 tokens, then one decode step */
+        REQUIRE(setenv(suffix, "1", 1) == 0);
+        REQUIRE(ds41_graph_prefill(a, &engine->model, &engine->weights, tokens.v + count, 29,
+                                   NULL, NULL, (int)count + 29, NULL, NULL));
+        REQUIRE(unsetenv(suffix) == 0);
+        REQUIRE(ds41_graph_prefill(b, &engine->model, &engine->weights, tokens.v + count, 29,
+                                   NULL, NULL, (int)count + 29, NULL, NULL));
+        REQUIRE(steering_state_equal(a, b, "append"));
+        REQUIRE(setenv(suffix, "1", 1) == 0);
+        REQUIRE(ds41_graph_step(a, &engine->model, &engine->weights, tokens.v[a->pos], control->logits));
+        REQUIRE(unsetenv(suffix) == 0);
+        REQUIRE(ds41_graph_step(b, &engine->model, &engine->weights, tokens.v[b->pos], candidate->logits));
+        REQUIRE(!memcmp(control->logits, candidate->logits, DS4_N_VOCAB * sizeof(float)));
+        REQUIRE(steering_state_equal(a, b, "decode"));
+        if (wide) {
+            REQUIRE(unsetenv("DS4_METAL_DISABLE_V41_BATCH_MOE") == 0);
+            REQUIRE(unsetenv("DS4_METAL_DISABLE_V41_BATCH_ATTN") == 0);
+        }
+        fprintf(stderr, "V4.1 steering route count=%u%s: plain route steered %llu rows, default route %llu rows; "
+                "exact state/logits, append and decode\n", count, wide ? " (fixed arithmetic)" : "",
+                (unsigned long long)plain_rows, (unsigned long long)route_rows);
+    }
+    /* the deferred decoder: a 16384-row sweep with 8193 tokens still to come */
+    {
+        uint64_t plain_rows, route_rows;
+        REQUIRE(a->carry_cap >= 16384u && b->carry_cap >= 16384u);
+        a->carry_cap = b->carry_cap = 16384u;
+        ds4_session_invalidate(control);
+        ds4_session_invalidate(candidate);
+        tokens.len = 24577;
+        REQUIRE(setenv(defer, "1", 1) == 0);
+        ds41_steered_rows_total = 0;
+        REQUIRE(ds4_session_sync(control, &tokens, err, sizeof(err)) == 0);
+        plain_rows = ds41_steered_rows_total;
+        REQUIRE(unsetenv(defer) == 0);
+        ds41_steered_rows_total = 0;
+        REQUIRE(ds4_session_sync(candidate, &tokens, err, sizeof(err)) == 0);
+        route_rows = ds41_steered_rows_total;
+        REQUIRE(a->valid && b->valid);
+        REQUIRE(steering_state_equal(a, b, "deferred decoder"));
+        REQUIRE(!memcmp(control->logits, candidate->logits, DS4_N_VOCAB * sizeof(float)));
+        tokens.len += 29;
+        REQUIRE(setenv(defer, "1", 1) == 0);
+        REQUIRE(ds4_session_sync(control, &tokens, err, sizeof(err)) == 0);
+        REQUIRE(unsetenv(defer) == 0);
+        REQUIRE(ds4_session_sync(candidate, &tokens, err, sizeof(err)) == 0);
+        REQUIRE(steering_state_equal(a, b, "deferred append"));
+        REQUIRE(!memcmp(control->logits, candidate->logits, DS4_N_VOCAB * sizeof(float)));
+        REQUIRE(ds4_session_eval(control, tokens.v[tokens.len], err, sizeof(err)) == 0);
+        REQUIRE(ds4_session_eval(candidate, tokens.v[tokens.len], err, sizeof(err)) == 0);
+        REQUIRE(!memcmp(control->logits, candidate->logits, DS4_N_VOCAB * sizeof(float)));
+        REQUIRE(steering_state_equal(a, b, "deferred decode"));
+        fprintf(stderr, "V4.1 steering route deferred decoder 24577: plain route steered %llu rows, "
+                "default route %llu rows; exact state/logits, append and decode\n",
+                (unsigned long long)plain_rows, (unsigned long long)route_rows);
+    }
+    puts("V4.1 steering routes: short-wide 3072/4096, wide 8192 (fixed arithmetic) and deferred-decoder 24577 "
+         "prefills with append and decode, exact against the plain route; unsteered output differs: PASS");
+    rc = 0;
+done:
+    if (err[0]) fprintf(stderr, "%s\n", err);
+    unsetenv(suffix);
+    unsetenv(defer);
+    unsetenv("DS4_METAL_DISABLE_V41_BATCH_MOE");
+    unsetenv("DS4_METAL_DISABLE_V41_BATCH_ATTN");
+    if (ds4_gpu_commands_active()) ds4_gpu_end_commands();
+    ds4_session_free(candidate); ds4_session_free(control); ds4_engine_close(engine);
+    if (unit_written) unlink(unit_path);
     ds4_tokens_free(&tokens);
     free(prompt);
     return rc;
@@ -2673,6 +3107,12 @@ int main(int argc, char **argv) {
         return check_prefill_replica(argv[1], argv[3], argv[4]);
     if (argc == 4 && !strcmp(argv[2], "--steering-admission"))
         return check_steering_admission(argv[1], argv[3]);
+    if (argc == 4 && !strcmp(argv[2], "--steering-routes"))
+        return check_steering_routes(argv[1], argv[3]);
+    if (argc == 2 && !strcmp(argv[1], "--steering-fold"))
+        return check_steering_fold();
+    if (argc == 2 && !strcmp(argv[1], "--steering-file"))
+        return check_steering_file();
     if (argc == 2 && !strcmp(argv[1], "--prefill-expert-stream"))
         return check_prefill_expert_stream();
     if (argc == 2 && !strcmp(argv[1], "--prefill-expert-admission"))
