@@ -129,9 +129,14 @@ def main(argv=None):
     ap.add_argument("--protocol", choices=["distributedcognition", "msuiche", "both"],
                     default="both")
     ap.add_argument("--steer")
-    ap.add_argument("--ffn", type=float, default=1.0)
+    ap.add_argument("--residual", type=float,
+                    help="scale at the V4.1 residual site; required and nonzero with --steer")
     ap.add_argument("--limit", type=int, default=0)
     args = ap.parse_args(argv)
+    if args.steer is not None and not args.residual:
+        # A zero scale is the harness's own no-op control, not a steered arm:
+        # without this the "steered" column would silently be a second baseline.
+        ap.error("--steer needs a nonzero --residual")
 
     if args.self_check:
         _selfcheck()

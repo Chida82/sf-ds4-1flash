@@ -29,6 +29,15 @@ that takes an idea writes its own code and records the source here.
 | `argonautlabsai/ds4-argodrive` | `8d992cd` | `DS4_ARGODRIVE_GAP_KEEPALIVE`: GPU keep-alive kernel while the pread pool is waited on (mode 1) | idea -> `220-decode-keepalive`, behind `--boost` | +0.5% decode at Nominal, 0 at Heavy; the whole-token variant lost 1.6-2.0% |
 | `argonautlabsai/ds4-argodrive` | `8d992cd` | `DS4_ARGODRIVE_CPU_KEEPALIVE`: user-interactive busy CPU thread | rejected (`220` S2) | the decode thread already spins on the Super cluster at its top clock; the spinner took GPU power: -0.4% Nominal, -1.7%/-2.6% Heavy |
 
+## Child divergences
+
+Behavior this child has and upstream does not, written for this child and not
+taken from a PR. Nothing here has been offered upstream.
+
+| Change | Upstream | This child | Scope |
+|---|---|---|---|
+| `400` steering admission | V4.1 refuses `--dir-steering-file` at engine open | `--allow-v41-steering` (CLI, server) or a set `DS4_ALLOW_V41_STEERING` lifts only the steering-file term of the support check; every other condition and the refusal text stay upstream's | admission only: it applies no edit and claims no effect; the V4.1 site is `401`'s |
+
 ## External steering sources (401, 404)
 
 V4.1 refusal/steering directions taken from external Hugging Face artifacts for

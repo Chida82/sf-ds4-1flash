@@ -71,13 +71,18 @@ def load_hf_dataset(repo_id, *, config=None, split="train"):
 
 # --- generation argv (two arms differ ONLY by the steering block) ------------
 
-def build_cli(prompt, *, steer=None, ffn=1.0, attn=0.0, think=True,
-              max_tokens=None, logprobs=False, system=None, extra=None):
+def build_cli(prompt, *, steer=None, residual=0.0, think=True,
+              max_tokens=None, logprobs=None, top_k=None, system=None, extra=None):
     """argv for one greedy generation.
 
     base arm:    steer=None  -> no steering block at all.
     steered arm: steer=PATH  -> --allow-v41-steering + the steering block.
-    scale-0 control: steer=PATH, ffn=0, attn=0 -> file loaded, no edit applied.
+    scale-0 control: steer=PATH, residual=0 -> file named, no edit applied.
+    logprobs=PATH: the CLI writes its --dump-logprobs JSON there (score_kl.load_dump).
+
+    The residual site is the only one live on V4.1 (400/401). Naming it also
+    stops the CLI from defaulting --dir-steering-ffn to 1 when a file is given;
+    the FFN and attention flags, hooks of the old V4 graph, are never emitted.
     """
     mt = DECODE["max_tokens"] if max_tokens is None else max_tokens
     argv = [str(CLI), "-m", MODEL, "--ssd-streaming",
@@ -85,11 +90,13 @@ def build_cli(prompt, *, steer=None, ffn=1.0, attn=0.0, think=True,
     argv += [] if think else ["--nothink"]
     if system:
         argv += ["--system", system]
-    if logprobs:
-        argv += ["--dump-logprobs"]
+    if logprobs is not None:
+        argv += ["--dump-logprobs", str(logprobs)]
+        if top_k is not None:
+            argv += ["--logprobs-top-k", str(int(top_k))]
     if steer is not None:
         argv += ["--allow-v41-steering", "--dir-steering-file", str(steer),
-                 "--dir-steering-ffn", _num(ffn), "--dir-steering-attn", _num(attn)]
+                 "--dir-steering-residual", _num(residual)]
     if extra:
         argv += list(extra)
     argv += ["-p", prompt]
@@ -146,16 +153,24 @@ def load_json(path):
 
 def _selfcheck():
     base = build_cli("hi")
-    steered = build_cli("hi", steer="/tmp/v.f32", ffn=2.0)
-    assert "--allow-v41-steering" not in base
-    assert "--allow-v41-steering" in steered
+    steered = build_cli("hi", steer="/tmp/v.f32", residual=4.0)
+    assert "--allow-v41-steering" not in base and "--dump-logprobs" not in base
     assert steering_block(steered) == [
         "--allow-v41-steering", "--dir-steering-file", "/tmp/v.f32",
-        "--dir-steering-ffn", "2", "--dir-steering-attn", "0"], steering_block(steered)
+        "--dir-steering-residual", "4"], steering_block(steered)
+    # the V4-graph sites are never named: the CLI would default ffn to 1
+    assert "--dir-steering-ffn" not in steered and "--dir-steering-attn" not in steered
     assert arms_differ_only_by_steering(base, steered), "arms diverge beyond steering"
-    # scale-0 control still carries the file but no edit
-    z = build_cli("hi", steer="/tmp/v.f32", ffn=0.0, attn=0.0)
-    assert "--dir-steering-ffn" in z and z[z.index("--dir-steering-ffn") + 1] == "0"
+    # scale-0 control: the file is named, the residual scale is 0, no FFN default
+    z = build_cli("hi", steer="/tmp/v.f32", residual=0.0)
+    assert steering_block(z)[-2:] == ["--dir-steering-residual", "0"]
+    assert "--dir-steering-ffn" not in z and arms_differ_only_by_steering(base, z)
+    # the diagnostic dump goes to a named file, the same in both arms
+    lp = build_cli("hi", logprobs="/tmp/lp.json", top_k=32)
+    assert lp[lp.index("--dump-logprobs") + 1] == "/tmp/lp.json"
+    assert lp[lp.index("--logprobs-top-k") + 1] == "32"
+    assert arms_differ_only_by_steering(
+        lp, build_cli("hi", steer="/tmp/v.f32", residual=4.0, logprobs="/tmp/lp.json", top_k=32))
     # think on omits --nothink, off adds it; decoding otherwise identical
     assert "--nothink" not in build_cli("x", think=True)
     assert "--nothink" in build_cli("x", think=False)

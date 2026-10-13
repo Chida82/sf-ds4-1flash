@@ -46,6 +46,7 @@ help:
 	@echo "  make test-mxfp4-metal  Check the MXFP4 half LUT, then run Metal MXFP4 exactness tests"
 	@echo "  make test-deepseek41-metal  Run the DeepSeek V4.1 Metal kernel tests"
 	@echo "  make test-deepseek41-decode-switch SWITCH=VAR  Decode bitwise with and without a switch"
+	@echo "  make test-deepseek41-steering-admission  Steering opt-in: no-op state check and CLI gate cases"
 	@echo "  make test-engram         Run the Engram store tests"
 	@echo "  make clean        Remove build outputs"
 
@@ -173,6 +174,17 @@ test-deepseek41-decode-switch: tests/test_deepseek41_graph
 .PHONY: test-deepseek41-prefill-replica
 test-deepseek41-prefill-replica: tests/test_deepseek41_graph
 	./tests/test_deepseek41_graph deepseek-v4.1-flash.gguf --prefill-replica $(REPLICA) speed-bench/promessi_sposi.txt
+
+# V4.1 steering admission (OpenSpec 400) is a no-op. The gate is checked after
+# the GGUF opens, so both parts need the model: the in-process comparison (the
+# opt-in alone and with a zero-scale file against no opt-in: 65 steps of logits,
+# then KV and Engram, bitwise; no direction tensor) and the CLI cases (exact
+# refusal line and exit status by default and under --power 50; the flag and
+# the empty/0/1 environment spellings each admit the file).
+.PHONY: test-deepseek41-steering-admission
+test-deepseek41-steering-admission: tests/test_deepseek41_graph $(BIN)
+	./tests/test_deepseek41_graph deepseek-v4.1-flash.gguf --steering-admission speed-bench/promessi_sposi.txt
+	python3 tests/test_steering_admission.py deepseek-v4.1-flash.gguf --cli ./$(BIN)
 
 tests/test_deepseek41_graph.o: tests/test_deepseek41_graph.c ds4.c ds4_gpu.h ds4_engram.h
 	$(CC) $(filter-out -ffast-math,$(CFLAGS)) -Wno-unused-function -I. -c -o $@ $<
@@ -428,7 +440,8 @@ test-quality-api: tests/test_quality_api.c gguf-tools/quality-testing/score_offi
 # Refusal-removal validation harness (OpenSpec 402). Model-backed: follows the
 # gguf/ symlinks like the other model targets and runs long SSD-streaming arms.
 # With no model it prints the prerequisite and stops. Pass flags via EVALFLAGS,
-# e.g. `make eval-refusal EVALFLAGS="--steer dir-steering/out/v41-fused.f32 --ffn 2"`.
+# e.g. `make eval-refusal EVALFLAGS="--steer dir-steering/out/v41-fused.f32 --residual 4"`.
+# The steered arm names the V4.1 residual site only; --ffn/--attn are V4 hooks.
 eval-refusal: $(BIN) $(BIN)-eval
 	python3 eval/run.py $(EVALFLAGS)
 # Model-less logic checks of the harness itself (datasets, scorers, controls).

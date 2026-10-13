@@ -2556,9 +2556,123 @@ done:
     return rc;
 }
 
+/* sf: 400 admission is a no-op. Three engines in turn: no opt-in, the opt-in
+ * alone, the opt-in with a direction file at explicit zero scales. Each decodes
+ * 65 tokens after 511- and 2047-token prefixes; every step's logits and the
+ * final KV state and Engram history must match the first engine bitwise, and
+ * no direction tensor may exist. The same file without the opt-in is refused. */
+static int check_steering_admission(const char *path, const char *prompt_path) {
+    enum { STEPS = 65, PREFIXES = 2 };
+    const int prefixes[PREFIXES] = {511, 2047};
+    float *logits[PREFIXES][STEPS] = {{0}};
+    void *state[PREFIXES][64] = {{0}};
+    uint64_t state_bytes[PREFIXES][64] = {{0}};
+    uint32_t state_count[PREFIXES] = {0};
+    unsigned char history[PREFIXES][sizeof(((ds41_gpu_graph *)0)->history)];
+    char dirs_path[] = "/tmp/ds41-steering-dirs-XXXXXX";
+    float *dirs = NULL;
+    ds4_engine *engine = NULL;
+    ds4_session *s = NULL;
+    ds4_tokens tokens = {0};
+    char *prompt = NULL, err[256] = "";
+    size_t prompt_bytes;
+    int fd = -1, rc = 1;
+    unsetenv("DS4_ALLOW_V41_STEERING");
+    REQUIRE(read_text_file(prompt_path, &prompt, &prompt_bytes));
+    for (unsigned cfg = 0; cfg < 3; cfg++) {
+        /* 32 GiB, as the replica check: this test reopens the engine in one
+         * process, and a second 64 GiB lock-ahead while the first is still
+         * being released brushes the user wire limit. The cache changes
+         * nothing but speed. */
+        ds4_engine_options opt = {.model_path = path, .backend = DS4_BACKEND_METAL,
+            .context_size = 4096, .power_percent = 100, .ssd_streaming = true,
+            .ssd_streaming_cache_bytes = UINT64_C(32) << 30,
+            .allow_v41_steering = cfg > 0,
+            .directional_steering_file = cfg == 2 ? dirs_path : NULL};
+        if (cfg == 2) {
+            ds4_engine_options refused = opt;
+            refused.allow_v41_steering = false;
+            REQUIRE(ds4_engine_open(&engine, &refused) != 0 && engine == NULL);
+        }
+        REQUIRE(ds4_engine_open(&engine, &opt) == 0);
+        REQUIRE(engine->directional_steering_dirs == NULL);
+        REQUIRE((engine->directional_steering_file != NULL) == (cfg == 2));
+        if (!cfg) {
+            const uint64_t n = (uint64_t)directional_steering_layer_count() * DS4_N_EMBD;
+            REQUIRE(n > 0 && (fd = mkstemp(dirs_path)) >= 0);
+            dirs = xcalloc((size_t)n, sizeof(float));
+            for (uint64_t i = 0; i < n; i += DS4_N_EMBD) dirs[i] = 1.0f;
+            REQUIRE(write(fd, dirs, (size_t)n * sizeof(float)) == (ssize_t)(n * sizeof(float)));
+            REQUIRE(close(fd) == 0);
+            fd = -1;
+            ds4_tokenize_text(engine, prompt, &tokens);
+            REQUIRE(tokens.len > prefixes[PREFIXES - 1] + STEPS);
+        }
+        for (unsigned p = 0; p < PREFIXES; p++) {
+            REQUIRE(ds4_session_create(&s, engine, 4096) == 0);
+            REQUIRE(s->ds41_graph.residual_dirs == NULL && s->ds41_graph.residual_scale == 0.0f);
+            ds4_tokens input = {.v = tokens.v, .len = prefixes[p], .cap = prefixes[p]};
+            REQUIRE(ds4_session_sync(s, &input, err, sizeof(err)) == 0);
+            for (int step = 0; step < STEPS; step++) {
+                if (step) REQUIRE(ds4_session_eval(s, tokens.v[prefixes[p] + step - 1], err, sizeof(err)) == 0);
+                if (!cfg) {
+                    REQUIRE((logits[p][step] = malloc(DS4_N_VOCAB * sizeof(float))) != NULL);
+                    memcpy(logits[p][step], s->logits, DS4_N_VOCAB * sizeof(float));
+                } else if (memcmp(logits[p][step], s->logits, DS4_N_VOCAB * sizeof(float))) {
+                    fprintf(stderr, "steering admission: logits differ, config=%u prefix=%d step=%d\n", cfg, prefixes[p], step);
+                    goto done;
+                }
+            }
+            ds41_gpu_graph *g = &s->ds41_graph;
+            ds41_state_span spans[64];
+            const uint32_t n = ds41_state_spans(g, g->pos, spans);
+            if (!cfg) {
+                state_count[p] = n;
+                memcpy(history[p], &g->history, sizeof(g->history));
+                for (uint32_t j = 0; j < n; j++) {
+                    state_bytes[p][j] = spans[j].bytes;
+                    REQUIRE((state[p][j] = malloc((size_t)spans[j].bytes)) != NULL);
+                    memcpy(state[p][j], ds4_gpu_tensor_contents(spans[j].tensor), (size_t)spans[j].bytes);
+                }
+            } else {
+                REQUIRE(n == state_count[p]);
+                REQUIRE(!memcmp(history[p], &g->history, sizeof(g->history)));
+                for (uint32_t j = 0; j < n; j++) {
+                    REQUIRE(spans[j].bytes == state_bytes[p][j]);
+                    if (memcmp(state[p][j], ds4_gpu_tensor_contents(spans[j].tensor), (size_t)spans[j].bytes)) {
+                        fprintf(stderr, "steering admission: state differs, config=%u prefix=%d span=%u\n", cfg, prefixes[p], j);
+                        goto done;
+                    }
+                }
+            }
+            ds4_session_free(s); s = NULL;
+        }
+        ds4_engine_close(engine); engine = NULL;
+    }
+    puts("V4.1 steering admission: opt-in alone and with a zero-scale file, 65 exact logits and final "
+         "KV/Engram states after 511- and 2047-token prefixes, no direction tensor, refused without the opt-in: PASS");
+    rc = 0;
+done:
+    if (err[0]) fprintf(stderr, "%s\n", err);
+    if (ds4_gpu_commands_active()) ds4_gpu_end_commands();
+    ds4_session_free(s); ds4_engine_close(engine);
+    if (fd >= 0) close(fd);
+    if (dirs) unlink(dirs_path);
+    free(dirs);
+    for (unsigned p = 0; p < PREFIXES; p++) {
+        for (int step = 0; step < STEPS; step++) free(logits[p][step]);
+        for (uint32_t j = 0; j < 64; j++) free(state[p][j]);
+    }
+    ds4_tokens_free(&tokens);
+    free(prompt);
+    return rc;
+}
+
 int main(int argc, char **argv) {
     if (argc == 5 && !strcmp(argv[2], "--prefill-replica"))
         return check_prefill_replica(argv[1], argv[3], argv[4]);
+    if (argc == 4 && !strcmp(argv[2], "--steering-admission"))
+        return check_steering_admission(argv[1], argv[3]);
     if (argc == 2 && !strcmp(argv[1], "--prefill-expert-stream"))
         return check_prefill_expert_stream();
     if (argc == 2 && !strcmp(argv[1], "--prefill-expert-admission"))

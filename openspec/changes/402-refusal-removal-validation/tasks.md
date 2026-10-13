@@ -14,7 +14,7 @@ M0 = groups 1-4: a judge-independent numerical/benign first pass, separately con
 
 ## 2. Actual generation and strict errors
 
-- [ ] 2.1 Add residual scale to `common.build_cli` and `generate.gen`, provide filenames for diagnostic dumps, and suppress implicit FFN activation. Extend offline tests with exact baseline/residual/zero-scale argv and the real logprob JSON shape.
+- [x] 2.1 Add residual scale to `common.build_cli` and `generate.gen`, provide filenames for diagnostic dumps, and suppress implicit FFN activation. Extend offline tests with exact baseline/residual/zero-scale argv and the real logprob JSON shape.
 - [ ] 2.2 Replace arbitrary steering-tail stripping with a structured/allowlisted comparison of paired options. Test a changed temperature in `extra`, changed thinking/template/model/budget and duplicate conflicting flags; all must be rejected before execution.
 - [ ] 2.3 Save every attempted arm's command, status, stdout/stderr, generated count and output/diagnostic identity in local evidence. Return allowlisted status codes, counts and opaque references on the default output streams, including exceptions. Verify nonzero exit, timeout, empty/malformed output and count mismatch fail without being scored, silently omitted or echoing raw content.
 - [ ] 2.4 Add real-output fixtures for completion extraction and diagnostic parsing, preserving token IDs where exposed. Verify failures cannot yield a fake completion and a dump path cannot be consumed as the next option.

@@ -214,7 +214,7 @@ static void print_steering(FILE *fp, const help_colors *c) {
     opt(fp, c, "--dir-steering-ffn F", "Apply steering after FFN outputs. Default with file: 1");
     opt(fp, c, "--dir-steering-residual F", "Apply steering at the V4.1 post-HC-fold residual (control-vector site). Default 0; ~4-8 effective for the msuiche vector (its 0.5 alpha is a near no-op at this transient fold).");
     opt(fp, c, "--dir-steering-attn F", "Apply steering after attention outputs. Default: 0");
-    opt(fp, c, "--allow-v41-steering", "Lift the V4.1 startup refusal for --dir-steering-file (single-box Metal).");
+    opt(fp, c, "--allow-v41-steering", "Lift the V4.1 startup refusal for --dir-steering-file (single-box Metal); admits the file, applies nothing.");
     fputc('\n', fp);
 }
 

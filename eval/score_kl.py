@@ -8,10 +8,24 @@ flagged fallback when logprobs are unavailable.
 
 Run `python3 eval/score_kl.py` for the offline self-checks.
 """
+import json
 import math
 import sys
+import tempfile
+from pathlib import Path
 
 EPS = 1e-9
+
+
+def load_dump(path):
+    """Per-step {token_id: logprob} from the CLI's --dump-logprobs JSON:
+    {"source","prompt_tokens","ctx","top_k","steps":[{"step","selected":
+    {"id","text","bytes"},"top_logprobs":[{"token":{"id","text","bytes"},
+    "logit","logprob"}]}]}. Keyed by id, so both arms compare the same
+    vocabulary entry whatever its text."""
+    dump = json.loads(Path(path).read_text())
+    return [{e["token"]["id"]: e["logprob"] for e in s["top_logprobs"]}
+            for s in dump["steps"]]
 
 
 def _to_probs(logprob_dict):
@@ -66,6 +80,19 @@ def _selfcheck():
     rep = report_kl([d], [shifted], noise_floor=0.131)
     assert "kl" in rep and rep["noise_floor"] == 0.131
     assert abs(embedding_cosine_fallback([1, 0], [1, 0])["cosine"] - 1.0) < 1e-9
+    # the dump as ds4_cli.c writes it (run_logprobs_dump, json_write_token)
+    sample = ('{\n  "source":"ds4",\n  "prompt_tokens":5,\n  "ctx":512,\n  "top_k":2,\n'
+              '  "steps":[\n    {"step":0,"selected":{"id":7,"text":"a","bytes":[97]},'
+              '"top_logprobs":[{"token":{"id":7,"text":"a","bytes":[97]},"logit":1.5,"logprob":-0.1},'
+              '{"token":{"id":9,"text":"b","bytes":[98]},"logit":0.5,"logprob":-2.4}]},\n'
+              '    {"step":1,"selected":{"id":9,"text":"b","bytes":[98]},'
+              '"top_logprobs":[{"token":{"id":9,"text":"b","bytes":[98]},"logit":2,"logprob":-0.05}]}\n'
+              '  ]\n}\n')
+    tmp = Path(tempfile.mkdtemp()) / "lp.json"
+    tmp.write_text(sample)
+    seq = load_dump(tmp)
+    assert seq == [{7: -0.1, 9: -2.4}, {9: -0.05}], seq
+    assert abs(kl_sequence(seq, seq)) < 1e-9
     print("score_kl.py self-check: OK")
 
 

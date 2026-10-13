@@ -16,15 +16,20 @@ With no steering file or zero scales, ds4 follows the normal inference path.
 when `--dir-steering-file` is passed, exactly as it does upstream:
 
 ```text
-ds4: V4.1 requires Metal or single-GPU CUDA per rank (optional network tensor
-parallelism); DSpark, steering and legacy diagnostics are not supported
+ds4: V4.1 requires Metal or single-GPU CUDA per rank (optional network tensor parallelism); DSpark, steering and legacy diagnostics are not supported (maximum context 1048576)
 ```
 
-`--allow-v41-steering` (or `DS4_ALLOW_V41_STEERING=1`) lifts only this refusal, on
-single-box Metal; every other unsupported condition still refuses, and the message
-above is byte-for-byte unchanged without the opt-in. The site the V4.1 control
-vectors are applied at is added by a later change -- until then the opt-in is for
-bring-up only.
+`--allow-v41-steering` on the CLI or the server lifts only this refusal, on
+single-box Metal. `DS4_ALLOW_V41_STEERING` does the same whenever it is set, to
+any value: empty and `0` opt in too, `=1` is only the usual spelling. Every other
+unsupported condition still refuses, and without the opt-in the message above is
+byte-for-byte unchanged. The bench has no steering options.
+
+The opt-in is admission only: it lets the engine load a file and applies nothing.
+On V4.1 the one live site is the residual one, `--dir-steering-residual` (change
+`401`, [contract](../openspec/changes/401-residual-steering-hook-msuiche/specs/directional-steering/spec.md)).
+`--dir-steering-ffn` and `--dir-steering-attn` are hooks of the older V4 graph,
+which V4.1 never allocates: on this model they change nothing.
 
 The tooling, the file format and the runtime options below are kept unchanged
 (SPEC.md §B: steering stays in every child even where the model rejects it), so
@@ -37,8 +42,8 @@ format example.
 
 ```text
 --dir-steering-file FILE   load one f32 direction per normal model layer
---dir-steering-ffn F       apply steering after FFN outputs; default is 1 when a file is provided
---dir-steering-attn F      apply steering after attention outputs; default is 0
+--dir-steering-ffn F       apply steering after FFN outputs; default is 1 when a file is provided (no effect on V4.1)
+--dir-steering-attn F      apply steering after attention outputs; default is 0 (no effect on V4.1)
 --dir-steering-residual F  apply steering at the V4.1 post-HC-fold residual; default is 0
 ```
 
@@ -68,6 +73,9 @@ CPU reference are follow-ups.)
 The FFN output is usually the best first target because it is late enough in
 each layer to represent behavior, style, and topic signals. Attention steering
 is available for experiments, but it can be more fragile.
+
+The examples below use the FFN site. On V4.1 they refuse to start without the
+opt-in and change nothing with it; they document the tooling and the file format.
 
 ## Verbosity Example
 

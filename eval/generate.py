@@ -34,16 +34,18 @@ def extract_completion(stdout):
     return "\n".join(body).strip()
 
 
-def gen(prompt, *, steer=None, ffn=1.0, attn=0.0, think=True,
-        max_tokens=None, logprobs=False, system=None):
-    """One generation; returns a record dict. Spawns the child (model-backed)."""
-    argv = common.build_cli(prompt, steer=steer, ffn=ffn, attn=attn, think=think,
+def gen(prompt, *, steer=None, residual=0.0, think=True,
+        max_tokens=None, logprobs=None, system=None):
+    """One generation; returns a record dict. Spawns the child (model-backed).
+    logprobs=PATH names the file the CLI's --dump-logprobs JSON is written to."""
+    argv = common.build_cli(prompt, steer=steer, residual=residual, think=think,
                             max_tokens=max_tokens, logprobs=logprobs, system=system)
     res = common.execute(argv)
     return {
         "prompt": prompt,
         "arm": "steered" if steer is not None else "base",
-        "ffn": ffn, "attn": attn, "think": think,
+        "residual": residual, "think": think,
+        "logprobs": None if logprobs is None else str(logprobs),
         "completion": extract_completion(res["stdout"]),
         "returncode": res["returncode"],
         "raw_stdout": res["stdout"], "raw_stderr": res["stderr"],
@@ -106,7 +108,7 @@ def _selfcheck():
     assert extract_completion(s2) == "line one\nline two"
     # argv shape: base vs steered differ only by steering
     b = common.build_cli("q")
-    s = common.build_cli("q", steer="/tmp/v.f32", ffn=1.5)
+    s = common.build_cli("q", steer="/tmp/v.f32", residual=1.5)
     assert common.arms_differ_only_by_steering(b, s)
     # image payload shape
     req = image_request("/tmp/x.png", "describe")

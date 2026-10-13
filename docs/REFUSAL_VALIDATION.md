@@ -63,7 +63,7 @@ the repo. Raw completion JSON lands in `eval/out/` (gitignored).
 make eval-refusal-selfcheck
 
 # full A/B loop (model-backed, long SSD-streaming runs):
-make eval-refusal EVALFLAGS="--steer dir-steering/out/v41-fused.f32 --ffn 2 --protocol both"
+make eval-refusal EVALFLAGS="--steer dir-steering/out/v41-fused.f32 --residual 4 --protocol both"
 ```
 
 With no model present, `make eval-refusal` prints the prerequisite and stops.

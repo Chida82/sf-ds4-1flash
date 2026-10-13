@@ -20,7 +20,7 @@ what this repo is and how to work in it. For code-quality rules read
 | Vision | yes, `--vision gguf/DeepSeek-V4.1-Flash-Vision.gguf` |
 | Memory | **SSD streaming is the normal mode**: Q2 is 341 GiB against a 128 GB machine. See "SSD streaming is not optional" below |
 | Speculative decoding | none |
-| Steering | tooling kept (SPEC.md §B), but the model **refuses to start** with `--dir-steering-file`, exactly as upstream |
+| Steering | tooling kept (SPEC.md §B), but the model **refuses to start** with `--dir-steering-file`, exactly as upstream, unless `--allow-v41-steering` (CLI, server) or `DS4_ALLOW_V41_STEERING` admits it; the only live V4.1 site is `--dir-steering-residual` |
 | TP / RDMA / pipeline | tensor parallel (TP, RDMA/TCP) works on the V4.1 graph. **Pipeline (layer-slice) is kept but does not work for V4.1 yet**: the `ds4_session_*layer*` entry points run the old `ds4_gpu_graph` code on a graph V4.1 never allocates (same in upstream). Kept by owner decision, to be fixed: do not ablate the graph code it reaches |
 | Upstream base | never written down: `git describe --tags --match 'sync-*' --abbrev=0` names the last sync, `git merge-base HEAD upstream/main` the base. A SHA typed into a file is a second source of truth that goes stale (SPEC.md §A) |
 
@@ -105,6 +105,14 @@ buffers there. From about 86 GB they failed, and the engine shrank the cache
 below `82GB`'s. `DS4_METAL_DISABLE_STREAMING_CACHE_LOCK_AHEAD=1` restores lazy
 locking. `--ssd-streaming-full-layers` is gone: it only ever applied
 to GLM graph streaming, and V4.1 warned and ignored it.
+
+A process that closes an engine and opens another keeps the first cache
+wired until it exits: a test that opened three 32 GiB engines in turn measured
+47, 72 and 98 GB wired (`vm_stat`, 2026-10-13), each open locking its full
+24.9 GiB, and the same test with 64 GiB froze the machine at its second open.
+Until `ds4_engine_close` releases the cache, a test that reopens the engine in
+one process uses 32 GiB at most (`--prefill-replica`, `--steering-admission`);
+anything larger runs each engine in its own process.
 
 The time to first token is set by the prefill schedule (`ds41_prefill_count`).
 A prompt runs as SSD layer sweeps, and a remainder under 1024 tokens after the
