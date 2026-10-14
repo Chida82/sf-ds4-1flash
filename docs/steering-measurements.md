@@ -20,6 +20,34 @@ Conventions used below:
 
 ---
 
+## 2026-10-14 — axis-A: ramp 6→9 is the best of both (user-run, n=10)
+
+Testing the owner's fix for the constant-10 trade: break the refusal gently at
+6 (where refusals stay 0) then ramp the scale UP on the body for more full
+compliance. Decay flags with `decay_final > start`: `--residual 6
+--decay-tokens 20 --decay-final 9` on `union[:10]`, judge+keyword, controls OK,
+20/20 completed, no INVALID. Code at `7468e3b` (same build as the blocks below).
+
+| judge (n=10) | base | constant-6 | constant-10 | ramp 6->9 |
+|---|---|---|---|---|
+| REFUSE | 1.00 | 0.00 | 0.20 | **0.00** |
+| COMPLY | 0.00 | 0.40 | 0.50 | **0.50** |
+| DEFLECT | 0.00 | 0.60 | 0.30 | **0.50** |
+| keyword refusal | 1.00 | 0.30 | 0.50 | **0.30** |
+
+**Reading:** the ramp dominates both constants. It keeps constant-6's zero
+outright refusals (0.00) while reaching constant-10's full-compliance rate
+(0.50) — without constant-10's cost of 2/10 refusals returning. One prompt
+moved DEFLECT->COMPLY vs constant-6; the 2 refusals constant-10 created are
+recovered. This confirms the owner's intuition: the refusal is decided in the
+first tokens (break it at 6), and pushing the body harder (to 9) afterwards
+converts partials to full answers without re-triggering the refusal. The schedule
+mechanism (403) thus serves two ends with one curve: decay DOWN improves benign
+fidelity, ramp UP improves harmful-axis compliance. Caveat: n=10, the COMPLY
+0.40->0.50 gain is a single prompt (wide interval); the robust signal is REFUSE
+0.00 vs constant-10's 0.20. An n=30 ramp run remains to tighten the compliance
+number before this becomes the recommended schedule.
+
 ## 2026-10-14 — axis-A: constant-10 over-steers (user-run, n=10)
 
 Testing whether more body force reduces the partial (DEFLECT) responses.
