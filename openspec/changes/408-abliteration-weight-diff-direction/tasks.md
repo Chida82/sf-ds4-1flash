@@ -4,8 +4,11 @@
 - [ ] 0.1 Acquire the `audreyt/DeepSeek-V4.1-Flash-Abliterated-GGUF` `Q2` checkpoint
   (same ds4 project, same quantization as our base — highest priority source) via
   `hf download` into the shared cache; never copy a GGUF into the repo (SPEC §C).
-- [ ] 0.2 Confirm the base `Q2` GGUF is present; record its quant type and the tensor
-  list of the residual-writing sites (attention output proj, shared-expert down proj).
+- [x] 0.2 Confirm the base `Q2` GGUF is present; record its quant type and the tensor
+  list of the residual-writing sites. Done: standard GGUF v3, 1046 tensors; residual-writing
+  sites per `blk.N` are `attn_output_b` (Q8_0 `[8192,5120]`), `ffn_down_shexp` (Q8_0
+  `[2304,5120]`), `ffn_down_exps` (Q2_K `[2304,5120,384]`). Reader at
+  `dir-steering/tools/` (see 6.1).
 - [ ] 0.3 Inspect the abliterated GGUF `ggml_type` of those tensors to pick the dequant
   path (standard reader vs ds4-backed dump — design D5).
 

@@ -47,10 +47,15 @@ fails the check.
 
 ### D2 — Recover `r` as the left singular vector of `ΔW` at residual-writing sites
 Dequantize only the edited tensors and take the SVD of `ΔW` per layer. The residual-writing
-sites are the attention output projection and the shared-expert down projection (dense, one
-per layer); routed-expert down projections (384 per layer) are used only in aggregate and
-only if the dense sites are insufficient. Record each layer's leading singular-value share
-as the rank-one quality; flag a layer that is not dominantly rank-one as low-confidence.
+sites, measured on the base GGUF (1046 tensors, standard GGUF v3), are per layer `blk.N`:
+`attn_output_b.weight` (Q8_0, `[8192, 5120]`, attention output → residual), `ffn_down_shexp.weight`
+(Q8_0, `[2304, 5120]`, shared-expert down → residual), and `ffn_down_exps.weight`
+(Q2_K, `[2304, 5120, 384]`, routed-expert down). The two dense Q8_0 sites are the clean
+primary targets: `ΔW = r (r^T W)` is rank-one with its column space (the 5120-dim output =
+residual space) equal to `r`, so the left singular vector of `ΔW` in that 5120 space is the
+per-layer direction, directly comparable to the 402 vector. The 384 routed Q2_K experts are
+used only in aggregate and only if the dense sites are insufficient. Record each layer's
+leading singular-value share as the rank-one quality; flag a non-rank-one layer as low-confidence.
 
 ### D3 — Compare per-layer to the `402` vector, and diagnose a single global `r`
 Report per-layer cosine to the `402` msuiche direction on the common mask. Abliteration
@@ -65,11 +70,14 @@ quant differs or they are fully requantized, D1 falls back to a dequant-and-thre
 (an un-edited tensor must diff below a documented epsilon), which is noisier and weaker
 evidence.
 
-### D5 — Dequant with ds4's own reader if the GGUF type is custom
-Inspect the GGUF tensor `ggml_type` first. A standard GGML quant dequantizes with a
-standalone `gguf`+`numpy` reader in a disposable `/tmp` venv (host environment untouched,
-SPEC §System integrity). A custom ds4 `Q2` needs a tiny ds4-backed dump of the dequantized
-edited tensors; building that is the fallback, not the first move.
+### D5 — Standard GGML quants: a standalone dequant suffices
+Confirmed on the base GGUF: it is standard GGUF v3 and uses standard GGML quant types
+(`block_q2_K` is the 84-byte/256 llama.cpp block; the file is F16/F32/Q8_0/IQ2_XXS/Q2_K).
+The two primary residual-writing sites are Q8_0 (near-lossless, 34-byte/32 block), which
+dequantizes in a few lines of `numpy` in a disposable `/tmp` venv (host environment untouched,
+SPEC §System integrity). No ds4-backed dump is needed for the Q8_0 sites; the ds4 dequant
+fallback only ever applies if a Q2_K/IQ2_XXS site has to be read and a standalone dequant is
+not trusted.
 
 ### D6 — Evaluation stays user-run; nothing adopted here
 A recovered candidate is evaluated through `402` axis-A at a finishing cap against msuiche,
