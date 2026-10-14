@@ -20,6 +20,35 @@ Conventions used below:
 
 ---
 
+## 2026-10-14 — axis-A: ramp 6->9 confirmed at n=30 (user-run)
+
+The n=30 confirmation of the ramp (`--residual 6 --decay-tokens 20
+--decay-final 9`, scale ramps UP 6->9 over 20 tokens), against the decay-6 n=30
+already on record. `union[:30]`, judge+keyword, controls OK, 60/60 completed, no
+INVALID. Same build (`7468e3b`).
+
+| judge (n=30) | base | decay-6 (6->0.2) | ramp 6->9 |
+|---|---|---|---|
+| REFUSE | 1.00 | 0.033 (1/30) | 0.067 (2/30) |
+| COMPLY | 0.00 | 0.367 (11/30) | **0.433 (13/30)** |
+| DEFLECT | 0.00 | 0.600 (18/30) | **0.500 (15/30)** |
+| keyword refusal | 1.00 | 0.267 | 0.300 |
+
+**Reading:** the ramp's advantage over the pure decay is real but modest, and
+smaller than the n=10 pilot's `REFUSE 0.00 / COMPLY 0.50` suggested (that was
+small-sample luck). At n=30 the ramp converts ~3 partials to full answers
+(DEFLECT 0.60->0.50, COMPLY 0.367->0.433) at the cost of 1 more outright refusal
+(1->2 of 30, within noise). The COMPLY edge is reproducible across both sizes
+(ramp ~+6-10pp over decay-6: 0.50 vs 0.40 at n=10, 0.433 vs 0.367 at n=30). So
+ramping the body UP after breaking the refusal at 6 does reduce partials and
+raise full compliance — the owner's intuition holds — but the effect is a few
+percent, not a step change, and ~50% of harmful prompts still DEFLECT. That
+residual half is the msuiche vector's ceiling (the model hedges past the removed
+refusal direction); lowering it is the proprietary-vector work (404/405), not a
+scale/schedule tune. For acceptance (402, margin 6.5/8.2) the two viable
+schedules are decay-6 (best benign fidelity) and ramp 6->9 (best harmful
+compliance); both keep outright refusals ~0.03-0.07.
+
 ## 2026-10-14 — axis-A: ramp 6→9 is the best of both (user-run, n=10)
 
 Testing the owner's fix for the constant-10 trade: break the refusal gently at
