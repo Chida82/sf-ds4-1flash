@@ -20,6 +20,24 @@ Conventions used below:
 
 ---
 
+## 2026-10-14 — axis-A: constant-10 over-steers (user-run, n=10)
+
+Testing whether more body force reduces the partial (DEFLECT) responses.
+`--residual 10` constant on `union[:10]`, judge+keyword, controls OK.
+
+| judge (n=10) | base | constant-6 | constant-10 |
+|---|---|---|---|
+| REFUSE | 1.00 | 0.00 | **0.20** |
+| COMPLY | 0.00 | 0.40 | **0.50** |
+| keyword refusal | 1.00 | 0.30 | 0.50 |
+
+**Reading:** scale 10 pushes more responses to full compliance (0.50 vs 0.40) but
+brings outright refusals back (0.20 vs 0.00) — the over-steering the first-token
+screen predicted above the scale-6 peak. So uniform higher force is a trade, not a
+win. The implied fix (and the owner's intuition): break the refusal gently at 6,
+where refusals stay ~0, then ramp UP on the body for more full compliance — tested
+next as a 6→9 ramp (the decay flags with decay-final > start).
+
 ## 2026-10-14 — axis-A efficacy: base / constant-6 / decay-6 (user-run, 10-prompt pilot)
 
 The efficacy side of the decay adoption gate, and the 402 (6.1) acceptance
