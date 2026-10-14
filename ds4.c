@@ -25770,6 +25770,7 @@ struct ds4_engine {
     float directional_steering_residual_decay_final;        /* sf: 403 decay minimum (residual the schedule holds at) */
     uint32_t directional_steering_residual_decay_tokens;    /* sf: 403 answer-phase decay window; 0 = constant */
     uint32_t directional_steering_think_residual_decay_tokens; /* sf: 403 thinking-phase decay window; 0 = answer window */
+    float directional_steering_residual_cycle_peak; /* sf: 403c cyclic schedule peak; 0 = one-shot decay */
     int power_percent;
     uint32_t prefill_chunk;
     uint32_t ssd_streaming_cache_experts;
@@ -28202,6 +28203,7 @@ struct ds4_session {
     float steering_decay_final;
     uint32_t steering_decay_tokens_think;
     uint32_t steering_decay_tokens_answer;
+    float steering_cycle_peak;  /* sf: 403c cyclic schedule peak (>0 enables oscillation); 0 = one-shot decay */
 };
 
 static bool ds4_session_tp_leader(const ds4_session *s);
@@ -28223,6 +28225,27 @@ static float ds41_steering_scheduled_scale(const ds4_session *s) {
         : s->steering_decay_tokens_answer;
     const float S = s->steering_decay_start, F = s->steering_decay_final;
     if (N == 0) return S;
+    if (s->steering_cycle_peak > 0.0f) {
+        /* sf: 403c cyclic schedule. One period is down(N) -> hold-min(N) -> up(N),
+         * so 3N tokens. The first descent falls from the start scale S; every later
+         * descent falls from the cycle peak P that the preceding rise reached, and
+         * rises always climb to P. P == S gives a plain S<->F oscillation. Same
+         * cubic smoothstep as the one-shot decay on each ramp. */
+        const float P = s->steering_cycle_peak;
+        const uint32_t period = 3u * N;
+        const uint32_t k = s->steering_pos / period;
+        const uint32_t p = s->steering_pos % period;
+        const float top = (k == 0u) ? S : P;
+        if (p < N) {                      /* down: top -> F */
+            float t = (float)p / (float)N;
+            float sm = t * t * (3.0f - 2.0f * t);
+            return top - (top - F) * sm;
+        }
+        if (p < 2u * N) return F;         /* hold at the minimum */
+        float t = (float)(p - 2u * N) / (float)N;  /* up: F -> P */
+        float sm = t * t * (3.0f - 2.0f * t);
+        return F + (P - F) * sm;
+    }
     float t = (float)s->steering_pos / (float)N;
     if (t > 1.0f) t = 1.0f;
     const float smooth = t * t * (3.0f - 2.0f * t);
@@ -30312,6 +30335,7 @@ static int ds4_engine_open_internal(ds4_engine **out,
         e->directional_steering_residual_decay_final = opt->directional_steering_residual_decay_final;
         e->directional_steering_residual_decay_tokens = opt->directional_steering_residual_decay_tokens;
         e->directional_steering_think_residual_decay_tokens = opt->directional_steering_think_residual_decay_tokens;
+        e->directional_steering_residual_cycle_peak = opt->directional_steering_residual_cycle_peak;
     }
     if (opt->n_threads > 0) g_requested_threads = (uint32_t)opt->n_threads;
     e->placement_session_count_hint = opt->placement_session_count_hint;
@@ -31759,6 +31783,7 @@ int ds4_session_create(ds4_session **out, ds4_engine *e, int ctx_size) {
             s->steering_decay_final = e->directional_steering_residual_decay_final;
             s->steering_decay_tokens_answer = e->directional_steering_residual_decay_tokens;
             s->steering_decay_tokens_think = e->directional_steering_think_residual_decay_tokens;
+            s->steering_cycle_peak = e->directional_steering_residual_cycle_peak;
             s->steering_scheduled = e->directional_steering_residual_scale != 0.0f &&
                 (e->directional_steering_residual_decay_tokens > 0 ||
                  e->directional_steering_think_residual_decay_tokens > 0);

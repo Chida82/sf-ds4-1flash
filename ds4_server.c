@@ -14490,6 +14490,9 @@ static server_config parse_options(int argc, char **argv) {
         } else if (!strcmp(arg, "--dir-steering-think-residual-decay-tokens")) {
             /* sf: 403 thinking-phase decay window; 0 = use the answer window */
             c.engine.directional_steering_think_residual_decay_tokens = (uint32_t)parse_float_arg(need_arg(&i, argc, argv, arg), arg, 0.0f, 1000000.0f);
+        } else if (!strcmp(arg, "--dir-steering-residual-cycle-peak")) {
+            /* sf: 403c >0 turns the one-shot decay into an oscillation whose rises climb to this peak; 0 = one-shot decay */
+            c.engine.directional_steering_residual_cycle_peak = parse_float_arg(need_arg(&i, argc, argv, arg), arg, 0.0f, 100.0f);
         } else if (!strcmp(arg, "--warm-weights")) {
             c.engine.warm_weights = true;
         } else if (!strcmp(arg, "--metal")) {

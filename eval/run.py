@@ -336,7 +336,8 @@ def run_harmful_axis(args, gen_fn=None, judge_exec=None):
 
     decay = {"decay_tokens": getattr(args, "decay_tokens", None),
              "decay_final": getattr(args, "decay_final", None),
-             "think_decay_tokens": getattr(args, "think_decay_tokens", None)}
+             "think_decay_tokens": getattr(args, "think_decay_tokens", None),
+             "cycle_peak": getattr(args, "cycle_peak", None)}
     base_recs, base_st = _completions(gen_fn, prompts, steer=None, residual=0.0)
     cand_recs, cand_st = _completions(gen_fn, prompts, steer=args.steer,
                                       residual=args.residual, **decay)
@@ -471,6 +472,9 @@ def main(argv=None):
                     help="403: thinking-phase decay window (0 = use the answer window)")
     ap.add_argument("--decay-final", type=float, dest="decay_final",
                     help="403: residual (minimum) scale the decay holds at")
+    ap.add_argument("--cycle-peak", type=float, dest="cycle_peak",
+                    help="403c: >0 oscillates (down/hold-min/up over 3 decay windows), "
+                         "rises climbing to this peak; omit for a one-shot decay")
     ap.add_argument("--judge", default="base")
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--out", default=str(common.OUT))

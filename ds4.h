@@ -142,6 +142,7 @@ typedef struct {
     float directional_steering_residual_decay_final;        /* sf: 403 residual scale the decay holds at (minimum); 0 = decay to off */
     uint32_t directional_steering_residual_decay_tokens;    /* sf: 403 answer-phase decay window in generated tokens; 0 = constant scale */
     uint32_t directional_steering_think_residual_decay_tokens; /* sf: 403 thinking-phase decay window; 0 = use the answer window */
+    float directional_steering_residual_cycle_peak; /* sf: 403c cyclic schedule peak (>0 oscillates down/hold-min/up over 3 windows, rising to this; first descent from the start scale); 0 = one-shot decay */
     bool allow_v41_steering;    /* sf: opt into V4.1 steering, lifting its startup refusal */
     int power_percent;
     uint32_t ssd_streaming_cache_experts;

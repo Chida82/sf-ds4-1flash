@@ -80,7 +80,7 @@ def load_hf_dataset(repo_id, *, config=None, split="train"):
 def build_cli(prompt, *, steer=None, residual=0.0, think=True,
               max_tokens=None, logprobs=None, top_k=None, system=None, extra=None,
               logits=None, decay_tokens=None, decay_final=None,
-              think_decay_tokens=None):
+              think_decay_tokens=None, cycle_peak=None):
     """argv for one greedy generation.
 
     base arm:    steer=None  -> no steering block at all.
@@ -116,6 +116,10 @@ def build_cli(prompt, *, steer=None, residual=0.0, think=True,
                      str(int(think_decay_tokens))]
         if decay_final is not None:
             argv += ["--dir-steering-residual-decay-final", _num(decay_final)]
+        # sf: 403c cyclic schedule (experimental). >0 -> oscillate (down/hold-min/up)
+        # with rises climbing to this peak. Omitted -> one-shot decay.
+        if cycle_peak is not None:
+            argv += ["--dir-steering-residual-cycle-peak", _num(cycle_peak)]
     if extra:
         argv += list(extra)
     argv += ["-p", prompt]

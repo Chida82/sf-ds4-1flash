@@ -2024,6 +2024,10 @@ static cli_config parse_options(int argc, char **argv) {
             /* sf: 403 thinking-phase decay window; 0 = use the answer window */
             c.engine.directional_steering_think_residual_decay_tokens =
                 (uint32_t)parse_float_range(need_arg(&i, argc, argv, arg), arg, 0.0f, 1000000.0f);
+        } else if (!strcmp(arg, "--dir-steering-residual-cycle-peak")) {
+            /* sf: 403c >0 turns the one-shot decay into an oscillation (down/hold-min/up
+             * over 3 decay windows) whose rises climb to this peak; 0 = one-shot decay */
+            c.engine.directional_steering_residual_cycle_peak = parse_float_range(need_arg(&i, argc, argv, arg), arg, 0.0f, 100.0f);
         } else if (!strcmp(arg, "-t") || !strcmp(arg, "--threads")) {
             c.engine.n_threads = parse_int(need_arg(&i, argc, argv, arg), arg);
         } else if (!strcmp(arg, "--backend")) {

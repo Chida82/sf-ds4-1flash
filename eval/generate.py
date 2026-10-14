@@ -37,14 +37,16 @@ def extract_completion(stdout):
 
 def gen(prompt, *, steer=None, residual=0.0, think=True,
         max_tokens=None, logprobs=None, system=None,
-        decay_tokens=None, decay_final=None, think_decay_tokens=None):
+        decay_tokens=None, decay_final=None, think_decay_tokens=None,
+        cycle_peak=None):
     """One generation; returns a record dict. Spawns the child (model-backed).
     logprobs=PATH names the file the CLI's --dump-logprobs JSON is written to.
-    decay_* (403) turn the steered arm's constant scale into a decay schedule."""
+    decay_* (403) turn the steered arm's constant scale into a decay schedule;
+    cycle_peak (403c) turns that decay into an oscillation."""
     argv = common.build_cli(prompt, steer=steer, residual=residual, think=think,
                             max_tokens=max_tokens, logprobs=logprobs, system=system,
                             decay_tokens=decay_tokens, decay_final=decay_final,
-                            think_decay_tokens=think_decay_tokens)
+                            think_decay_tokens=think_decay_tokens, cycle_peak=cycle_peak)
     res = common.execute(argv)
     return {
         "prompt": prompt,
