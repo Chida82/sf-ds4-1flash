@@ -23,6 +23,20 @@ No temporal implementation is complete. Depends on corrected `401` and the appli
 - [ ] 4.1 Run `make test` with named test output and disabled-path parity for any runtime change, then `openspec validate 403-steering-decay-phase-runtime --strict`. If the result is research-only, record that no runtime changed and validate the evidence/plan without claiming unrun parity.
 - [ ] 4.2 Reconcile the artifacts with what was actually retained and list evidence for every conditional decision. Verify no pending experiment is marked done by assumption and no unavailable phase mode is documented as shipped.
 
+## 5. Owner-directed smoothstep decay implementation
+
+Directed design to build and test now: the same msuiche vector, a decaying cubic
+smoothstep on the residual site, start = the `402` screen peak, residual final
+`0.2`, decay window 30 tokens in the thinking phase and 50 in the answer phase
+(windows to be tuned). The flags below are experimental under this change;
+promoting any of them to a default is the separate adoption gate (group 1 / D1).
+
+- [ ] 5.1 Add engine option fields (`directional_steering_residual_decay_tokens`, `directional_steering_residual_decay_final`, `directional_steering_think_residual_decay_tokens`) in `ds4.h`, and parse `--dir-steering-residual-decay-tokens`, `--dir-steering-residual-decay-final`, `--dir-steering-think-residual-decay-tokens` in the CLI and server. Omitted decay-tokens = 0 = constant; validate finite ranges. Classify the new env/flags where needed (`ds4_env.def`, help).
+- [ ] 5.2 Implement the per-token residual scale `scale = S − (S − F)·(3t² − 2t³)`, `t = clamp(pos/N, 0, 1)`, by updating `g->residual_scale` before each forward; the final prompt forward that predicts the first answer token uses the start `S`; for `pos ≥ N` hold at `F`; `N = 0` reproduces the constant `401` intervention bitwise.
+- [ ] 5.3 Implement per-session phase state: start in the thinking phase when thinking is enabled (else the answer phase), switch to the answer phase on `think_end_id` and reset the position so the answer gets its own dose and decay regardless of thinking length. Interleaved sessions keep independent position/phase; snapshots stay refused for a nonconstant mode under the `401` guard.
+- [ ] 5.4 Tests: a decode-switch-style bitwise check that `N = 0` equals the constant intervention, disabled-steering parity unchanged, and a per-position assertion that the scale follows the curve (S at pos 0, F past the window, reset at `</think>`). Record a benign run at think 30 / answer 50 in `docs/steering-measurements.md`.
+- [ ] 5.5 Document the experimental flags and the curve in `dir-steering/README.md` (marked experimental, pending the adoption gate); keep `401`'s FFN/attention refusal and the residual-only live site intact.
+
 ## Workflow follow-up
 
 - `405` event decay depends on this change only if it needs a retained temporal comparator; other `405` work is independent.
