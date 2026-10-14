@@ -36,3 +36,25 @@ A thinking/answer phase schedule, and separately a second direction file, SHALL 
 #### Scenario: Phase split without measured benefit
 - **WHEN** a thinking/answer phase schedule is proposed without a measured phase-specific gap over the same-vector single schedule
 - **THEN** no phase control is added and the decision is recorded
+
+### Requirement: Scheduled scale curve
+The retained schedule SHALL vary the scale from a start value to a final value over an N-token decay window using a cubic smoothstep ramp, holding at the final value past the window. It SHALL bind the V4.1 residual site, the only live steering hook (FFN and attention are refused, `401`), and `N = 0` SHALL reproduce the constant `401` intervention bitwise.
+
+#### Scenario: Smoothstep from start to final
+- **WHEN** a schedule with start scale S, final scale F and window N (> 0) tokens scales the computation for phase position `p` with `0 ≤ p < N`
+- **THEN** the applied scale is `S + (F − S)·(3t² − 2t³)` with `t = p/N`, and for `p ≥ N` it is `F`
+
+#### Scenario: Monotonic dose that eases off
+- **WHEN** the start scale breaks the refusal and the final scale is near zero
+- **THEN** the first in-phase tokens receive the full dose and later tokens are steered progressively less, easing the intervention off once the refusal is passed
+
+### Requirement: Per-phase schedule across thinking and answer
+A retained phase schedule SHALL run an independent curve in the thinking phase and in the answer phase, with the boundary taken from the thinking start/end token ids and the position counter reset at the answer boundary. Omitting the thinking controls SHALL leave the single-schedule behavior unchanged.
+
+#### Scenario: Answer dose restarts after a long thinking block
+- **WHEN** the thinking phase runs past its own decay window and the answer phase then begins
+- **THEN** the answer phase starts at its own start scale and decays over its own window, not continuing from the thinking phase's decayed tail
+
+#### Scenario: Thinking controls omitted
+- **WHEN** only the answer-phase schedule is configured and the thinking controls are omitted
+- **THEN** behavior is unchanged from the single retained schedule and no thinking-specific vector or decay is applied

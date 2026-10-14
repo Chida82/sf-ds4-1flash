@@ -2,7 +2,9 @@
 
 ## Context
 
-See proposal.md for the conditional scope. No temporal runtime has been implemented in this change. The owner's older-model schedule is a hypothesis source, not evidence that constant steering is wrong for this graph. The corrected `401` intervention and `402` fidelity measurements must be identified before comparisons begin.
+See proposal.md for the conditional scope. No temporal runtime has been implemented in this change (verified: `ds4.c`/`ds4.h`/`ds4_cli.c` carry no decay field, smoothstep, or think-phase steering switch). The upstream prior art (ds4 PR #282, a cubic-smoothstep FFN steering decay with separate thinking/answer schedules) is a hypothesis source, not evidence that constant steering is wrong for this graph, and it targets the FFN site, which V4.1 refuses; a schedule here binds the residual site instead (see D5). The corrected `401` intervention and `402` fidelity measurements must be identified before comparisons begin.
+
+The constant-scale baseline this change compares against is recorded in `docs/steering-measurements.md` (first-decision efficacy peaks at scale 6 and eases above it; constant steering is coherent through scale ~12 on 128-token benign output). That baseline shows the refusal is decided in the first in-phase tokens, which is the premise a decay schedule exploits, and that scale 6 does not grossly degrade output, so a schedule's value is finer fidelity, not avoiding collapse — a distinction measured by forced-prefix KL, not coarse quality flags.
 
 The former long-output gate is retained as a pilot, not a proof that clean output on 3-5 prompts makes all temporal work useless. Conversely, observing drift does not establish that a cubic schedule is better than a shorter window or weaker constant scale.
 
@@ -51,6 +53,26 @@ Phase split (thinking versus final answer) and a second direction file are two f
 ### D4. Conditional work can finish without adding code
 
 Every conditional task is completed by either its passing implementation evidence or a recorded gate decision explaining why the mechanism is not retained, citing the experiment. Do not mark unrun evaluation as a negative result. Do not install dead switches behind flags 'for later'. If no temporal candidate earns adoption, preserve the experiment findings and leave the `401` runtime unchanged.
+
+### D5. Prior art (#282) adapted from the FFN site to the residual site
+
+ds4 PR #282 established the curve this change reuses: a cubic smoothstep `3t²−2t³`
+ramp from a start scale to a `decay-final` scale over `decay-tokens`, with a
+separate schedule for the thinking phase and the post-thinking answer, phase
+detected from the thinking start/end token ids. Its controls name the **FFN** site
+(`--dir-steering-ffn`, `--dir-steering-ffn-decay-tokens`,
+`--dir-steering-ffn-decay-final`, and the `--dir-steering-think-*` variants).
+
+This child cannot reuse those controls as-is: a nonzero `--dir-steering-ffn` or
+`--dir-steering-attn` is refused on V4.1, whose only live hook is the residual
+fold. A retained schedule here therefore binds the residual site, and its controls
+are the residual analogues (`--dir-steering-residual` plus a residual decay length
+and final scale, and, only if the phase gate passes, `--dir-steering-think-file`
+with residual think controls). The curve shape, the `N=0`-is-constant invariant,
+and the per-phase reset are taken from #282; the site, the flag names, and the
+quantization are this model's. Alpha values from #282 are not carried over — the
+start/final scales come from this hook's own `402` measurement (baseline in
+`docs/steering-measurements.md`).
 
 ## Risks / Trade-offs
 
