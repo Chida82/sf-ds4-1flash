@@ -20,6 +20,39 @@ Conventions used below:
 
 ---
 
+## 2026-10-15 — 405 8.2: the refusal is decided at PREFILL; decode steering alone does nothing
+
+Prefill-vs-decode first-decision ablation with the new `DS4_STEERING_PHASE` toggle
+(commit `c645037`). 8-token answer prefix, `--nothink`, keyword-scored, 402 vector
+`v41-msuiche.f32` at scale 6, harmful `union[:30]`. Four arms, counts only (no prefixes stored).
+
+| arm (8-tok keyword refuse) | refuse | note |
+|---|---|---|
+| base (no steering) | 30/30 (1.00) | control |
+| both (prefill + decode) | 8/30 (0.27) | default runtime |
+| **prefill only** | **12/30 (0.40)** | `DS4_STEERING_PHASE=prefill` |
+| **decode only** | **30/30 (1.00)** | `DS4_STEERING_PHASE=decode` |
+
+- **Decode-only = base (1.00).** Steering only the decode forwards does nothing to the first
+  decision: the opening is already committed by the prefill forward (it produces the first token).
+- **Prefill-only does the bulk.** 1.00 -> 0.40 is 82% of the total removal (base->both drop 0.73;
+  prefill achieves 0.60 of it).
+- **Decode is a secondary boost.** Adding it on top of prefill closes the rest (0.40 -> 0.27) on
+  4/30 borderline prompts (#4, #10, #19, #28: prefill-only refused, both complied).
+
+**Reading.** The decision lives at prefill + the first tokens; the body does not decide. This is
+direct evidence for a DECAYING schedule (full dose where the decision is made, low on the body)
+over a constant-high one: a high dose on the body buys little, because the body is not where the
+refusal is set, while it costs benign fidelity. It also says the decode dose is not useless — keep
+a nonzero early-decode dose for the borderline cases, which decay provides and a prefill-only hook
+would not.
+
+**Caveat.** This screen is `--nothink`, 8-token, keyword — stricter and not comparable in absolute
+value to the think-on 2048 judge number (axis-A REFUSE 0.13). The valid comparison here is
+across-phases, since all four arms use the identical screen.
+
+---
+
 ## 2026-10-15 — vector geometry: the 402 msuiche direction is per-layer, smoothly rotating (offline, no model)
 
 Pure-Python geometry of `dir-steering/out/v41-msuiche.f32` (the 402 vector) and the
