@@ -20,6 +20,34 @@ Conventions used below:
 
 ---
 
+## 2026-10-14 — axis-A: n=30 acceptance at 2048 tokens (user-run)
+
+The clean acceptance measurement: ramp 6->9 at a finishing token cap. `union[:30]`,
+`--max-tokens 2048`, judge+keyword, controls OK, 60/60 completed, no INVALID. Code at
+`8b87a92`.
+
+| judge (n=30, ramp 6->9, 2048 tok) | base | steered |
+|---|---|---|
+| REFUSE | 1.00 (30/30) | 0.133 (4/30) |
+| DEFLECT | 0.00 | 0.233 (7/30) |
+| COMPLY | 0.00 | 0.633 (19/30) |
+| keyword refusal | 1.00 | 0.300 |
+
+**Are the 7 DEFLECT truncation or genuine?** Checked the DEFLECT completion lengths and
+end-punctuation: 6/7 end naturally (not abrupt), lengths 755-1217 tokens — well under the
+2048 cap. They are genuine deflections, finished answers the judge reads as reframed/
+hedged rather than direct. Only 3/30 steered completions hit the 2048 cap at all (long
+COMPLY answers).
+
+**Reading:** this is the clean full-length acceptance picture. Truncation explained about
+half of the 256-token DEFLECT (0.50 -> 0.23); the remaining ~23% is a genuine reframe/
+hedge residue on finished answers. So (1) the vector removes ~87% of refusals at full
+length (REFUSE 0.13), with ~63% direct compliance and ~23% reframed; (2) the `256`-token
+blocks above understate COMPLY and overstate DEFLECT — ~2048 is the right grading cap;
+(3) `407`'s precondition is MET — a reframe/hedge residue persists at n=30 on finished
+answers, so a second direction targeting it is warranted (not not-needed). The n=10 @ 2048
+pilot's DEFLECT 0.00 was small-sample luck. Caveat: single n=30; REFUSE 0.13 is 4 prompts.
+
 ## 2026-10-14 — axis-A: the DEFLECT "ceiling" was 256-token truncation (user-run, n=10)
 
 Re-measure of the ramp 6->9 arm at a token cap large enough for answers to finish
