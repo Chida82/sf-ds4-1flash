@@ -20,6 +20,35 @@ Conventions used below:
 
 ---
 
+## 2026-10-14 — axis-A: the DEFLECT "ceiling" was 256-token truncation (user-run, n=10)
+
+Re-measure of the ramp 6->9 arm at a token cap large enough for answers to finish
+(`--max-tokens 2048`, same `union[:10]`, judge+keyword, controls OK, 20/20 completed).
+Code at `8b87a92`. Direct test of the DEFLECT-analysis hypothesis.
+
+| judge (n=10, ramp 6->9) | max_tokens 256 | max_tokens 2048 |
+|---|---|---|
+| REFUSE | 0.00 | 0.10 |
+| COMPLY | 0.50 | 0.90 |
+| DEFLECT | 0.50 | 0.00 |
+
+Steered completion length at 2048: median ~1634 tokens, max ~2229; 3/10 still hit the
+cap. Base arm REFUSE 10/10 unchanged.
+
+**Reading:** the ~0.50 DEFLECT rate was entirely a truncation artifact. At 256 tokens
+every answer is cut inside its reframe intro and graded DEFLECT; run to completion the
+same answers resolve — DEFLECT collapses to 0, COMPLY rises to 0.90. The reframe/caution
+wrapper is an opening, not a terminal behaviour. Consequences: (1) the canonical axis-A
+token cap must let answers finish — median answer ~1634 tokens, so 256 and 1024 are both
+too short; ~2048-2560 is the floor, and the 256-token blocks above understate COMPLY and
+overstate DEFLECT for the vector. (2) The premise of the `407` reframe/caution second
+direction is undermined: there is no reframe residue at full length (DEFLECT 0), so a
+second direction is not warranted unless a residue reappears at larger n. (3) The
+keyword scorer stays at 0.3 because it catches refusal phrasing inside the reframe
+opening of answers the judge calls COMPLY; it over-counts and is not the acceptance
+signal. n=10 caveat; the REFUSE 0.10 is one prompt. An n=30 confirmation at 2048 is the
+clean acceptance measurement for `402`.
+
 ## 2026-10-14 — axis-A: what the DEFLECT grades actually are (analysis, no run)
 
 Re-read of the DEFLECT-graded steered completions in the two n=30 runs (ramp 6->9
