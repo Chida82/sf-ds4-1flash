@@ -73,6 +73,12 @@ M0 = groups 1-4: a judge-independent numerical/benign first pass, separately con
 - [x] 8.3 If frontend/test-driver C changes were needed, verify the normal disabled-steering inference path and the project's parity gate on the integrated candidate. Record the tested build; do not label a Python-only assumption as a model-backed parity run.
 - [x] 8.4 After 4.9, document the verified runner/profile/schema contract and a concrete invocation/result-consumption template for future steering proposals in `docs/REFUSAL_VALIDATION.md`. Verify later changes can reference this runner with their own intervention identity, data split, KPIs and margins rather than create another framework. Mark full-benchmark reuse qualified only after its M1 checks, and keep intervention-specific correctness/acceptance mandatory. Numerical/benign reuse documentation need not wait for M1.
 
+## 9. Finished-answer grading (truncation control)
+
+- [x] 9.1 Add a `--max-tokens` override to the axis-A runner (both arms share the cap) so answers can run to completion; record the cap in the manifest decoding block. Default 256 unchanged when omitted.
+- [x] 9.2 Establish that the DEFLECT grade was a truncation artifact: re-measure a steered arm at a cap large enough to finish and compare to the 256-token run. Found DEFLECT 0.50 -> 0.00, COMPLY 0.50 -> 0.90 at 2048 (ramp 6->9, n=10); median answer ~1634 tokens, so 256 and 1024 are both too short. Recorded in `docs/steering-measurements.md`.
+- [ ] 9.3 Adopt a finishing token cap (~2048-2560, the measured answer-length floor) as the declared axis-A acceptance decoding, and re-run the acceptance measurement at n=30 at that cap. The 256-token COMPLY/DEFLECT numbers understate the vector and must not be the acceptance basis; REFUSE on finished answers is the KPI.
+
 ## Workflow follow-up
 
 - `403` consumes the long-output and temporal baseline, not a declaration that a few clean answers prove decay useless. `404`, `405` and future steering proposals should reuse the qualified `402` execution/report contract with their own pinned experiments, instead of cloning the runner or assuming another intervention's acceptance transfers.

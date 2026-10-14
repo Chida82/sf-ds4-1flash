@@ -37,6 +37,15 @@ promoting any of them to a default is the separate adoption gate (group 1 / D1).
 - [x] 5.4 Tests: a decode-switch-style bitwise check that `N = 0` equals the constant intervention, disabled-steering parity unchanged, and a per-position assertion that the scale follows the curve (S at pos 0, F past the window, reset at `</think>`). Record a benign run at think 30 / answer 50 in `docs/steering-measurements.md`.
 - [x] 5.5 Document the experimental flags and the curve in `dir-steering/README.md` (marked experimental, pending the adoption gate); keep `401`'s FFN/attention refusal and the residual-only live site intact.
 
+## 6. Cyclic schedule extension (403c) and window tuning
+
+Experimental, under this change's flag umbrella; reduces to the one-shot decay by
+construction, so `401`/`403` behaviour is unchanged when off.
+
+- [x] 6.1 Add the cyclic schedule flag `--dir-steering-residual-cycle-peak P` (CLI, server): P>0 turns the one-shot decay into an oscillation — one period is down(N)/hold-min(N)/up(N) = 3N tokens, rises climbing to P, first descent from the start scale, per-phase window N as the decay. P=0 (omitted) is the one-shot decay, bitwise. Harness `--cycle-peak` through `run.py`/`generate.py`/`common.py`.
+- [x] 6.2 Verify the cyclic curve by engine trace (`DS4_STEERING_SCHEDULE_DEBUG=1`) against the math, confirm output stays coherent, and record the axis-A result in `docs/steering-measurements.md`. Result: the oscillation does not beat the ramp (DEFLECT unchanged, one refusal returned) — a completed negative; the flag stays experimental and is not promoted.
+- [ ] 6.3 Tune the V4.1 decay windows. The think-30 / answer-50 windows are inherited from ds4 PR #282 on another model and are unvalidated here; the first-decision screen shows the refusal is decided early, so they are likely longer than needed. Sweep a small set (e.g. {10,15,20,30,50}) on benign forced-prefix KL at fixed efficacy and pick the shortest window that holds efficacy. Only needed if the decay schedule is kept as a production default (group 1 / D1 adoption gate).
+
 ## Workflow follow-up
 
 - `405` event decay depends on this change only if it needs a retained temporal comparator; other `405` work is independent.

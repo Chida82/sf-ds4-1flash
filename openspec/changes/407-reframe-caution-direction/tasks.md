@@ -1,5 +1,9 @@
 # Tasks
 
+## 0. Precondition gate
+
+- [ ] 0.1 Confirm a reframe/hedge residue actually persists on finished answers before deriving anything: read the `402` n=30 acceptance run at a finishing token cap. If DEFLECT stays ~0 (the 2048 n=10 pilot showed DEFLECT collapses), record this change as not-needed and stop. Proceed to group 1 only if a residual DEFLECT, or a reframe the owner judges worth removing, persists at n>=30.
+
 ## 1. Contrast pairs and derivation
 
 - [ ] 1.1 Assemble reframed-vs-direct contrast pairs on the same prompts (from existing

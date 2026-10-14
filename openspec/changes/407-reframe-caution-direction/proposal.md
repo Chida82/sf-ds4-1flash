@@ -18,6 +18,14 @@ observed DEFLECT rate is also a 256-token truncation artifact; that is measured
 separately under `402` (the `--max-tokens` re-measure) and is a precondition for a
 trustworthy acceptance here, not part of this change.
 
+**Gate (2026-10-14):** the `402` re-measure at 2048 tokens found DEFLECT collapses from
+~0.50 to ~0.00 and COMPLY rises to ~0.90 on finished answers (ramp 6->9, n=10) — the
+reframe wrapper was an opening, not a terminal deflection. This weakens the premise:
+there may be no reframe residue to remove at full length. This change is therefore
+conditional: it proceeds only if a reframe/hedge residue persists on finished answers at
+n>=30; if finished-answer DEFLECT stays ~0, it is recorded as not-needed without
+deriving a vector.
+
 ## What Changes
 
 - Derive a reframe/caution direction at the live residual site on controlled contrast

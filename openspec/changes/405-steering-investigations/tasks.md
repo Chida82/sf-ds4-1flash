@@ -53,10 +53,16 @@ Each experiment is completed by evidence and a supported/rejected/inconclusive d
 - [ ] 7.2 Only if that prerequisite is met, run a bounded task-local residual-plus-attention comparison with controls and fair dose tuning. Verify benefit over the stronger single-site comparator with `402`, or record a negative/inconclusive result; do not ship an attention knob before this gate.
 - [ ] 7.3 Document any justified follow-up with its required active hook, identity and acceptance evidence. Verify no absent second channel is described as a measured neutral or implemented feature.
 
-## 8. Integration and handoff
+## 8. Prefill-phase and reference-model investigations
 
-- [ ] 8.1 Run model-less/kernel checks, `make test` with named output, probe no-op state checks and disabled-path parity for retained runtime changes; run `openspec validate 405-steering-investigations --strict`. Distinguish task-local prototype evidence from release validation.
-- [ ] 8.2 Review every retained probe/mechanism and every conditional non-adoption against the spec. Verify unused experiments did not become release flags, evidence-backed negative outcomes are explicit, and no unexecuted model-backed work is checked off.
+- [ ] 8.1 Per-layer prefill projection probe (read-only): at the last prompt position, dump the residual's projection onto the accepted refusal direction across layers, for base vs steered and for refusing vs benign prompts. Identify which layers carry the refusal during prefill and whether the 40-layer vector covers them. Measured overhead, unchanged off path; no scores, just the projection trace.
+- [ ] 8.2 Prefill-vs-decode dose ablation: steer the prefill only, the decode only, and both, and measure the first-decision refusal flip to isolate where the dose does the work (the fold already runs in `ds41_before_attention_batch`, so the prompt is steered at the start scale today). A task-local switch, not an always-on knob; record which dose removes the refusal.
+- [ ] 8.3 Reference-model as a source of compliant contrast text: use a known less-refusing model only to produce the "direct/compliant" pole, then derive the contrast direction in V4.1's own prefill activations (not a cross-model residual diff — the spaces do not align). Record pair source/count; feeds `407`.
+
+## 9. Integration and handoff
+
+- [ ] 9.1 Run model-less/kernel checks, `make test` with named output, probe no-op state checks and disabled-path parity for retained runtime changes; run `openspec validate 405-steering-investigations --strict`. Distinguish task-local prototype evidence from release validation.
+- [ ] 9.2 Review every retained probe/mechanism and every conditional non-adoption against the spec. Verify unused experiments did not become release flags, evidence-backed negative outcomes are explicit, and no unexecuted model-backed work is checked off.
 
 ## Workflow follow-up
 
