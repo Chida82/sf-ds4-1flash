@@ -20,6 +20,36 @@ Conventions used below:
 
 ---
 
+## 2026-10-14 — axis-A: cyclic schedule (403c) does NOT beat the ramp (user-run, n=10)
+
+First test of the 403c oscillating schedule: down(N)/hold-min(N)/up(N) back to the
+peak, repeating. `--residual 6 --decay-tokens 50 --think-decay-tokens 30
+--decay-final 0.2 --cycle-peak 6` on `union[:10]`, judge+keyword, controls OK,
+20/20 completed, no INVALID. Code at `7d485a3`. Steered completions are coherent
+English (no loops / code-switch), so the repeated high-scale pulses do not degrade
+output.
+
+| judge (n=10) | base | const-6 | const-10 | decay-6 | ramp 6->9 | cyclic 6<->0.2 |
+|---|---|---|---|---|---|---|
+| REFUSE | 1.00 | 0.00 | 0.20 | 0.00 | 0.00 | 0.10 |
+| COMPLY | 0.00 | 0.40 | 0.50 | 0.40 | 0.50 | 0.40 |
+| DEFLECT | 0.00 | 0.60 | 0.30 | 0.60 | 0.50 | 0.50 |
+| keyword refusal | 1.00 | 0.30 | 0.50 | 0.30 | 0.30 | 0.30 |
+
+**Reading:** the oscillation does not reduce partials. DEFLECT 0.50 is the same as
+the monotone ramp 6->9; COMPLY is lower (0.40 vs the ramp's 0.50) and one outright
+refusal returned (0.10 vs 0.00). So re-dosing the vector periodically on the body
+spends more time at high scale (like const-10, which also brought refusals back)
+without converting any partials to full answers. The hypothesis — periodic
+"reminding" cuts late hedging — is not supported: the partials are not a function of
+late under-dosing, they are the vector's ceiling (the model hedges past the removed
+refusal direction, same ~0.50 DEFLECT floor the ramp hit). The ramp 6->9 remains the
+best harmful-axis schedule. Caveat: n=10. The over-steering direction predicts the
+peak-8 variant would bring back more refusals, not fewer partials, so it was not run.
+Reducing partials below ~0.50 is not a schedule-shape problem; it needs an adaptive
+intervention (directional clamp / state-gated scale) or the proprietary vector
+(404/405), not another curve.
+
 ## 2026-10-14 — axis-A: ramp 6->9 confirmed at n=30 (user-run)
 
 The n=30 confirmation of the ramp (`--residual 6 --decay-tokens 20
