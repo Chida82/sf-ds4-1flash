@@ -28204,7 +28204,13 @@ struct ds4_session {
     uint32_t steering_decay_tokens_think;
     uint32_t steering_decay_tokens_answer;
     float steering_cycle_peak;  /* sf: 403c cyclic schedule peak (>0 enables oscillation); 0 = one-shot decay */
+    int steering_phase;         /* sf: 405 8.2 phase ablation: 0 both, 1 prefill-only, 2 decode-only */
 };
+
+/* sf: 405 8.2 steering phase ablation (task-local, env DS4_STEERING_PHASE). Default
+ * both keeps the 401/403 path bitwise unchanged; prefill-only / decode-only zero the
+ * dose in the other phase to isolate where the refusal is actually broken. */
+enum ds41_steering_phase { DS41_STEER_BOTH = 0, DS41_STEER_PREFILL_ONLY = 1, DS41_STEER_DECODE_ONLY = 2 };
 
 static bool ds4_session_tp_leader(const ds4_session *s);
 
@@ -28252,17 +28258,29 @@ static float ds41_steering_scheduled_scale(const ds4_session *s) {
     return S - (S - F) * smooth;
 }
 
+/* sf: 405 8.2 base scale for the current phase: the scheduled value when a decay
+ * window is set, else the constant 401 scale (held in steering_decay_start). */
+static float ds41_steering_base_scale(const ds4_session *s) {
+    return s->steering_scheduled ? ds41_steering_scheduled_scale(s)
+                                 : s->steering_decay_start;
+}
+
 /* Initialize the schedule at prompt sync: position 0 of the opening phase. The
  * chat template ends the prompt with <think> when thinking is on and </think>
  * when it is off, so the opening phase follows the last prompt token. The prefill
  * forward that produces the first generated token then uses the start scale S. */
 static void ds41_steering_on_prompt(ds4_session *s, const ds4_tokens *prompt) {
-    if (!s->steering_scheduled) return;
-    const int think_start = s->engine ? s->engine->vocab.think_start_id : -1;
-    s->steering_pos = 0;
-    s->steering_in_think = prompt && prompt->len > 0 && think_start >= 0 &&
-        prompt->v[prompt->len - 1] == think_start;
-    s->ds41_graph.residual_scale = ds41_steering_scheduled_scale(s);
+    /* sf: 405 8.2 default (phase both, no decay): the 401 constant path is unchanged. */
+    if (!s->steering_scheduled && s->steering_phase == DS41_STEER_BOTH) return;
+    if (s->steering_scheduled) {
+        const int think_start = s->engine ? s->engine->vocab.think_start_id : -1;
+        s->steering_pos = 0;
+        s->steering_in_think = prompt && prompt->len > 0 && think_start >= 0 &&
+            prompt->v[prompt->len - 1] == think_start;
+    }
+    float scale = ds41_steering_base_scale(s);
+    if (s->steering_phase == DS41_STEER_DECODE_ONLY) scale = 0.0f;  /* sf: 405 8.2 no prefill dose */
+    s->ds41_graph.residual_scale = scale;
     if (getenv("DS4_STEERING_SCHEDULE_DEBUG"))
         fprintf(stderr, "ds4: steering schedule pos=%u phase=%s scale=%.4f\n",
                 s->steering_pos, s->steering_in_think ? "think" : "answer",
@@ -28273,15 +28291,20 @@ static void ds41_steering_on_prompt(ds4_session *s, const ds4_tokens *prompt) {
  * being fed to produce the next one; when it is </think> the next token opens the
  * answer phase, so the dose restarts. */
 static void ds41_steering_on_decode(ds4_session *s, int token) {
-    if (!s->steering_scheduled) return;
-    const int think_end = s->engine ? s->engine->vocab.think_end_id : -1;
-    if (s->steering_in_think && think_end >= 0 && token == think_end) {
-        s->steering_in_think = false;
-        s->steering_pos = 0;
-    } else {
-        s->steering_pos++;
+    /* sf: 405 8.2 default (phase both, no decay): the 401 constant path is unchanged. */
+    if (!s->steering_scheduled && s->steering_phase == DS41_STEER_BOTH) return;
+    if (s->steering_scheduled) {
+        const int think_end = s->engine ? s->engine->vocab.think_end_id : -1;
+        if (s->steering_in_think && think_end >= 0 && token == think_end) {
+            s->steering_in_think = false;
+            s->steering_pos = 0;
+        } else {
+            s->steering_pos++;
+        }
     }
-    s->ds41_graph.residual_scale = ds41_steering_scheduled_scale(s);
+    float scale = ds41_steering_base_scale(s);
+    if (s->steering_phase == DS41_STEER_PREFILL_ONLY) scale = 0.0f;  /* sf: 405 8.2 no decode dose */
+    s->ds41_graph.residual_scale = scale;
     if (getenv("DS4_STEERING_SCHEDULE_DEBUG"))
         fprintf(stderr, "ds4: steering schedule pos=%u phase=%s scale=%.4f\n",
                 s->steering_pos, s->steering_in_think ? "think" : "answer",
@@ -31789,6 +31812,12 @@ int ds4_session_create(ds4_session **out, ds4_engine *e, int ctx_size) {
                  e->directional_steering_think_residual_decay_tokens > 0);
             s->steering_pos = 0;
             s->steering_in_think = false;
+            s->steering_phase = DS41_STEER_BOTH;  /* sf: 405 8.2 phase ablation */
+            {
+                const char *ph = getenv("DS4_STEERING_PHASE");
+                if (ph && strcmp(ph, "prefill") == 0) s->steering_phase = DS41_STEER_PREFILL_ONLY;
+                else if (ph && strcmp(ph, "decode") == 0) s->steering_phase = DS41_STEER_DECODE_ONLY;
+            }
         }
         s->ds41_graph.quality = e->quality;
         s->ds41_graph.streaming_prefill_bytes = e->ssd_streaming_prefill_headroom_bytes;

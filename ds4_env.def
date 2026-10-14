@@ -448,6 +448,7 @@ DS4_ENV(DS4_ROUTED_TOKEN_PARALLEL, enable, unset, "CPU prefill routed experts: f
 DS4_ENV(DS4_SERVER_BATCH_LOG, probe, unset, "Server: log each coalesced decode batch to stderr")
 DS4_ENV(DS4_SERVER_DECODE_COALESCE_US, tuning, unset, "Server: microseconds to wait collecting pending decodes into one batch (default 2000, 0-100000)")
 DS4_ENV(DS4_SSD_AUTO_CACHE_PCT, tuning, unset, "SSD streaming auto cache: percent of recommended working set for model plus cache (50-95, default 86)")
+DS4_ENV(DS4_STEERING_PHASE, probe, unset, "405: apply the residual steering fold in one phase only (prefill|decode; default both) to isolate where the refusal dose acts; task-local ablation")
 DS4_ENV(DS4_STEERING_SCHEDULE_DEBUG, probe, unset, "403: print the residual steering scale per generated token (pos, phase, scale) to stderr")
 DS4_ENV(DS4_TEST_ARGMAX_ONLY, test, any, "Session batch test: compare only argmax tokens, not full logits (0 = off)")
 DS4_ENV(DS4_TEST_BACKEND, test, any, "Model-backed tests: cpu selects the CPU backend, otherwise Metal")
