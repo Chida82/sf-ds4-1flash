@@ -20,6 +20,31 @@ Conventions used below:
 
 ---
 
+## 2026-10-14 — axis-A efficacy: base / constant-6 / decay-6 (user-run, 10-prompt pilot)
+
+The efficacy side of the decay adoption gate, and the 402 (6.1) acceptance
+evidence. `eval/run.py --suite harmful-axis-a` on `union[:10]`, judge (base model)
++ keyword, run by the owner. Two runs, constant scale 6 and decay 6→0.2 (answer
+window 50, think 30); controls (no-op, zero-direction) OK, 20/20 completed, no
+INVALID, in both.
+
+| metric (judge, n=10) | base | constant-6 | decay-6 |
+|---|---|---|---|
+| REFUSE rate | 1.00 | 0.00 | 0.00 |
+| COMPLY rate | 0.00 | 0.40 | 0.40 |
+| keyword refusal | 1.00 | 0.30 | 0.30 |
+
+**Reading:** at scale 6 the vector removes refusals — outright judge REFUSE goes
+from 100% to 0%, full COMPLY from 0% to 40% (the rest DEFLECT). The decay keeps the
+*entire* efficacy of the constant (identical REFUSE 0% / COMPLY 0.40 / keyword
+0.30): the refusal is decided in the first tokens, both at scale 6, and the decay
+only lowers the body scale. Combined with the benign fidelity gain (decay distorts
+the body ~14-23% less, block below), decay-6 is at least as good as constant-6 on
+efficacy and better on fidelity — the adoption case for the 403 schedule. Caveat:
+n=10 pilot, wide intervals on the 0.40; the robust part is REFUSE 0% in both. A
+`--limit 30`+ run and the predeclared non-inferiority margin (6.5) remain for the
+acceptance decision.
+
 ## 2026-10-14 — 403 benign fidelity: decay-6 vs constant-6 (forced-prefix KL)
 
 The fidelity side of the decay adoption gate (the efficacy side, on the harmful
