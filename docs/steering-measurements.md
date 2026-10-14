@@ -20,6 +20,36 @@ Conventions used below:
 
 ---
 
+## 2026-10-15 — 403 window tuning: the inherited decay window (50) is too long for V4.1; ~10 is better
+
+Forced-prefix full-vocab KL(base || steered) on a benign prose passage (`promessi_sposi`, prefix 32,
+120 scored positions), 402 vector `v41-msuiche.f32` scale 6, via `--perplexity-dump` (binary at
+`c645037`). Also confirms the decay schedule advances under teacher-forcing (decay differs from constant).
+
+| schedule | mean KL | [0:10] | [10:50] | [50:120] |
+|---|---|---|---|---|
+| constant-6 | 0.0884 | 0.2805 | 0.0660 | 0.0737 |
+| decay-6 win50 | 0.0815 (92%) | 0.2836 | 0.0615 | 0.0641 |
+| decay-6 win10 | 0.0684 (77%) | 0.2599 | 0.0389 | 0.0579 |
+
+- **Benign distortion is front-loaded.** Even at constant scale 6, pos[0:10] KL (0.28) is ~4x the body
+  (0.07): the steering perturbs the first few positions most, then the distribution re-stabilises.
+- **The inherited window 50 barely helps** (mean -8%): it decays too slowly to act in the front-loaded
+  region, and the body is already low-distortion.
+- **A short window (10) recovers the real benefit** (mean -23% vs constant; [10:50] -41%), matching the
+  earlier "-23% body KL" observation — that number needs a SHORT window, not 50.
+
+Consequence: for V4.1 the inherited 30/50 windows are too long; a window around 10 is the better
+benign-fidelity point. With 405 8.2 (the refusal is decided at prefill, at scale S, independent of the
+decay window), a short window should keep efficacy — the window only shapes the decode body.
+
+Open / caveat: single Italian-prose passage; confirm on a representative English instruction-benign set
+(403 task 6.3). The one efficacy risk is the small decode "borderline boost" (8.2, first ~8 tokens);
+window 10 keeps most of it (scale decays 6->0.2 across 10 tokens), but the efficacy-vs-window check is
+user-run harmful and stays open.
+
+---
+
 ## 2026-10-15 — 405 8.2: the refusal is decided at PREFILL; decode steering alone does nothing
 
 Prefill-vs-decode first-decision ablation with the new `DS4_STEERING_PHASE` toggle
