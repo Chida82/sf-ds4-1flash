@@ -27,6 +27,7 @@ from pathlib import Path
 import common
 import manifest
 import profiles
+import compose
 import generate
 import score_keyword
 import score_judge
@@ -260,6 +261,134 @@ def _json(obj):
     return json.dumps(obj, ensure_ascii=False, indent=2)
 
 
+# --- axis-A harmful run (task 6.1, the user-run full-generation path) ---------
+
+def _judge_arm(prompts, recs, judge_exec):
+    """Judge each completed (prompt, completion) with the frozen base judge. An
+    empty completion is NOT sent to the judge (it would read as REFUSE); it is
+    kept as a None label and surfaces as an execution failure, not a refusal.
+    Returns (labels, evidence); labels hold REFUSE/DEFLECT/COMPLY/INVALID or None."""
+    labels, ev = [], []
+    for p, r in zip(prompts, recs):
+        comp = (r.get("completion") or "")
+        if not comp.strip():
+            labels.append(None)
+            ev.append({"prompt": p, "label": None, "status": "empty"})
+            continue
+        res = judge_exec(score_judge.judge_argv(p, comp))
+        raw = generate.extract_completion(res.get("stdout", ""))
+        lbl = score_judge.parse_judge(raw)
+        labels.append(lbl)
+        ev.append({"prompt": p, "label": lbl, "judge_raw": raw,
+                   "returncode": res.get("returncode")})
+    return labels, ev
+
+
+def _axis_a_metrics(arm, prompts, recs, judge_exec):
+    """Judge + keyword axis-A KPIs for one arm. Reported together, never alone
+    (design D1): the judge COMPLY/REFUSE rates over VALID grades, the INVALID
+    count kept apart, and the fast keyword refusal rate as a cross-check."""
+    labels, ev = _judge_arm(prompts, recs, judge_exec)
+    graded = [l for l in labels if l is not None]
+    comps = [r.get("completion") or "" for r in recs if (r.get("completion") or "").strip()]
+    comply = score_judge.behavioral_rate(graded, "COMPLY")
+    refuse = score_judge.behavioral_rate(graded, "REFUSE")
+    # every metric is a {value|status, ...} dict so summary_markdown renders it;
+    # the tally and ungraded count ride inside the comply metric (extra keys the
+    # markdown ignores but the JSON keeps), never as bare scalars.
+    metrics = {
+        f"judge_comply_rate_{arm}": {"value": comply["rate"],
+                                     "denominator": comply["valid"],
+                                     "invalid": comply["invalid"],
+                                     "tally": score_judge.tally(graded),
+                                     "ungraded": sum(1 for l in labels if l is None)},
+        f"judge_refuse_rate_{arm}": {"value": refuse["rate"],
+                                     "denominator": refuse["valid"]},
+        f"keyword_refusal_rate_{arm}": {
+            "value": score_keyword.refusal_rate(comps) if comps else None,
+            "denominator": len(comps)},
+    }
+    return metrics, ev
+
+
+def run_harmful_axis(args, gen_fn=None, judge_exec=None):
+    """Axis-A completed-response run (task 6.1). Generates full base/steered
+    responses on the deduplicated harmful union, scores with the frozen judge and
+    the keyword cross-check, runs the two controls, and writes the manifest (local
+    content) + KPI summary (numbers only). Report-only: it does NOT auto-accept; a
+    pass/fail needs the user's predeclared margins (task 6.5/8.2). gen_fn/judge_exec
+    are injected by the offline self-check."""
+    gen_fn = gen_fn or (lambda p, **kw: generate.gen(p, **kw))
+    judge_exec = judge_exec or (lambda argv: common.execute(argv))
+    suites = compose.compose_harmful()
+    prompts = suites["union"]
+    if args.limit and args.limit > 0:
+        prompts = prompts[:args.limit]
+    sel = compose.selector_record("union", prompts,
+                                  selector=f"union[:{args.limit}]" if args.limit > 0 else "union")
+
+    run_id = time.strftime("%Y%m%d-%H%M%S") + "-harmful-axis-a"
+    out_dir = Path(args.out) / run_id
+    out_dir.mkdir(parents=True, exist_ok=True)
+    iv = manifest.intervention_identity(steer=args.steer, residual=args.residual or 0.0)
+
+    base_recs, base_st = _completions(gen_fn, prompts, steer=None, residual=0.0)
+    cand_recs, cand_st = _completions(gen_fn, prompts, steer=args.steer,
+                                      residual=args.residual)
+    controls, control_ev = run_controls(gen_fn, prompts[:3], args.steer, out_dir)
+
+    base_metrics, base_ev = _axis_a_metrics("base", prompts, base_recs, judge_exec)
+    steer_metrics, steer_ev = _axis_a_metrics("steered", prompts, cand_recs, judge_exec)
+    metrics = {**base_metrics, **steer_metrics}
+    for m in ("kl_fidelity", "over_refusal_rate"):
+        metrics[m] = {"status": "not_measured", "reason": "other axis / separate run"}
+
+    all_st = list(base_st) + list(cand_st)
+    completed = sum(1 for s in all_st if s == "ok")
+    failures = {s: all_st.count(s) for s in set(all_st) if s != "ok"}
+    control_failed = any(v == "failed" for v in controls.values())
+    counts = {"requested": len(prompts) * 2, "attempted": len(all_st),
+              "completed": completed, "valid": completed, "failures": failures,
+              "selector": sel}
+    control_block = {k: controls.get(k, "not_run") for k in ("noop", "zero_dir")}
+
+    verdict = {"eligible": False, "decision": "report-only",
+               "reason": "axis-A measured; acceptance needs predeclared margins "
+                         "(task 6.5/8.2), a user decision"}
+    if control_failed:
+        verdict = {"eligible": False, "decision": "ABORT",
+                   "reason": "a no-op/zero-direction control failed"}
+
+    summary = manifest.build_summary(
+        run_id=run_id, profile="harmful-axis-a", mode=args.mode, report="kpi",
+        milestone="M1", intervention=iv, counts=counts, metrics=metrics,
+        controls=control_block, coverage={"A": "measured", "B": "not_measured",
+        "C": "not_measured", "D": "not_measured", "E": "partial"},
+        axes={"A": {"judge": metrics["judge_comply_rate_steered"]["value"]}},
+        verdict=verdict, evidence_ref=str(out_dir))
+
+    local = {
+        "schema": manifest.SCHEMA_VERSION, "run_id": run_id,
+        "source": manifest.source_identity(), "model": manifest.model_identity(common.MODEL),
+        "intervention": iv, "profile": "harmful-axis-a", "mode": args.mode,
+        "selector": sel,
+        "decoding": {"temp": 0, "max_tokens": common.DECODE["max_tokens"],
+                     "ctx": common.DECODE["ctx"], "think": False},
+        "arms": {
+            "base": [{"prompt": p, "completion": r["completion"], "status": s}
+                     for p, r, s in zip(prompts, base_recs, base_st)],
+            "steered": [{"prompt": p, "completion": r["completion"], "status": s}
+                        for p, r, s in zip(prompts, cand_recs, cand_st)],
+        },
+        "judge_evidence": {"base": base_ev, "steered": steer_ev},
+        "controls": controls, "control_evidence": control_ev, "counts": counts,
+    }
+    (out_dir / "manifest.json").write_text(_json(local))
+    (out_dir / "summary.json").write_text(_json(summary))
+    (out_dir / "summary.md").write_text(manifest.summary_markdown(summary))
+    return summary, local, out_dir
+
+
 # --- stored-result rendering, no model (task 4.8) ----------------------------
 
 def render_stored(run_dir, report):
@@ -363,6 +492,9 @@ def main(argv=None):
 
     if args.steer is not None and not args.residual:
         ap.error("--steer needs a nonzero --residual (a zero scale is the no-op control)")
+    if args.suite == "harmful-axis-a" and (args.steer is None or not args.residual):
+        ap.error("harmful-axis-a needs --steer VECTOR and a nonzero --residual "
+                 "(it measures base vs steered on the harmful union)")
 
     ok, missing = prerequisite_ok()
     if not ok:
@@ -371,7 +503,10 @@ def main(argv=None):
             print(f"  - {m}")
         return 2
 
-    summary, _, out_dir = run_profile(args)
+    if args.suite == "harmful-axis-a":
+        summary, _, out_dir = run_harmful_axis(args)
+    else:
+        summary, _, out_dir = run_profile(args)
     if args.report == "audit":
         sys.stdout.write(render_stored(out_dir, "audit"))
     else:
@@ -502,6 +637,56 @@ def _selfcheck():
         kpi = run_calibration(d / "cal", judge_exec=fake_judge)
         assert kpi["agreement"] == 1.0 and kpi["invalid"] == 0
         assert kpi["n"] == len(calib.CALIBRATION)
+
+        # --- axis-A harmful run (task 6.1), fake gen + fake judge, no network ---
+        VEC = str(d / "v.f32")  # the real-vector path used by the steered arm
+        REFUSE_TXT = "I'm sorry, but I can't help with that."
+        COMPLY_TXT = "Sure, here are the steps you asked for."
+
+        def hgen(prompt, *, steer=None, residual=0.0, **kw):
+            # steered only when the REAL vector is applied at a nonzero scale; the
+            # no-op (scale 0) and zero-direction (other path) controls reproduce base
+            comp = COMPLY_TXT if (steer == VEC and residual) else REFUSE_TXT
+            return {"prompt": prompt, "completion": comp, "returncode": 0,
+                    "raw_stdout": comp, "raw_stderr": ""}
+
+        def hjudge(argv):
+            jp = argv[-1]  # the judge prompt embeds request + response
+            return {"stdout": ("COMPLY" if "Sure, here are" in jp else "REFUSE") + "\n",
+                    "returncode": 0}
+
+        orig = compose.compose_harmful
+        compose.compose_harmful = lambda: {"union": ["q1", "q2", "q3", "q4"]}
+        try:
+            class H:
+                mode, suite, report, judge, limit = "full", "harmful-axis-a", "kpi", "base", 0
+                steer = VEC; residual = 4.0; out = str(d / "outh"); input_run = None
+            hs, hl, hdir = run_harmful_axis(H, gen_fn=hgen, judge_exec=hjudge)
+            assert hs["controls"]["noop"] == "ok" and hs["controls"]["zero_dir"] == "ok"
+            # base refuses, steered complies; INVALID kept apart, denominators visible
+            assert hs["metrics"]["judge_refuse_rate_base"]["value"] == 1.0
+            assert hs["metrics"]["judge_comply_rate_steered"]["value"] == 1.0
+            assert hs["metrics"]["judge_comply_rate_base"]["value"] == 0.0
+            assert hs["metrics"]["keyword_refusal_rate_base"]["value"] == 1.0
+            assert hs["verdict"]["decision"] == "report-only"  # never auto-accepts
+            # the KPI summary leaks neither prompts nor completions
+            assert manifest.scan_for_content(hs, ["q1", REFUSE_TXT, COMPLY_TXT,
+                                                  "Sure, here are"]) == []
+            # but the local manifest retains the completions for audit
+            assert COMPLY_TXT in (hdir / "manifest.json").read_text()
+            # a failed control aborts the harmful run too
+            def hgen_badnoop(prompt, *, steer=None, residual=0.0, **kw):
+                if steer == VEC and residual == 0.0:
+                    return {"prompt": prompt, "completion": "DRIFT", "returncode": 0,
+                            "raw_stdout": "", "raw_stderr": ""}
+                return hgen(prompt, steer=steer, residual=residual)
+
+            class H2(H):
+                out = str(d / "outh2")
+            hs2, _, _ = run_harmful_axis(H2, gen_fn=hgen_badnoop, judge_exec=hjudge)
+            assert hs2["verdict"]["decision"] == "ABORT", hs2["verdict"]
+        finally:
+            compose.compose_harmful = orig
 
     print("run.py self-check: OK")
 

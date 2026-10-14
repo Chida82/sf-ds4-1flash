@@ -478,6 +478,7 @@ eval-refusal-selfcheck:
 	python3 eval/score_quality.py
 	python3 eval/calibration.py
 	python3 eval/probe_firsttoken.py
+	python3 eval/scale_sweep.py --self-check
 	python3 eval/run.py --self-check
 
 ds4.o ds4_cpu.o ds4_server.o ds4_server_cpu.o ds4_test.o \

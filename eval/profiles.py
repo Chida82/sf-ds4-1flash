@@ -57,6 +57,21 @@ PROFILES = {
                  "D": "not_measured", "E": "not_measured"},
         "milestone": "M0",
     },
+    "harmful-axis-a": {
+        "description": "completed-response axis-A on the deduped harmful union, "
+                       "judge + keyword scored (task 6.1, user-run)",
+        "prompts": "harmful-union",         # compose.compose_harmful()['union']
+        "needs_judge": True,
+        "may_fetch": True,                  # fetches advbench/harmbench/strongreject
+        "may_launch_benchmark": False,
+        "required_metrics": ("noop_control", "zero_dir_control",
+                             "judge_comply_rate", "judge_refuse_rate",
+                             "keyword_refusal_rate"),
+        "optional_metrics": ("kl_fidelity", "over_refusal_rate"),
+        "axes": {"A": "measured", "B": "not_measured", "C": "not_measured",
+                 "D": "not_measured", "E": "partial"},
+        "milestone": "M1",
+    },
 }
 
 
