@@ -20,6 +20,27 @@ Conventions used below:
 
 ---
 
+## 2026-10-15 — vector geometry: the 402 msuiche direction is per-layer, smoothly rotating (offline, no model)
+
+Pure-Python geometry of `dir-steering/out/v41-msuiche.f32` (the 402 vector) and the
+`-mask20` variant. No model run, no GPU. Vector/code at `c645037`.
+
+- **Active layers 1-39, layer 0 zero, every active row unit-norm** (matches the 401 input contract).
+- **Not one global direction.** Mutual per-layer cosine across the 39 active rows: min +0.003,
+  median +0.241, max +0.971 (741 pairs). Distant layers are nearly orthogonal.
+- **But locally coherent.** Adjacent active-layer cosine: min +0.658, median +0.904, max +0.971.
+  The refusal direction drifts smoothly through depth (a slow rotation) — neither a fixed global
+  vector nor noise.
+- **mask20 is a strict truncation.** cosine(full, mask20) = 1.000 on layers 1-20, layers 21-39
+  zeroed. mask20 re-uses the same per-layer directions; it is not a re-derivation.
+
+Consequence for `408`: an abliteration that removed a single global `r` would show mutual per-layer
+cosine ~1 across layers; the activation-derived 402 vector does not (median 0.24, smoothly rotating).
+The weight-diff geometry report (`408` task 3.1/3.2) can use this contrast — a globally-constant
+recovered direction is structurally unlike the 402 vector, even where adjacent-layer alignment is high.
+
+---
+
 ## 2026-10-14 — axis-A: what the n=30/2048 residue actually is (analysis, no run)
 
 Deeper read of the two 2048 runs (n=10 `20261014-220328`, n=30 `20261014-223146`),
