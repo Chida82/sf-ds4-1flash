@@ -79,7 +79,8 @@ def load_hf_dataset(repo_id, *, config=None, split="train"):
 
 def build_cli(prompt, *, steer=None, residual=0.0, think=True,
               max_tokens=None, logprobs=None, top_k=None, system=None, extra=None,
-              logits=None):
+              logits=None, decay_tokens=None, decay_final=None,
+              think_decay_tokens=None):
     """argv for one greedy generation.
 
     base arm:    steer=None  -> no steering block at all.
@@ -107,6 +108,14 @@ def build_cli(prompt, *, steer=None, residual=0.0, think=True,
     if steer is not None:
         argv += ["--allow-v41-steering", "--dir-steering-file", str(steer),
                  "--dir-steering-residual", _num(residual)]
+        # sf: 403 decay schedule (experimental). Omitted -> constant scale.
+        if decay_tokens is not None:
+            argv += ["--dir-steering-residual-decay-tokens", str(int(decay_tokens))]
+        if think_decay_tokens is not None:
+            argv += ["--dir-steering-think-residual-decay-tokens",
+                     str(int(think_decay_tokens))]
+        if decay_final is not None:
+            argv += ["--dir-steering-residual-decay-final", _num(decay_final)]
     if extra:
         argv += list(extra)
     argv += ["-p", prompt]

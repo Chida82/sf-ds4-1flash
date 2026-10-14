@@ -97,13 +97,15 @@ def within_resolution(observed, expected, resolution):
 
 # --- strict execution (task 2.3) ---------------------------------------------
 
-def run_arm(gen_fn, prompt, *, steer, residual, think=False, logprobs=None):
+def run_arm(gen_fn, prompt, *, steer, residual, think=False, logprobs=None,
+            **gen_kwargs):
     """Generate one arm and classify the outcome. Returns (record, status). A
     timeout, nonzero exit, empty output or raised exception is an explicit status,
-    never a score; the record keeps the raw text locally."""
+    never a score; the record keeps the raw text locally. gen_kwargs forwards
+    optional generation knobs (e.g. 403 decay schedule) to the generator."""
     try:
         rec = gen_fn(prompt, steer=steer, residual=residual, think=think,
-                     logprobs=logprobs)
+                     logprobs=logprobs, **gen_kwargs)
     except subprocess.TimeoutExpired:
         return {"prompt": prompt, "completion": "", "returncode": None,
                 "raw_stdout": "", "raw_stderr": "timeout"}, "timeout"
@@ -117,10 +119,10 @@ def run_arm(gen_fn, prompt, *, steer, residual, think=False, logprobs=None):
     return rec, "ok"
 
 
-def _completions(gen_fn, prompts, *, steer, residual):
+def _completions(gen_fn, prompts, *, steer, residual, **gen_kwargs):
     recs, statuses = [], []
     for p in prompts:
-        rec, st = run_arm(gen_fn, p, steer=steer, residual=residual)
+        rec, st = run_arm(gen_fn, p, steer=steer, residual=residual, **gen_kwargs)
         recs.append(rec)
         statuses.append(st)
     return recs, statuses
@@ -332,9 +334,12 @@ def run_harmful_axis(args, gen_fn=None, judge_exec=None):
     out_dir.mkdir(parents=True, exist_ok=True)
     iv = manifest.intervention_identity(steer=args.steer, residual=args.residual or 0.0)
 
+    decay = {"decay_tokens": getattr(args, "decay_tokens", None),
+             "decay_final": getattr(args, "decay_final", None),
+             "think_decay_tokens": getattr(args, "think_decay_tokens", None)}
     base_recs, base_st = _completions(gen_fn, prompts, steer=None, residual=0.0)
     cand_recs, cand_st = _completions(gen_fn, prompts, steer=args.steer,
-                                      residual=args.residual)
+                                      residual=args.residual, **decay)
     controls, control_ev = run_controls(gen_fn, prompts[:3], args.steer, out_dir)
 
     base_metrics, base_ev = _axis_a_metrics("base", prompts, base_recs, judge_exec)
@@ -373,7 +378,8 @@ def run_harmful_axis(args, gen_fn=None, judge_exec=None):
         "intervention": iv, "profile": "harmful-axis-a", "mode": args.mode,
         "selector": sel,
         "decoding": {"temp": 0, "max_tokens": common.DECODE["max_tokens"],
-                     "ctx": common.DECODE["ctx"], "think": False},
+                     "ctx": common.DECODE["ctx"], "think": False,
+                     "steered_schedule": decay},
         "arms": {
             "base": [{"prompt": p, "completion": r["completion"], "status": s}
                      for p, r, s in zip(prompts, base_recs, base_st)],
@@ -459,6 +465,12 @@ def main(argv=None):
     ap.add_argument("--steer")
     ap.add_argument("--residual", type=float,
                     help="scale at the V4.1 residual site; required and nonzero with --steer")
+    ap.add_argument("--decay-tokens", type=int, dest="decay_tokens",
+                    help="403: answer-phase decay window; omit for a constant scale")
+    ap.add_argument("--think-decay-tokens", type=int, dest="think_decay_tokens",
+                    help="403: thinking-phase decay window (0 = use the answer window)")
+    ap.add_argument("--decay-final", type=float, dest="decay_final",
+                    help="403: residual (minimum) scale the decay holds at")
     ap.add_argument("--judge", default="base")
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--out", default=str(common.OUT))
