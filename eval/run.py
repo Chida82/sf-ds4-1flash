@@ -338,9 +338,12 @@ def run_harmful_axis(args, gen_fn=None, judge_exec=None):
              "decay_final": getattr(args, "decay_final", None),
              "think_decay_tokens": getattr(args, "think_decay_tokens", None),
              "cycle_peak": getattr(args, "cycle_peak", None)}
-    base_recs, base_st = _completions(gen_fn, prompts, steer=None, residual=0.0)
+    mt = getattr(args, "max_tokens", None)
+    gen_common = {} if mt is None else {"max_tokens": mt}
+    base_recs, base_st = _completions(gen_fn, prompts, steer=None, residual=0.0,
+                                      **gen_common)
     cand_recs, cand_st = _completions(gen_fn, prompts, steer=args.steer,
-                                      residual=args.residual, **decay)
+                                      residual=args.residual, **decay, **gen_common)
     controls, control_ev = run_controls(gen_fn, prompts[:3], args.steer, out_dir)
 
     base_metrics, base_ev = _axis_a_metrics("base", prompts, base_recs, judge_exec)
@@ -378,7 +381,8 @@ def run_harmful_axis(args, gen_fn=None, judge_exec=None):
         "source": manifest.source_identity(), "model": manifest.model_identity(common.MODEL),
         "intervention": iv, "profile": "harmful-axis-a", "mode": args.mode,
         "selector": sel,
-        "decoding": {"temp": 0, "max_tokens": common.DECODE["max_tokens"],
+        "decoding": {"temp": 0,
+                     "max_tokens": mt if mt is not None else common.DECODE["max_tokens"],
                      "ctx": common.DECODE["ctx"], "think": False,
                      "steered_schedule": decay},
         "arms": {
@@ -475,6 +479,9 @@ def main(argv=None):
     ap.add_argument("--cycle-peak", type=float, dest="cycle_peak",
                     help="403c: >0 oscillates (down/hold-min/up over 3 decay windows), "
                          "rises climbing to this peak; omit for a one-shot decay")
+    ap.add_argument("--max-tokens", type=int, dest="max_tokens",
+                    help="override the per-completion token cap (default 256); raise it "
+                         "so answers finish before grading (both arms get the same cap)")
     ap.add_argument("--judge", default="base")
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--out", default=str(common.OUT))
