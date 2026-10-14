@@ -20,6 +20,25 @@ Conventions used below:
 
 ---
 
+## 2026-10-15 — 403 window tuning: English benign confirmation (window 10 is clearly best)
+
+Same forced-prefix KL as the Italian-prose block below, on a representative English expository
+passage (water cycle, 213 words, prefix 32, 120 positions), 402 vector scale 6. Binary at `c645037`.
+
+| schedule | mean KL | [0:10] | [10:50] | [50:120] |
+|---|---|---|---|---|
+| constant-6 | 0.0502 | 0.0788 | 0.0483 | 0.0472 |
+| decay-6 win10 | 0.0299 (60%) | 0.0788 | 0.0401 | 0.0171 |
+| decay-6 win50 | 0.0421 (84%) | 0.0941 | 0.0436 | 0.0338 |
+
+On English the distortion is roughly uniform across position (not front-loaded as in the Italian
+prose), so the window's body savings dominate: window 10 cuts mean KL by 40% (body -64%) vs constant,
+window 50 only -16%. This strengthens the conclusion — the inherited 50 is too long; ~10 is the
+fidelity point, and 8.2 (efficacy is prefill-decided) says a short window should hold efficacy. The
+efficacy-vs-window check stays the one user-run item.
+
+---
+
 ## 2026-10-15 — 403 window tuning: the inherited decay window (50) is too long for V4.1; ~10 is better
 
 Forced-prefix full-vocab KL(base || steered) on a benign prose passage (`promessi_sposi`, prefix 32,
