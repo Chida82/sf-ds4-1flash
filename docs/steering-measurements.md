@@ -20,6 +20,40 @@ Conventions used below:
 
 ---
 
+## 2026-10-14 — 403 benign fidelity: decay-6 vs constant-6 (forced-prefix KL)
+
+The fidelity side of the decay adoption gate (the efficacy side, on the harmful
+axis, is user-run). Three benign texts (~110-119 scored tokens each) teacher-forced
+under base / constant-6 / decay-6→0.2 (answer window 50) with `--perplexity-dump`;
+KL(base || steered) per position (`eval/score_kl.kl_full_dense_sequence`). Same
+build/vector/conditions as the block below.
+
+Per-text mean KL over the whole scored span:
+
+| text | const-6 | decay-6 | decay/const |
+|---|---|---|---|
+| t1 (water cycle) | 0.0393 | 0.0355 | 0.90 |
+| t2 (bicycle) | 0.0591 | 0.0527 | 0.89 |
+| t3 (tea) | 0.0530 | 0.0418 | 0.79 |
+
+By position band (decay scale shown):
+
+| band | const-6 | decay-6 | decay/const |
+|---|---|---|---|
+| pos 0 (scale 6.0) | 0.2196 | 0.2196 | 1.00 (identical) |
+| early 1-4 (~6) | 0.0741 | 0.0782 | 1.06 |
+| 20-34 (~2.2-0.6) | 0.0537 | 0.0490 | 0.91 |
+| late 50+ (0.2) | 0.0502 | 0.0388 | **0.77** |
+
+**Reading:** the decay does restore body fidelity. At position 0 both apply scale
+6 and the KL is identical (sanity check); over the body, where decay has eased to
+0.2, it distorts base ~23% less than the constant (0.77), ~11-21% less overall per
+text. The benefit is modest because constant-6's benign distortion is already
+small (~0.05 KL); it would be larger under a higher constant. The early tokens
+(where the refusal is decided) keep the full dose. This confirms the decay's
+fidelity value; whether it clears the adoption bar also needs the harmful-axis
+efficacy side (decay must keep removing refusals), which is the user-run run.
+
 ## 2026-10-14 — 403 decay schedule implemented and verified
 
 - **tooling/engine**: the residual decay schedule landed in `ds4.c`/`ds4.h`,
