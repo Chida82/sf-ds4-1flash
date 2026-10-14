@@ -40,7 +40,9 @@ Choose a small declared grid from the corrected baseline; do not hardcode 0.3-0.
 
 ### D3. If a schedule is retained
 
-Promote only the winning shape with the fewest controls that reproduce it: the existing constant `--dir-steering-residual` plus a decay length and a final scale express a window, a linear ramp and the cubic (`t=clamp(generated/N,0,1)`, `f(t)=t` or `3t^2-2t^3`; `N=0` is constant). Document the retained shape rather than adding a shape selector for every tested alternative.
+Promote only the winning shape with the fewest controls that reproduce it: the existing constant `--dir-steering-residual` (the start maximum) plus a decay length and a residual final scale (the minimum). The scale DECAYS from the start maximum down to the residual: `scale = S − (S − F)·f(t)`, `t = clamp(generated/N, 0, 1)`, with `f(t)=t` (linear) or `f(t)=3t²−2t³` (cubic smoothstep). It eases off, it does not ramp up: at `t=0` the scale is the start maximum S, at `t≥1` it holds at the residual F. `N=0` is the constant intervention. Document the retained shape rather than adding a shape selector for every tested alternative.
+
+Initial experiment point (to be tuned, not a validated default): start maximum from this hook's `402` screen (the scale-6 peak, `docs/steering-measurements.md`), residual final F = 0.2 (a mild scale the vector keeps through the body), cubic smoothstep, decay window N = 30 tokens in the thinking phase and N = 50 tokens in the answer phase. The windows are the first thing a follow-up test resolves (how many tokens the reduction needs); the residual 0.2 and the smoothstep are the current starting choices.
 
 Three invariants hold for any retained schedule and are tested with it:
 

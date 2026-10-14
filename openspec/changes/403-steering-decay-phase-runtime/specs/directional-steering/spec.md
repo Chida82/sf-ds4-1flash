@@ -38,15 +38,15 @@ A thinking/answer phase schedule, and separately a second direction file, SHALL 
 - **THEN** no phase control is added and the decision is recorded
 
 ### Requirement: Scheduled scale curve
-The retained schedule SHALL vary the scale from a start value to a final value over an N-token decay window using a cubic smoothstep ramp, holding at the final value past the window. It SHALL bind the V4.1 residual site, the only live steering hook (FFN and attention are refused, `401`), and `N = 0` SHALL reproduce the constant `401` intervention bitwise.
+The retained schedule SHALL decay the scale from a start maximum down to a residual minimum over an N-token window using a cubic smoothstep, then hold at the residual; the curve decreases, it does not ramp up. It SHALL bind the V4.1 residual site, the only live hook (FFN and attention refused, `401`), and `N = 0` SHALL reproduce the constant intervention bitwise.
 
-#### Scenario: Smoothstep from start to final
-- **WHEN** a schedule with start scale S, final scale F and window N (> 0) tokens scales the computation for phase position `p` with `0 ≤ p < N`
-- **THEN** the applied scale is `S + (F − S)·(3t² − 2t³)` with `t = p/N`, and for `p ≥ N` it is `F`
+#### Scenario: Decaying smoothstep from max to residual
+- **WHEN** a schedule with start maximum S, final residual F (F < S) and window N (> 0) tokens scales the computation for in-phase position `p` with `0 ≤ p < N`
+- **THEN** the applied scale is `S − (S − F)·(3t² − 2t³)` with `t = p/N` — equal to S at `p = 0` and easing down to F — and for `p ≥ N` it holds at F
 
-#### Scenario: Monotonic dose that eases off
-- **WHEN** the start scale breaks the refusal and the final scale is near zero
-- **THEN** the first in-phase tokens receive the full dose and later tokens are steered progressively less, easing the intervention off once the refusal is passed
+#### Scenario: Dose that breaks the refusal then eases off
+- **WHEN** the start maximum breaks the refusal in the first in-phase tokens and the residual F is small (e.g. a mild 0.2 the vector keeps)
+- **THEN** the first tokens get the full dose and later tokens are steered progressively less, down to the residual, so the body of the response stays close to the base model once the refusal is passed
 
 ### Requirement: Per-phase schedule across thinking and answer
 A retained phase schedule SHALL run an independent curve in the thinking phase and in the answer phase, with the boundary taken from the thinking start/end token ids and the position counter reset at the answer boundary. Omitting the thinking controls SHALL leave the single-schedule behavior unchanged.
