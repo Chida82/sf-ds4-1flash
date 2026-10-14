@@ -138,7 +138,10 @@ typedef struct {
     const char *expert_profile_path;
     float directional_steering_attn;
     float directional_steering_ffn;
-    float directional_steering_residual;  /* sf: 401 residual_stream_post_layer site (V4.1) */
+    float directional_steering_residual;  /* sf: 401 residual_stream_post_layer site (V4.1); the start (maximum) scale of a decay schedule */
+    float directional_steering_residual_decay_final;        /* sf: 403 residual scale the decay holds at (minimum); 0 = decay to off */
+    uint32_t directional_steering_residual_decay_tokens;    /* sf: 403 answer-phase decay window in generated tokens; 0 = constant scale */
+    uint32_t directional_steering_think_residual_decay_tokens; /* sf: 403 thinking-phase decay window; 0 = use the answer window */
     bool allow_v41_steering;    /* sf: opt into V4.1 steering, lifting its startup refusal */
     int power_percent;
     uint32_t ssd_streaming_cache_experts;

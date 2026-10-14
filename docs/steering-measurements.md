@@ -20,6 +20,31 @@ Conventions used below:
 
 ---
 
+## 2026-10-14 — 403 decay schedule implemented and verified
+
+- **tooling/engine**: the residual decay schedule landed in `ds4.c`/`ds4.h`,
+  CLI and server (`--dir-steering-residual-decay-tokens`,
+  `--dir-steering-residual-decay-final`, `--dir-steering-think-residual-decay-tokens`).
+  Built clean; `make test` green (env-check 504 classified, steering fold and
+  file-validation PASS).
+- **curve trace** (`DS4_STEERING_SCHEDULE_DEBUG=1`, start 6, final 0.2, window 10,
+  `--nothink`): the per-token scale is `6.0000, 5.8376, 5.3968, 4.7472, 3.9584,
+  3.1000, 2.2416, 1.4528, …` — the cubic smoothstep `S − (S−F)·(3t²−2t³)`
+  decreasing from 6 to 0.2, with the exact midpoint 3.1 at pos 5/10. Output
+  coherent ("Red, blue, and green.").
+- **phase reset** (think window 4, answer window 8): the thinking phase decays
+  `6.0 → 3.1 → 0.2` then holds; at `</think>` the answer phase restarts at
+  `pos 0 scale 6.0` and decays over its own window. The reasoning reached the
+  correct final answer (6×7 = 42).
+- **N=0 / disabled**: a zero decay window leaves `steering_scheduled` false, so
+  the schedule hooks early-return and the constant `401` path is unchanged by
+  construction; the batched multi-session decode refuses a scheduled session
+  (one scale per forward).
+- **over-steering note**: starting the decay at an extreme scale (40 → 0.2 over 8)
+  still degrades — the first token at 40 poisons the KV, and the output loops
+  ("I am I am …"), differing from constant 40 ("I (I I … 达尔"), which itself
+  confirms the per-token scale is live. The usable start stays the screen peak 6.
+
 ## 2026-10-14 — msuiche residual-scale screen (402/403 baseline)
 
 - **tooling**: `eval/scale_sweep.py`, `eval/run.py harmful-axis-a` @ commit `771a1c8`

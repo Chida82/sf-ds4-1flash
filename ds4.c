@@ -25766,7 +25766,10 @@ struct ds4_engine {
     float *directional_steering_dirs;
     float directional_steering_attn_scale;
     float directional_steering_ffn_scale;
-    float directional_steering_residual_scale;  /* sf: 401 post-HC-fold residual site (V4.1) */
+    float directional_steering_residual_scale;  /* sf: 401 post-HC-fold residual site (V4.1); decay start (max) */
+    float directional_steering_residual_decay_final;        /* sf: 403 decay minimum (residual the schedule holds at) */
+    uint32_t directional_steering_residual_decay_tokens;    /* sf: 403 answer-phase decay window; 0 = constant */
+    uint32_t directional_steering_think_residual_decay_tokens; /* sf: 403 thinking-phase decay window; 0 = answer window */
     int power_percent;
     uint32_t prefill_chunk;
     uint32_t ssd_streaming_cache_experts;
@@ -28188,9 +28191,80 @@ struct ds4_session {
     bool checkpoint_valid;
     bool mtp_draft_valid;
     bool greedy_splitkv_anchor_valid;
+    /* sf: 403 residual steering decay schedule, per session. steering_pos counts
+     * generated tokens within the current phase; it resets at the think->answer
+     * boundary so the answer gets its own dose. steering_scheduled is false for a
+     * constant scale (decay-tokens 0), which keeps the 401 behavior unchanged. */
+    uint32_t steering_pos;
+    bool steering_in_think;
+    bool steering_scheduled;
+    float steering_decay_start;
+    float steering_decay_final;
+    uint32_t steering_decay_tokens_think;
+    uint32_t steering_decay_tokens_answer;
 };
 
 static bool ds4_session_tp_leader(const ds4_session *s);
+
+#ifdef DS4_HAS_DEEPSEEK41_GPU
+/* sf: 403 residual steering decay schedule. The scale decays from the start
+ * maximum S down to the residual minimum F over N tokens with a cubic smoothstep
+ * (3t^2 - 2t^3): scale = S - (S - F) * smoothstep(pos/N), holding at F past the
+ * window. The position counts generated tokens within the current phase and
+ * resets at the think->answer boundary so the answer gets its own dose. A phase
+ * window of 0 keeps the constant S for that phase, and steering_scheduled is false
+ * for a plain constant scale, so the 401 path stays bitwise unchanged. The single
+ * steering kernel applies one scale per forward, so a batched multi-session decode
+ * cannot carry per-session positions and is refused (see the batch decode path). */
+static float ds41_steering_scheduled_scale(const ds4_session *s) {
+    const uint32_t N = s->steering_in_think
+        ? (s->steering_decay_tokens_think ? s->steering_decay_tokens_think
+                                          : s->steering_decay_tokens_answer)
+        : s->steering_decay_tokens_answer;
+    const float S = s->steering_decay_start, F = s->steering_decay_final;
+    if (N == 0) return S;
+    float t = (float)s->steering_pos / (float)N;
+    if (t > 1.0f) t = 1.0f;
+    const float smooth = t * t * (3.0f - 2.0f * t);
+    return S - (S - F) * smooth;
+}
+
+/* Initialize the schedule at prompt sync: position 0 of the opening phase. The
+ * chat template ends the prompt with <think> when thinking is on and </think>
+ * when it is off, so the opening phase follows the last prompt token. The prefill
+ * forward that produces the first generated token then uses the start scale S. */
+static void ds41_steering_on_prompt(ds4_session *s, const ds4_tokens *prompt) {
+    if (!s->steering_scheduled) return;
+    const int think_start = s->engine ? s->engine->vocab.think_start_id : -1;
+    s->steering_pos = 0;
+    s->steering_in_think = prompt && prompt->len > 0 && think_start >= 0 &&
+        prompt->v[prompt->len - 1] == think_start;
+    s->ds41_graph.residual_scale = ds41_steering_scheduled_scale(s);
+    if (getenv("DS4_STEERING_SCHEDULE_DEBUG"))
+        fprintf(stderr, "ds4: steering schedule pos=%u phase=%s scale=%.4f\n",
+                s->steering_pos, s->steering_in_think ? "think" : "answer",
+                (double)s->ds41_graph.residual_scale);
+}
+
+/* Advance the schedule before a decode forward. token is the just-sampled token
+ * being fed to produce the next one; when it is </think> the next token opens the
+ * answer phase, so the dose restarts. */
+static void ds41_steering_on_decode(ds4_session *s, int token) {
+    if (!s->steering_scheduled) return;
+    const int think_end = s->engine ? s->engine->vocab.think_end_id : -1;
+    if (s->steering_in_think && think_end >= 0 && token == think_end) {
+        s->steering_in_think = false;
+        s->steering_pos = 0;
+    } else {
+        s->steering_pos++;
+    }
+    s->ds41_graph.residual_scale = ds41_steering_scheduled_scale(s);
+    if (getenv("DS4_STEERING_SCHEDULE_DEBUG"))
+        fprintf(stderr, "ds4: steering schedule pos=%u phase=%s scale=%.4f\n",
+                s->steering_pos, s->steering_in_think ? "think" : "answer",
+                (double)s->ds41_graph.residual_scale);
+}
+#endif
 
 #ifndef DS4_NO_GPU
 
@@ -30235,6 +30309,9 @@ static int ds4_engine_open_internal(ds4_engine **out,
         e->directional_steering_attn_scale = opt->directional_steering_attn;
         e->directional_steering_ffn_scale = opt->directional_steering_ffn;
         e->directional_steering_residual_scale = opt->directional_steering_residual;
+        e->directional_steering_residual_decay_final = opt->directional_steering_residual_decay_final;
+        e->directional_steering_residual_decay_tokens = opt->directional_steering_residual_decay_tokens;
+        e->directional_steering_think_residual_decay_tokens = opt->directional_steering_think_residual_decay_tokens;
     }
     if (opt->n_threads > 0) g_requested_threads = (uint32_t)opt->n_threads;
     e->placement_session_count_hint = opt->placement_session_count_hint;
@@ -31676,6 +31753,17 @@ int ds4_session_create(ds4_session **out, ds4_engine *e, int ctx_size) {
                 return 1;
             }
             s->ds41_graph.residual_scale = e->directional_steering_residual_scale;
+            /* sf: 403 decay schedule, per session. steering_scheduled stays false
+             * (constant 401 scale) unless a decay window is configured. */
+            s->steering_decay_start = e->directional_steering_residual_scale;
+            s->steering_decay_final = e->directional_steering_residual_decay_final;
+            s->steering_decay_tokens_answer = e->directional_steering_residual_decay_tokens;
+            s->steering_decay_tokens_think = e->directional_steering_think_residual_decay_tokens;
+            s->steering_scheduled = e->directional_steering_residual_scale != 0.0f &&
+                (e->directional_steering_residual_decay_tokens > 0 ||
+                 e->directional_steering_think_residual_decay_tokens > 0);
+            s->steering_pos = 0;
+            s->steering_in_think = false;
         }
         s->ds41_graph.quality = e->quality;
         s->ds41_graph.streaming_prefill_bytes = e->ssd_streaming_prefill_headroom_bytes;
@@ -32745,6 +32833,7 @@ static int ds4_session_sync_internal(ds4_session *s, const ds4_tokens *prompt, c
             s->checkpoint.len = 0;
             s->checkpoint_valid = false;
         }
+        ds41_steering_on_prompt(s, prompt);  /* sf: 403 open the decay at the start scale */
         bool pending_logits = false, interrupted = false, decoder_pending = false;
         ds41_encoder_residency encoder = {0};
         ds41_encoder_acquire(g, &e->model, &e->weights,
@@ -33096,6 +33185,7 @@ static int ds4_session_eval_internal(ds4_session *s, int token, bool probe_mtp,
     ds4_engine *e = s->engine;
 #ifdef DS4_HAS_DEEPSEEK41_GPU
     {
+        ds41_steering_on_decode(s, token);  /* sf: 403 decay this token's scale, reset at </think> */
         if (!s->ds41_graph_ready ||
             (!s->checkpoint_valid && s->checkpoint.len != 0) ||
             s->ds41_graph.pos != (uint32_t)s->checkpoint.len ||
@@ -33259,6 +33349,21 @@ static int ds4_sessions_eval_batch_native(
         const ds4_tokens *prefill_prompt,
         char *err,
         size_t errlen) {
+#ifdef DS4_HAS_DEEPSEEK41_GPU
+    /* sf: 403 the one steering kernel applies a single scale per forward, so a
+     * batched decode cannot carry each session's own decayed position. Refuse it
+     * clearly instead of applying one session's scale to every row. Constant
+     * steering (steering_scheduled false) is unaffected. */
+    bool any_scheduled = prefill && prefill->steering_scheduled;
+    for (int i = 0; !any_scheduled && i < count; i++)
+        any_scheduled = items[i].session && items[i].session->steering_scheduled;
+    if (any_scheduled) {
+        if (err && errlen) snprintf(err, errlen,
+            "scheduled residual steering does not support batched decode; "
+            "run one session at a time");
+        return 1;
+    }
+#endif
     const bool mirror = e->tp.active && e->tp.rank == 0;
     if (mirror) {
         ds4_tp_batch_item *wire = ds4_sessions_tp_batch_items(items, count);

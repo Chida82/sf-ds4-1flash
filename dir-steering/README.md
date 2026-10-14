@@ -47,6 +47,9 @@ format example.
 --dir-steering-ffn F       apply steering after FFN outputs; default is 1 when a file is provided (V4 hook; V4.1 refuses a nonzero value)
 --dir-steering-attn F      apply steering after attention outputs; default is 0 (V4 hook; V4.1 refuses a nonzero value)
 --dir-steering-residual F  steer the V4.1 attention-input fold; default is 0
+--dir-steering-residual-decay-tokens N        (403, experimental) decay the residual scale from its start to its final over N generated tokens; 0 = constant
+--dir-steering-residual-decay-final F         (403, experimental) the residual (minimum) scale the decay holds at; default 0
+--dir-steering-think-residual-decay-tokens N  (403, experimental) decay window for the thinking phase; 0 = use the answer window
 ```
 
 Three application sites, each with its own scale:
@@ -95,6 +98,22 @@ FFN setter refuse a nonzero value on V4.1. `DS4_METAL_DISABLE_V41_RESIDUAL_STEER
 turns the edit off, and a zero vector at any scale exercises the steered path
 without changing anything: both are bitwise the unsteered run
 (`make test-deepseek41-steering-admission`).
+
+**Decaying the scale over tokens (`403`, experimental).** The residual scale can
+decay from its start maximum (`--dir-steering-residual`) down to a residual
+minimum (`--dir-steering-residual-decay-final`) over a window of generated tokens
+(`--dir-steering-residual-decay-tokens`), easing the intervention off once the
+refusal is broken in the first tokens. The curve is a cubic smoothstep run in
+reverse: `scale = S - (S - F) * (3t^2 - 2t^3)`, `t = clamp(pos/N, 0, 1)`, so it is
+S at the first in-phase token and holds at F past the window. The thinking phase
+and the answer phase decay independently: `--dir-steering-think-residual-decay-tokens`
+sets the thinking window (0 = reuse the answer window), the position resets at
+`</think>` so the answer gets its own dose, and both phases share one start and
+one final with the same vector. `decay-tokens 0` is a constant scale, bitwise the
+`401` intervention. These flags are experimental under `403`; adoption as a
+default is a separate measured decision (see `docs/steering-measurements.md`).
+Scheduled steering runs one session at a time: a batched multi-session decode is
+refused, since the one steering kernel applies a single scale per forward.
 
 **Cost.** Measured 2026-10-13 on this tree, same build, steering off against
 on (a unit direction at scale 4), fixed `--ssd-streaming-cache-experts 82GB`,
