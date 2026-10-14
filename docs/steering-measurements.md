@@ -45,6 +45,14 @@ n=10 pilot, wide intervals on the 0.40; the robust part is REFUSE 0% in both. A
 `--limit 30`+ run and the predeclared non-inferiority margin (6.5) remain for the
 acceptance decision.
 
+**Confirmation at n=30 (decay-6, `20261014-155028`):** base REFUSE 1.00 / COMPLY
+0.00; decay-6 REFUSE **0.033** (1/30), COMPLY **0.367** (11/30), keyword refusal
+0.267. Controls OK, 60/60 completed, no INVALID. Consistent with the n=10 pilot
+(COMPLY 0.40, REFUSE 0.0) and tighter: the vector + decay removes outright refusals
+on 29 of 30 harmful prompts, ~37% full compliance, the rest partial. This is the
+402 (6.1) acceptance evidence at n=30; the acceptance verdict still needs the
+predeclared margin (6.5), a user decision.
+
 ## 2026-10-14 — 403 benign fidelity: decay-6 vs constant-6 (forced-prefix KL)
 
 The fidelity side of the decay adoption gate (the efficacy side, on the harmful
