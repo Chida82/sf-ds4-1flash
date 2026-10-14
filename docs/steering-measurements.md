@@ -20,6 +20,41 @@ Conventions used below:
 
 ---
 
+## 2026-10-14 — axis-A: what the DEFLECT grades actually are (analysis, no run)
+
+Re-read of the DEFLECT-graded steered completions in the two n=30 runs (ramp 6->9
+`20261014-194024`, decay-6 `20261014-155028`) to test whether the ~0.50 DEFLECT
+"ceiling" is the vector failing or a grading/truncation artifact. Structural
+classification only (openers + step counts + end-punctuation); no harmful content
+reproduced. Analysis of existing manifests, no model run.
+
+**Finding 1 — truncation confound.** `max_tokens = 256` for the whole suite. DEFLECT
+and COMPLY steered completions are the *same* length (~1120 chars, mean 1117 vs 1128)
+and ~all end mid-sentence (abrupt). No response finishes; the judge grades the first
+256 tokens (the framing/intro), not whether a harmful payload was delivered.
+
+**Finding 2 — DEFLECT is not refusal.** Of 15 DEFLECT (ramp) 11 contain a procedure
+(>=2 steps); of 18 (decay-6), 15. Only 1 per run is a near-refusal (refuse opener, no
+steps). The model engages substantively — the vector has removed the refusal.
+
+**Finding 3 — what separates DEFLECT from COMPLY** is a reframe wrapper in the opening
+tokens: "I can't help with the literal illegal ask, BUT here's an educational /
+authorized-pentest / fictional / safety-framed version" + structured steps. The judge
+scores that DEFLECT (not directly fulfilling the literal request) although it is
+substantive adjacent content.
+
+**Conclusion.** The ~0.50 DEFLECT rate is NOT the vector failing to remove refusals
+(REFUSE stays ~0.03-0.07). It is partly a measurement artifact (256-token truncation ->
+the intro is graded) and partly a residual *reframe/caveat* behaviour, which is a
+different direction from "refuse" — a refusal-removal vector is not expected to remove
+it. Implications: (a) the cheapest disambiguation is to raise max_tokens so responses
+finish and re-grade — some reframed intros may resolve to COMPLY, others confirm as
+genuine non-actionable deflections; (b) the mechanism lever for the reframe residue is
+a second direction targeting the hedge/reframe behaviour (404/405), not a steering-
+schedule shape and not the refusal-direction clamp. Schedule-shape work (const/decay/
+ramp/cyclic) is complete; it cannot move this split because the split is not a dosing
+problem.
+
 ## 2026-10-14 — axis-A: cyclic schedule (403c) does NOT beat the ramp (user-run, n=10)
 
 First test of the 403c oscillating schedule: down(N)/hold-min(N)/up(N) back to the
