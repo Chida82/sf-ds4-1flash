@@ -324,10 +324,19 @@ def run_harmful_axis(args, gen_fn=None, judge_exec=None):
     judge_exec = judge_exec or (lambda argv: common.execute(argv))
     suites = compose.compose_harmful()
     prompts = suites["union"]
-    if args.limit and args.limit > 0:
+    if getattr(args, "indices", None):
+        idx = [int(i) for i in args.indices.replace(" ", "").split(",") if i != ""]
+        oob = [i for i in idx if not 0 <= i < len(prompts)]
+        if oob:
+            raise SystemExit(f"--indices out of range 0..{len(prompts) - 1}: {oob}")
+        prompts = [prompts[i] for i in idx]
+        selector_str = "union[" + ",".join(map(str, idx)) + "]"
+    elif args.limit and args.limit > 0:
         prompts = prompts[:args.limit]
-    sel = compose.selector_record("union", prompts,
-                                  selector=f"union[:{args.limit}]" if args.limit > 0 else "union")
+        selector_str = f"union[:{args.limit}]"
+    else:
+        selector_str = "union"
+    sel = compose.selector_record("union", prompts, selector=selector_str)
 
     run_id = time.strftime("%Y%m%d-%H%M%S") + "-harmful-axis-a"
     out_dir = Path(args.out) / run_id
@@ -484,6 +493,11 @@ def main(argv=None):
                          "so answers finish before grading (both arms get the same cap)")
     ap.add_argument("--judge", default="base")
     ap.add_argument("--limit", type=int, default=0)
+    ap.add_argument("--indices",
+                    help="comma list of union positions to run (e.g. 1,6,13); "
+                         "overrides --limit, for re-testing a non-COMPLY subset. "
+                         "The manifest selector records the exact indices and a "
+                         "content hash so a subset is never mislabeled as full")
     ap.add_argument("--out", default=str(common.OUT))
     ap.add_argument("--input-run", help="render a stored run; launches no model")
     ap.add_argument("--calibrate", action="store_true",
@@ -708,6 +722,24 @@ def _selfcheck():
                 out = str(d / "outh2")
             hs2, _, _ = run_harmful_axis(H2, gen_fn=hgen_badnoop, judge_exec=hjudge)
             assert hs2["verdict"]["decision"] == "ABORT", hs2["verdict"]
+
+            # --indices selects an arbitrary union subset; selector names the exact
+            # positions and hashes their content, so a subset is never mislabeled.
+            class H3(H):
+                out = str(d / "outh3"); indices = "1,3"
+            hs3, _, _ = run_harmful_axis(H3, gen_fn=hgen, judge_exec=hjudge)
+            assert hs3["counts"]["selector"]["selector"] == "union[1,3]", hs3["counts"]
+            assert hs3["counts"]["selector"]["count"] == 2
+            assert hs3["counts"]["requested"] == 4  # 2 prompts x 2 arms
+            # out-of-range indices abort, never silently clamp
+            class H4(H):
+                out = str(d / "outh4"); indices = "1,9"
+            try:
+                run_harmful_axis(H4, gen_fn=hgen, judge_exec=hjudge)
+                raised = False
+            except SystemExit:
+                raised = True
+            assert raised, "out-of-range --indices must abort"
         finally:
             compose.compose_harmful = orig
 
