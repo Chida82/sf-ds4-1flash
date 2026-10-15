@@ -22,7 +22,7 @@ convention), so 39 layers are active.
 sha256:
 
 - `v41-msuiche.f32` — `e531274260c4da938770fa5f53eec8b9c6c814c8099e21552a298473a0c99109`
-- `v41-abliteration-attn.f32` — `3286ac1ecc8f99c3db36747686c57d78b5e954df8422b04ec0372d1b3c2ee2f7`
+- `v41-abliteration-attn.f32` — `a0cd959c0fdcc074ad28d962c3faeeacb02d8b5039ed2c0f842a8bb99e2b86c2`
 - `v41-fused-msuiche-audreyt-denoise.f32` — `e17b41ce4f33d20b7100ce7c4a66bb2596139b23868f130659d7db4555dd49f6`
 
 `v41-msuiche.f32` is a snapshot of the live working copy under `dir-steering/out/`

@@ -236,6 +236,7 @@ def main():
         if mut:
             print("  recovered mutual |cos| (global-r?): median=%.3f min=%.3f max=%.3f" %
                   (statistics.median(mut), min(mut), max(mut)))
+    emit[0] = 0.0  # engine contract: row 0 must be all-zero (layer 0 has no steering site)
     if out_path:
         array.array("f", emit.reshape(-1).tolist()).tofile(open(out_path, "wb"))
         print("wrote candidate: %s" % out_path)
