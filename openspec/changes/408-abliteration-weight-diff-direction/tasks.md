@@ -61,6 +61,13 @@
   if comparable, recover the direction and report its geometry against the audreyt one.
 - [ ] 5.2 `drowzeys/...-Cybersecurity-Unleashed`: survey the edited-site map and its
   geometry against the general recovered direction — analysis only, no adoption.
+  Site-map + mechanism survey done (`docs/steering-measurements.md` 2026-10-15, metadata only, no
+  model download): publishes only `attn.wo_b` (= `attn_output_b`) layers 10–35 in FP8; rank-1
+  (`k=1`, 5120-d) projective edit, `lambda_attn 3.5`, rel_fro ~5% — concurs with audreyt + msuiche on
+  site/rank/layer-band. Remaining (the vector-cosine to 402): not obtainable from public artifacts
+  (direction unpublished; base is a private TR3-Hybrid FP8, so a diff vs our Q2/Q8_0 is invalid; FP8
+  null-space recovery swamped, ~12.5% quant error > ~5% edit). Clean route = diff vs the official
+  stock FP8 `wo_b` (targeted FP8-shard download); deferred.
 
 ## 6. Tooling
 - [x] 6.1 Offline weight-diff/SVD tool under `dir-steering/tools/`, run from a disposable

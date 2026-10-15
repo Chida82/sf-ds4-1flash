@@ -20,6 +20,38 @@ Conventions used below:
 
 ---
 
+## 2026-10-15 — 408 5.2 survey: drowzeys cybersecurity abliteration (metadata only; same site/mechanism, vector not recoverable)
+
+`drowzeys/DeepSeek-V4.1-Flash-Abliterated-Cybersecurity-Unleashed` is not a full model: it publishes
+only the edited `attn.wo_b` tensors for layers 10–35 (a 1.0 GiB FP8 sidecar) plus metadata and an apply
+script. Surveyed from the HF file tree + the safetensors header (HTTP Range, no file download) +
+`ABLIT_META.json` + `apply_wo_b_graft.py` (the `.py` was read, never executed).
+
+Edited-site map: `layers.{10..35}.attn.wo_b.{weight,scale}`, weight `F8_E4M3 [5120,8192]`, scale
+`F8_E8M0 [160,256]` (32×32 block). Only `wo_b` (= our `attn_output_b`), layers 10–35; experts, Engram,
+MTP and layers 0–9 / 36–39 are grafted unchanged from the source pack.
+
+`ABLIT_META.json`: method `layer-range-wo_b-projection-v41-tr3`; `k=1` / `n_directions 1` / `hidden
+5120` (a rank-1 projection of one 5120-d direction); `lambda_attn 3.5`; layers 10–35; `block 32`;
+per-layer edit `rel_fro 0.045–0.062` (~5%). Base is a private `DeepSeek-V4.1-Flash-TR3-Hybrid` FP8 pack
+(NOT antirez stock); the direction itself (`/tmp/refusal_direction.pt`) is a local path, not published.
+
+Reading: a third independent source agrees on mechanism and site — refusal/safety removal on V4.1 Flash
+is a rank-1 projective edit of the attention output (`wo_b`) concentrated in the mid layers. drowzeys
+restricts to 10–35, inside the 9–39 band where the audreyt weight-diff direction aligns with
+msuiche/402. msuiche (activations), audreyt (weight-diff) and drowzeys (metadata) now concur on
+**site + rank + layer band**.
+
+Not obtainable from the public artifacts — drowzeys' actual direction vector and its cosine to 402:
+the direction is unpublished; a diff against our Q2/Q8_0 base is invalid (different private base, FP8 vs
+Q8_0, and the ~5% edit sits below that mismatch); and a base-free null-space recovery from the FP8
+weights alone is swamped because FP8 E4M3 relative error (~12.5%, 3 mantissa bits) exceeds the ~5%
+edit. The clean route is a diff of drowzeys' FP8 `wo_b` against the official **stock FP8** `wo_b`
+(byte-identical pre-ablit across packs per the apply script) — a targeted FP8-shard download, deferred
+(analysis only, no adoption).
+
+---
+
 ## 2026-10-15 — 408 abliteration weight-diff: audreyt direction matches msuiche/402 (|cos| median 0.72, mid-late layers)
 
 Offline weight-space recovery (no model run, no GPU): diffed the base Q2 GGUF
