@@ -20,6 +20,48 @@ Conventions used below:
 
 ---
 
+## 2026-10-15 — axis-A 3-arm comparison: msuiche vs audreyt vs fused-denoise (the merge wins)
+
+Code: steering unchanged this session (vectors committed `b1febf3`/`06c95f0`). Suite
+`harmful-axis-a`, union[:30] (sel `26659ce1`), cap 2048, scale 6 constant, --nothink,
+judge=base. Runs `20261015-140256` (msuiche), `-152604` (audreyt), `-162154` (fused).
+
+| arm | vector | COMPLY | DEFLECT | REFUSE | ERROR | COMPLY% |
+|---|---|---|---|---|---|---|
+| msuiche | `e531…` | 16 | 12 | 2 | 0 | 53.3% |
+| audreyt | `a0cd…` | 19 | 2 | 2 | 7 | 63.3% |
+| fused-denoise | `e17b…` | 23 | 5 | 2 | 0 | **76.7%** |
+
+Base arm (unsteered) = REFUSE 30/30 for all. REFUSE_steered = 2/30 (0.067) for all three
+(keyword-refuse 0.30): the refusal-removal KPI is **equivalent** across vectors; the vectors
+differ only in how much of the residue becomes a full answer vs a partial deflect vs a break.
+
+**Fused-denoise wins outright**: highest COMPLY (23/30), zero errors. It takes audreyt's
+efficacy (DEFLECT 12→5) and msuiche's stability (0 errors vs audreyt's 7). `unit(a+b)`
+averages two noisy estimates of the *same* axis (cos 0.72) → a cleaner per-layer direction,
+which removes refusal better (more COMPLY) without audreyt's mid-late over-concentration.
+
+**audreyt over-steers at scale 6**: 7 errors (empty completion + harness exception), all on
+the highest-refusal prompts — exactly where msuiche had produced output (6 COMPLY + 1 DEFLECT
+on those 7). Both vectors are unit-norm per layer, so at equal scale the magnitude is equal;
+the difference is direction. audreyt points more purely along the refusal axis mid-late, so
+the same magnitude perturbs the residual more where the refusal signal is strongest → the
+generation breaks. On its 23 valid completions audreyt is the sharpest (19/23 = 82.6% COMPLY),
+but the 23% break rate makes it the worst practical choice. The error cause (`status=error`,
+a Python exception in `run_one`) is not persisted (manifest keeps only prompt/completion/status).
+
+msuiche residue detail (run `140256`): the 12 DEFLECT are **genuine** partial answers, not
+truncation — no completion is near the 2048-token cap (max ~1460 tok). Contrast 402 9.2, where
+DEFLECT at short caps was a truncation artifact. At constant scale 6 the residue is real; the
+2026-10-14 ramp-6→9 run converted some DEFLECT→COMPLY (0.533→0.633) via a stronger late push.
+
+Implications: the merge beats both single sources on axis-A efficacy with equal safety (REFUSE
+floor). Feeds 406 (fused is the measured-win default candidate; adoption still needs benign/
+quality guards + holdout) and motivates 405 6A (projection-nulling): audreyt's break pattern is
+over-steering at fixed scale, which an adaptive clamp(proj,0,cap) fold removes by construction.
+
+---
+
 ## 2026-10-15 — 408 5.2 survey: drowzeys cybersecurity abliteration (metadata only; same site/mechanism, vector not recoverable)
 
 `drowzeys/DeepSeek-V4.1-Flash-Abliterated-Cybersecurity-Unleashed` is not a full model: it publishes

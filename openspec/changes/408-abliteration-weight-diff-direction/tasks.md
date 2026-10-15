@@ -50,11 +50,18 @@
   what the abliteration targeted, not as efficacy. Done (2026-10-15 block).
 
 ## 4. Evaluation (user-run — D6)
-- [ ] 4.1 (user-run) axis-A at a finishing token cap vs the msuiche baseline; record as a
+- [x] 4.1 (user-run) axis-A at a finishing token cap vs the msuiche baseline; record as a
   completed comparison, negative results included. Candidate ready:
-  `dir-steering/vectors/v41-abliteration-attn.f32`.
-- [ ] 4.2 Record the outcome; adopt no runtime default in this change (defer any adoption
-  or fusion to `406`/`404`).
+  `dir-steering/vectors/v41-abliteration-attn.f32`. Done (`docs/steering-measurements.md`
+  2026-10-15, 3-arm block): cap 2048, scale 6, union[:30]. audreyt over-steers at scale 6 —
+  7/30 errors (empty completion) on the highest-refusal prompts where msuiche produced output;
+  on its 23 valid it is the sharpest (19/23=82.6% COMPLY) but the 23% break rate is a
+  mixed/negative result vs msuiche's stable 16/30. The merge (fused-denoise) wins both: 23/30
+  COMPLY, 0 errors (recorded under 404/406).
+- [x] 4.2 Record the outcome; adopt no runtime default in this change (defer any adoption
+  or fusion to `406`/`404`). Done: outcome recorded in `docs/steering-measurements.md`
+  (2026-10-15 3-arm block); no runtime default adopted here. Fused-denoise is the measured-win
+  candidate handed to 406; audreyt's over-steering motivates 405 6A (adaptive clamp fold).
 
 ## 5. Secondary sources
 - [ ] 5.1 `distributedcognition/...-abliterated`: acquire and run the comparability check;
