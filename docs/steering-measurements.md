@@ -95,7 +95,7 @@ vector in weight space; early-layer disagreement is expected (direction is noisi
 refusal-specific before the decision). This is geometry evidence of what the abliteration targeted,
 **not** an efficacy claim.
 
-Candidate emitted for a user-run comparison: `dir-steering/out/v41-abliteration-attn.f32` (40×5120,
+Candidate emitted for a user-run comparison: `dir-steering/vectors/v41-abliteration-attn.f32` (40×5120,
 sign-aligned to 402). Axis-A efficacy of this candidate vs the msuiche baseline stays user-run
 (408 task 4.1).
 

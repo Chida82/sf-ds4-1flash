@@ -35,7 +35,7 @@
 - [x] 2.2 SVD of `ΔW` per layer; emit a per-layer unit-norm f32 direction in the existing
   format; record each layer's leading singular-value share; flag non-rank-one layers as
   low-confidence. Done: leading singular-value share 0.89–0.92 across all 40 layers (no
-  low-confidence layer); candidate `dir-steering/out/v41-abliteration-attn.f32` (40×5120).
+  low-confidence layer); candidate `dir-steering/vectors/v41-abliteration-attn.f32` (40×5120).
 - [x] 2.3 Fix the SVD sign against the `402` reference; record the convention. Done: each
   layer's recovered row is flipped to `cos(r, v402_layer) ≥ 0` before emission.
 
@@ -52,7 +52,7 @@
 ## 4. Evaluation (user-run — D6)
 - [ ] 4.1 (user-run) axis-A at a finishing token cap vs the msuiche baseline; record as a
   completed comparison, negative results included. Candidate ready:
-  `dir-steering/out/v41-abliteration-attn.f32`.
+  `dir-steering/vectors/v41-abliteration-attn.f32`.
 - [ ] 4.2 Record the outcome; adopt no runtime default in this change (defer any adoption
   or fusion to `406`/`404`).
 

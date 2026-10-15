@@ -196,14 +196,14 @@ def write_f32(path, rows):
     return data
 
 
-def emit(A, B, offset, outdir, sources):
+def emit(A, B, offset, outdir, sources, tag=""):
     outdir = Path(outdir)
     outdir.mkdir(parents=True, exist_ok=True)
     cos = per_layer_cosine(A, B, offset)
     results = []
     for method in ("denoise", "ortho", "subspace_k1"):
         rows = fuse(A, B, offset, method)
-        f32 = outdir / f"v41-fused-{method}.f32"
+        f32 = outdir / f"v41-fused{tag}-{method}.f32"
         data = write_f32(f32, rows)
         residual_norms = None
         if method == "ortho":
@@ -222,7 +222,7 @@ def emit(A, B, offset, outdir, sources):
                      "direction. Rank-k>1 removal needs a multi-direction runtime "
                      "(not in 401); see 405."),
         }
-        (outdir / f"v41-fused-{method}.json").write_text(
+        (outdir / f"v41-fused{tag}-{method}.json").write_text(
             json.dumps(sidecar, ensure_ascii=False, indent=2))
         results.append((method, f32, len(data)))
     return results
@@ -272,20 +272,31 @@ def main(argv=None):
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--msuiche", help="msuiche .f32 (from 401's converter)")
     ap.add_argument("--distcog", help="distributedcognition refusal_directions.pt")
+    ap.add_argument("--f32-b", dest="f32_b", metavar="LABEL:PATH",
+                    help="fuse msuiche with a second .f32 direction instead of a "
+                         ".pt, e.g. audreyt:dir-steering/vectors/v41-abliteration-attn.f32")
+    ap.add_argument("--tag", default="",
+                    help="suffix inserted into output filenames, e.g. -msuiche-audreyt")
     ap.add_argument("--out", default="dir-steering/out", help="candidate output dir")
     ap.add_argument("--offset", type=int, help="force a layer offset (else searched)")
     ap.add_argument("--self-check", action="store_true")
     args = ap.parse_args(argv)
-    if args.self_check or not (args.msuiche and args.distcog):
+    have_b = bool(args.distcog) or bool(args.f32_b)
+    if args.self_check or not (args.msuiche and have_b):
         _selfcheck()
         return 0
     A = load_f32(args.msuiche)
-    B = load_pt_directions(args.distcog)
+    if args.f32_b:
+        label, _, path = args.f32_b.partition(":")
+        B = load_f32(path)
+        sources = {"msuiche": str(args.msuiche), label or "f32_b": path}
+    else:
+        B = load_pt_directions(args.distcog)
+        sources = {"msuiche": str(args.msuiche), "distcog": str(args.distcog)}
     offset = args.offset if args.offset is not None else choose_offset(A, B)[0]
     _, table = choose_offset(A, B)
     print(f"offset median-cosine: {table}; chosen {offset}")
-    sources = {"msuiche": str(args.msuiche), "distcog": str(args.distcog)}
-    for method, f32, size in emit(A, B, offset, args.out, sources):
+    for method, f32, size in emit(A, B, offset, args.out, sources, args.tag):
         print(f"wrote {f32} ({size} B)")
     return 0
 

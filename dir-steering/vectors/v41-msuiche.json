@@ -1,0 +1,46 @@
+{
+  "source": {
+    "hook": "residual_stream_post_layer",
+    "alpha_default": 0.5,
+    "alpha_note": "measured by the source at its own hook; not a runtime scale",
+    "model_hint": "deepseek_v41",
+    "layer_count": 39,
+    "layer_ids_zero_based": "1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39",
+    "content_sha256": "7b051452f901d59ab7601214dea4f82b3c1ed40a6f4f02e4f0acc22bd4e4e11f",
+    "base_model": "deepseek-ai/DeepSeek-V4.1-Flash",
+    "base_revision": "fb2764a5cf321eaa5070ca8f9e892818f477c16d",
+    "method": "dom_per_layer",
+    "author": "msuiche",
+    "validation": "refusal32 C4->C24, cyber32 C5->C31, benign32-holdout 31/32 (1 classifier FP), propaganda32 C29->C32; zero zh code-mixing (a1.0: 2-7/32, a2.0: 13-21/32 + refusal32 regression to C19/R10); greedy, thinking off, mt1024, 2026-09-10; a0.0 no-op gate behavioural PASS (labels identical 32/32 x2)",
+    "gguf_sha256": "741476be392af446cb2c46a12e19b11cabaaacb16fad255050aaf9f95f9956d9"
+  },
+  "application": {
+    "flag": "--dir-steering-residual",
+    "site": "v41_attn_input_weighted_fold_post_engram",
+    "intervention_revision": 2,
+    "equivalent_to_source_hook": false,
+    "site_note": "the weighted HC attention-input fold, after Engram, before the attention norm; the source hook is the post-layer residual",
+    "sign_convention": "ds4 +scale removes the direction (h -= scale*d*dot(d,h))",
+    "scale_default": 0.0,
+    "scale_screening_candidates": [
+      4.0,
+      8.0
+    ],
+    "scale_note": "first-token screening on 2026-10-13, not a validated default; 0.5 at this site was a near no-op",
+    "refused_at": [
+      "--dir-steering-ffn",
+      "--dir-steering-attn"
+    ]
+  },
+  "f32": {
+    "shape": [
+      40,
+      5120
+    ],
+    "bytes": 819200,
+    "row_0": "zero",
+    "row_n": "source direction.N",
+    "sha256": "e531274260c4da938770fa5f53eec8b9c6c814c8099e21552a298473a0c99109",
+    "provenance_note": "the raw file carries none of this; keep the sidecar with it"
+  }
+}
