@@ -43,11 +43,14 @@ which removes refusal better (more COMPLY) without audreyt's mid-late over-conce
 
 **audreyt over-steers at scale 6**: 7 errors (empty completion + harness exception), all on
 the highest-refusal prompts — exactly where msuiche had produced output (6 COMPLY + 1 DEFLECT
-on those 7). Both vectors are unit-norm per layer, so at equal scale the magnitude is equal;
-the difference is direction. audreyt points more purely along the refusal axis mid-late, so
-the same magnitude perturbs the residual more where the refusal signal is strongest → the
-generation breaks. On its 23 valid completions audreyt is the sharpest (19/23 = 82.6% COMPLY),
-but the 23% break rate makes it the worst practical choice. The error cause (`status=error`,
+on those 7). The fold is `h -= scale·dot(d,h)·d` (projection removal scaled, not a fixed add;
+`cpu_directional_steering_project_rows`, DS41_STEERING_SITE): scale 1 nulls the refusal
+component exactly, scale 6 removes 6× it → the component flips to −5·dot (strong anti-refusal).
+audreyt has the highest cos to the refusal axis mid-late, so dot(d,h) is largest on
+refusal-laden activations; 6× that larger projection is the biggest overshoot → generation
+breaks on the hardest prompts. On its 23 valid completions audreyt is the sharpest (19/23 =
+82.6% COMPLY), but the 23% break rate makes it the worst practical choice at scale 6. This
+predicts a downward scale sweep (toward nulling, scale 1) removes the breaks — see 405 6A. The error cause (`status=error`,
 a Python exception in `run_one`) is not persisted (manifest keeps only prompt/completion/status).
 
 msuiche residue detail (run `140256`): the 12 DEFLECT are **genuine** partial answers, not

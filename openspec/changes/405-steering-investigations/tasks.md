@@ -47,14 +47,35 @@ Each experiment is completed by evidence and a supported/rejected/inconclusive d
 - [ ] 6.2 Only if justified, prototype a bounded non-increasing-per-phase event controller against the best measured constant/window or retained `403` comparator. Test resets, noise/fallback, session isolation and snapshot state; otherwise record non-adoption with no event flag.
 - [ ] 6.3 Evaluate the controller on holdout using `402` and record adoption/non-adoption with complete guards. Verify any retained mechanism has truthful identity, tests and docs, and that `403` is not treated as implemented when it retained no schedule.
 
-## 6A. Projection-nulling: adaptive gain at the fold site
+## 6A. Scale sweep and overshoot cap at the fold site
 
-Depends on 1.1-1.3 (the diagnostic probe). The current fold adds a fixed `scale × direction[layer]` regardless of how much refusal signal the residual carries. Projection-nulling replaces the blind magnitude with measured dose: `proj = dot(residual, direction[layer]); residual -= clamp(proj, 0, cap) × direction[layer]`. This removes exactly the refusal component present (up to `cap`), cannot over-subtract by construction, and makes vector comparison fair (isolates direction accuracy from magnitude tuning). Motivated by the 408 axis-A finding: audreyt at scale 6 broke on the 7 hardest prompts (sovra-steering) while producing higher COMPLY on the rest.
+CORRECTION to an earlier framing: the fold is NOT a fixed `scale × direction` add. It is
+`h -= scale · dot(d,h) · d` (`cpu_directional_steering_project_rows`, and the Metal route
+`ds4_gpu_directional_steering_project_tensor`): it already removes the projection of the
+activation onto the direction, scaled. So scale 1 = exact projection-nulling (the refusal
+component becomes zero), scale 6 = remove 6× the projection = overshoot (the component flips to
+−5·dot, strong anti-refusal). The 408 axis-A breaks are overshoot: audreyt has the largest cos
+to the refusal axis mid-late → largest dot → 6× it is the biggest overshoot → breakage on the
+hardest prompts. The first experiment therefore needs NO code change — only a lower `--residual`.
 
-- [ ] 6A.1 Correlate the probe's per-layer `proj / ‖residual‖` ratio with the 7 audreyt errors vs the 23 ok completions at scale 6. Confirm that the errors cluster at the highest ratios. If they do not, record a negative finding and do not proceed to 6A.2. This is offline analysis on existing run data, no model needed.
-- [ ] 6A.2 Implement projection-nulling with cap in the existing fold site (`ds4.c`, post-Engram pre-norm). Gate behind `--dir-steering-adaptive` (or env `DS4_STEERING_ADAPTIVE_CAP`); default off, fold unchanged. Add a decode-switch parity test (`DS4_METAL_DISABLE_V41_ADAPTIVE_STEERING=1` restores the fixed fold, bitwise identical). Expected cost: one dot product (5120 elements) per layer per token, ~0.016% of token compute.
-- [ ] 6A.3 Tune `cap` on the development set using the `402` protocol. Compare projection-nulling vs fixed-scale on the same vector (msuiche) at matched REFUSE rate. The key metric is DEFLECT→COMPLY conversion without introducing errors. Record the cap knee and whether it replaces the scale sweep.
-- [ ] 6A.4 Re-evaluate audreyt and fused-denoise under projection-nulling. If the 7 errors disappear and COMPLY rates converge across vectors, record that the mechanism dominates vector choice; otherwise record the residual vector-dependent differences.
+- [ ] 6A.1 Scale sweep (user-run, no code change). Run each vector at scales below 6 (e.g. 1, 2,
+  3, 4) on `harmful-axis-a`. Use a short-generation screen first (REFUSE flip is prefill-decided,
+  405 8.2) to find the scale where audreyt's breaks vanish and REFUSE stays at floor, then a full
+  2048-token run at the chosen scale(s) to measure DEFLECT→COMPLY (DEFLECT needs a complete
+  answer, not a screen). Prediction: audreyt at scale ~1-2 (nulling, no overshoot) loses the 7
+  errors and, having the best direction, may top the table. Lowering scale within [1,6] still
+  removes all refusal (coeff≥0) so COMPLY should not regress — spot-check a few to confirm.
+- [ ] 6A.2 (speedup, optional) Add a prompt-subset selector to `eval/run.py` (the harness only
+  does `union[:N]` today) so a sweep can re-test just the non-COMPLY residue of each vector
+  (msuiche 14, audreyt 11, fused 7) instead of all 30, with a COMPLY spot-check. Record the
+  subset in the selector so the manifest stays honest.
+- [ ] 6A.3 (refinement, only if a single scale cannot both convert weak-refusal DEFLECT and avoid
+  breakage on strong-refusal prompts) Cap the overshoot: `coeff = clamp(scale·dot, 0, cap)` in the
+  fold (`ds4.c` + Metal kernel). Gate behind a flag, default off; decode-switch parity test must
+  show the uncapped fold bitwise identical when off. Cost: one extra clamp per row, negligible.
+- [ ] 6A.4 (diagnostic, supports 6A.3) Read-only probe of `dot(d,h)` per layer at the fold
+  (reuses 1.1-1.3): dump the projection distribution across prompts to see the overshoot magnitude
+  and inform the cap. Prefill-only, no generation; no harmful completion produced.
 
 ## 7. Attention second channel only after a real-site gate
 
