@@ -20,6 +20,55 @@ Conventions used below:
 
 ---
 
+## 2026-10-15 — 408 abliteration weight-diff: audreyt direction matches msuiche/402 (|cos| median 0.72, mid-late layers)
+
+Offline weight-space recovery (no model run, no GPU): diffed the base Q2 GGUF
+(`gguf/DeepSeek-V4.1-Flash-Q2.gguf`, antirez) against `audreyt/DeepSeek-V4.1-Flash-Abliterated-GGUF`
+`Q2` at the residual-writing sites, layer by layer, and recovered the removed direction as the top
+left singular vector of `ΔW = W_base − W_abl` (for `W' = (I − r rᵀ)W`, `ΔW = r (rᵀW)` is rank-one
+along `r`). Tool: `dir-steering/tools/weight_diff_direction.py` (numpy, disposable `/tmp` venv;
+self-check passes). Byte-diff map: `dir-steering/tools/abl_footprint.py`.
+
+Edit footprint (head/tail raw-byte probe, all 40 layers):
+
+| tensor family | edited | role |
+|---|---|---|
+| `attn_output_b` (Q8_0 `[8192,5120]`) | 40/40 | writes residual (attention output) |
+| `ffn_down_exps` (Q2_K) | 40/40 | writes residual (expert down) |
+| `ffn_gate_exps`, `ffn_up_exps` (Q2_K) | 40/40 | read residual (expert in) |
+| `ffn_*_shexp`, attn-input/q/kv, HC, norms, `token_embd`, `output` | 0/— | untouched |
+
+Two facts constrain the reading:
+1. **Every untouched tensor is byte-identical** (base-match sanity: `token_embd` identical) — so
+   audreyt edited antirez's exact `Q2` file *in place*, not a re-quantization. The `attn_output_b`
+   difference is therefore a real weight edit, not requant rounding.
+2. `attn_output_b` is Q8_0 and every *other* Q8_0/attention tensor is identical, so Q8_0 is
+   deterministic across the two files and the rank-1 recovery on that site is clean. The Q2_K expert
+   edits are left as footprint only (not dequantized here; abliteration vs quant noise is not
+   separable in Q2_K without the base BF16).
+
+`attn_output_b` recovered direction (clean Q8_0 site), per layer:
+- `ΔW` is **0.89–0.92 rank-1** (leading singular-value share) → a projective, abliteration-style
+  edit; the ~10% off-rank-1 is Q8_0 requant rounding.
+- cosine to the msuiche `402` vector (sign aligned to 402, `cos≥0` convention): median **|cos| 0.72**,
+  rising from ~0.12–0.40 in the early layers (0–8) to ~0.72–0.82 in the mid-late layers (9–39);
+  layer 0 is masked in 402 (nan).
+- recovered rows are **per-layer, not one global `r`**: mutual |cos| median 0.16 (max 0.95 for
+  adjacent pairs) — the same per-layer, slowly-rotating geometry 402 showed (`14ea4d6`).
+
+Reading: two independently-derived refusal directions — msuiche activation-difference (402) and
+audreyt weight-space abliteration (408) — agree substantially in exactly the layers where the
+first-decision screen (405 8.2) says the refusal is decided (mid-late). This cross-validates the 402
+vector in weight space; early-layer disagreement is expected (direction is noisier / less
+refusal-specific before the decision). This is geometry evidence of what the abliteration targeted,
+**not** an efficacy claim.
+
+Candidate emitted for a user-run comparison: `dir-steering/out/v41-abliteration-attn.f32` (40×5120,
+sign-aligned to 402). Axis-A efficacy of this candidate vs the msuiche baseline stays user-run
+(408 task 4.1).
+
+---
+
 ## 2026-10-15 — 403 window tuning: English benign confirmation (window 10 is clearly best)
 
 Same forced-prefix KL as the Italian-prose block below, on a representative English expository
