@@ -20,6 +20,27 @@ Conventions used below:
 
 ---
 
+## 2026-10-16 — third source: a new direction extracted from activations, ~orthogonal to both msuiche and abliteration
+
+Code: `f70f42c` + dump `ac2cdca`. `eval/extract_floor_direction.py`: contrastive
+(Arditi/FailSpy) at the native V4.1 fold site. Class A = 15 prompts resisting
+msuiche (survivors, incl. floor 6/372/426), class B = 40 msuiche opens, both at BASE
+(`DS4_V41_DUMP_STEER_INPUT`, last decision row). Direction = `unit(mean_A - mean_B)`
+per layer → `dir-steering/out/v41-floor-resist.f32`.
+
+- **Strong, real separation**: per-layer raw |mean_A − mean_B| median 9.36, growing
+  with depth (L30–39 up to 56.7); 37/40 layers separate by >1.0. Resistant and
+  openable harmful prompts are clearly distinct at the fold.
+- **Genuinely new direction**: cos(floor-resist, msuiche) median **0.041**,
+  cos(floor-resist, abliteration) median **0.012** — ~orthogonal to BOTH. This is
+  the axis msuiche/abliteration combinations can't reach, exactly what the floor
+  needs. 39/40 layers non-zero, row 0 zero (valid format).
+
+Because it is ~orthogonal to msuiche, the rank-2 is the *clean* case (no cos-0.72
+interference that sank msuiche+abliteration): msuiche does breadth, floor-resist does
+the floor, independent. Next (user-run): `msuiche@5 + floor-resist@G` on the floor +
+breadth controls, and floor-resist alone, to see if it opens 6/372/426.
+
 ## 2026-10-16 — msuiche and abliteration INTERFERE: no residual-site combination opens the floor while keeping breadth (user-run)
 
 Code: `8490130`. rank-2 with the **full abliteration** vector as dir2:
