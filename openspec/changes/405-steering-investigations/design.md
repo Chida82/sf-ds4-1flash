@@ -88,6 +88,36 @@ Do not sweep the inactive legacy `--dir-steering-attn` and call it a two-channel
 - [New site invalidates old evidence] -> distinct identity and a fresh baseline; no silent update of `401` semantics.
 - [Research turns into unused release knobs] -> conditional tasks finish with evidence-backed non-adoption and no permanent option.
 
+## Results (2026-10-16)
+
+Recorded against the decisions above; nothing is checked off in `tasks.md` unless its
+verification clauses were met.
+
+- **D2 (observe), partial.** `DS4_V41_DUMP_STEER_INPUT=<path>` (commit `ac2cdca`, `probe`
+  in `ds4_env.def`) appends the pre-edit fold input row (token 0, 40 layers, f32) at the
+  live site on all three routes (`ds41_hc_mix` token-major, `ds41_before_attention_batch`,
+  decoder suffix). It is a raw activation dump, not the 1.1 record (no dot/norm/ratio, no
+  bounded window): it synchronizes per row and forces the slow token-major path, so it is
+  an extraction tool, not a release probe; overhead not measured. Off path: one `getenv`
+  test, no allocation or dispatch. 1.1–1.3 stay open.
+- **D5 (derive at the real site): pipeline proven, benign variant not run.** The dump feeds
+  `eval/extract_floor_direction.py` — per-layer `unit(mean_A − mean_B)` at the fold, pure
+  Python. Run on a *harmful* contrast (A = prompts msuiche@5 does not open, B = prompts it
+  opens, base model) → `dir-steering/out/v41-floor-resist.f32`: strongly separating (median
+  |mean_A − mean_B| 9.4) and ~orthogonal to msuiche (cos 0.04) and abliteration (0.01).
+  Causally it does nothing: rank-2 with msuiche@5 → long reframes graded REFUSE; alone at
+  scale 10 → REFUSE (`docs/steering-measurements.md`, 2026-10-16 blocks). Lesson for 4.1:
+  a difference of means separates the classes it was built on, but is an opener only when
+  the contrast is refuse-vs-comply on the *same* prompts; the benign concise-vs-verbose
+  pairs of 4.1 are the right next use of the pipeline. For 4.5: by construction dump row
+  *k* is the activation the fold at layer *k* edits, so capture row = application row for
+  own-derived vectors through this path; the `glp.layer_ids_zero_based` ambiguity concerns
+  imported GGUF vectors only.
+- **Out of 405's scope, done elsewhere.** The rank-2 runtime this change excluded
+  (`--dir-steering-file-2`, commit `8daabe6`) was built as the `404` follow-up and measured
+  negative for the msuiche/abliteration pair (`404` design, follow-up note). Making it a
+  capability needs its own change.
+
 ## Migration Plan
 
 Land a useful bounded probe with tests/docs, then run site and mask questions before controllers. Preserve baseline operation and file compatibility; masks use existing zero rows. Keep unproven alternative hooks in task-specific experiments rather than release flags. Any retained mechanism needs its own truthful identity, tests, compatibility behavior and corresponding artifact reconciliation before promotion.

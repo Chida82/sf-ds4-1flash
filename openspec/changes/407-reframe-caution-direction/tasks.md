@@ -2,7 +2,7 @@
 
 ## 0. Precondition gate
 
-- [ ] 0.1 Confirm a reframe/hedge residue actually persists on finished answers before deriving anything: read the `402` n=30 acceptance run at a finishing token cap. If DEFLECT stays ~0 (the 2048 n=10 pilot showed DEFLECT collapses), record this change as not-needed and stop. Proceed to group 1 only if a residual DEFLECT, or a reframe the owner judges worth removing, persists at n>=30.
+- [x] 0.1 Confirm a reframe/hedge residue actually persists on finished answers before deriving anything: read the `402` n=30 acceptance run at a finishing token cap. If DEFLECT stays ~0 (the 2048 n=10 pilot showed DEFLECT collapses), record this change as not-needed and stop. Proceed to group 1 only if a residual DEFLECT, or a reframe the owner judges worth removing, persists at n>=30. Done 2026-10-16: msuiche ramp 6→9 n=30 → DEFLECT 7/30; fused@7 n=30 (run `20261016-105834`) → DEFLECT 0/30. Not-needed with fused@7; see the gate outcome in `proposal.md`. Groups 1–5 not started.
 
 ## 1. Contrast pairs and derivation
 

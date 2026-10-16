@@ -26,6 +26,18 @@ conditional: it proceeds only if a reframe/hedge residue persists on finished an
 n>=30; if finished-answer DEFLECT stays ~0, it is recorded as not-needed without
 deriving a vector.
 
+**Gate outcome (2026-10-16):** measured both ways. With msuiche (ramp 6→9) the residue
+persists at n=30 on finished answers — DEFLECT 7/30 (`docs/steering-measurements.md`,
+2026-10-14 n=30 block). With the fused direction at constant scale 7, the same `union[:30]`
+at 2048 tokens gives **DEFLECT 0/30, COMPLY 28/30, 0 breaks** (run `20261016-105834`). The
+reframe residue is removed by the choice of refusal direction and dose, not by a
+behaviour-specific second direction: a reframe/caution vector is **not needed** while the
+candidate is fused@7. The change stays conditional only if `406` ships msuiche for breadth
+and its n=30 DEFLECT is judged worth removing — and the measured lever even then is the
+fused direction/scale, not a new vector. Separately: the three floor prompts {6,372,426}
+produce long reframes under every direction tried, and the judge grades those REFUSE, not
+DEFLECT — a refusal wearing a reframe, not the DEFLECT residue this change targets.
+
 ## What Changes
 
 - Derive a reframe/caution direction at the live residual site on controlled contrast
