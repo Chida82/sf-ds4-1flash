@@ -6,10 +6,13 @@
 The V4.1 residual site SHALL accept an optional second per-layer unit direction
 (`--dir-steering-file-2`) with its own constant scale (`--dir-steering-residual-2`),
 applied as a second in-place weighted fold after the first on every route that applies
-the first (token-major decode, prefill batch, decoder suffix). The second direction
-SHALL be subject to the same opt-in gate, the same disable switch and the same
-persistence refusal as the first, and SHALL be validated by the same loader rules
-(shape, zero anchor row, unit rows).
+the first. It SHALL share the first direction's opt-in gate, disable switch,
+persistence refusal and loader validation.
+
+#### Scenario: Applied on every route of the first fold
+- **WHEN** a second direction is active
+- **THEN** the token-major decode, prefill-batch and decoder-suffix routes each apply
+  the second fold immediately after the first
 
 #### Scenario: Second file without the opt-in
 - **WHEN** `--dir-steering-file-2` is given and neither `--allow-v41-steering` nor
@@ -53,12 +56,14 @@ never cached, compared or reported as a rank-1 run.
 
 ### Requirement: Bounded fold activation capture
 When `DS4_V41_DUMP_STEER_INPUT=<path>` is set, the engine SHALL append the pre-edit
-fold input of row 0 (one row of `DS4_N_EMBD` f32 per model layer) to that path on every
-route that applies the fold, reading the tensor only after synchronising the device and
-resuming command recording afterwards. The capture SHALL leave the generated output
-unchanged. When the variable is unset, the fold SHALL perform no capture-related
-allocation or dispatch. The switch SHALL be classified `probe` and SHALL be reported at
-engine open like every out-of-normal switch.
+fold input of row 0 (one `DS4_N_EMBD` f32 row per model layer) to that path on every
+route that applies the fold, without changing the generated output. Unset, the fold
+SHALL do no capture-related work. The switch SHALL be classified `probe`.
+
+#### Scenario: Readback is bracketed
+- **WHEN** a row is captured
+- **THEN** the device is synchronised before the read and command recording resumes
+  after it, and a failed read appends nothing
 
 #### Scenario: Capture does not change output
 - **WHEN** the same prompt is generated with and without the capture variable set
