@@ -34,9 +34,12 @@ push or archive without a separate explicit request.
 
 ## 4. Conditional adoption
 
-- [ ] 4.1 If no candidate wins through `402`, ship no default, keep `msuiche` named
+- [x] 4.1 If no candidate wins through `402`, ship no default, keep `msuiche` named
   as the reference, and record the negative result. Verify nothing is bundled and
-  the docs do not claim an accepted default.
+  the docs do not claim an accepted default. Done 2026-10-16: recorded in
+  `design.md` ("Decision recorded"); no candidate beats msuiche@5 on breadth, no
+  `eligible: True` run exists (margins never set), nothing bundled, `download.sh`
+  and docs name no default. msuiche@5 reference, fused@7 quality alternative.
 
 ## 5. Integration
 

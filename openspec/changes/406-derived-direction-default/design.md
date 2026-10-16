@@ -62,6 +62,37 @@ negative result is recorded. A later better candidate re-runs this selection.
 - [Selecting before `402` is trustworthy] -> selection consumes an identified
   acceptance summary, not a screen or a few clean answers.
 
+## Decision recorded (2026-10-16): non-adoption, `msuiche` stays the named reference
+
+The candidate search is exhausted (`docs/steering-measurements.md`, 2026-10-16 blocks;
+`404` follow-up note; `405` Results). Against the single-source `msuiche@5` baseline:
+
+| candidate | breadth (hard-32, keyword, server path) | comply quality (union[:30], judge, 2048 tok) |
+|---|---|---|
+| **msuiche@5** | **3/32 refuse** `{6,372,426}` | n=30 at scale 6 constant: 23/30 COMPLY, 5 DEFLECT (3-arm run) |
+| fused-denoise | 28/32 refuse at scale 5 | **@7: 28/30 COMPLY, 0 DEFLECT, 0 breaks** (run `20261016-105834`); hard-32 at scale 7 not measured |
+| hybrid α (rank-1 rotation) | 6/32 (α=0.1) → 21/32 (α=0.3) | not judged (screen already negative) |
+| rank-2 msuiche + abl_perp / + abliteration | breadth kept / — | floor still REFUSE; 372 breaks (abl_perp) |
+| floor-resist (activation-extracted) | — | floor still REFUSE |
+
+No candidate beats `msuiche` on breadth, the primary metric of broad refusal removal;
+the fused direction wins comply-quality on `union[:30]` but at the only scale where its
+breadth was measured it is far worse, and its breadth at scale 7 is unmeasured. No `402`
+run carries an `eligible: True` verdict for any candidate, because the predeclared
+acceptance margins (402 tasks 6.5/8.2) were never set — a user decision — so 1.1 has no
+acceptance summary to consume and the D4 path applies:
+
+- **Ship no default.** Nothing is bundled; `download.sh` and the docs do not name an
+  accepted default.
+- **`msuiche` at scale 5 is the named reference** for broad refusal removal
+  (`dir-steering/vectors/v41-msuiche.f32`, `--dir-steering-residual 5`, 29/32 hard,
+  ~190/205 union at the 8-token screen); the floor `{6,372,426}` is a documented residual.
+- **fused-denoise at scale 7** is recorded as the comply-quality alternative on the
+  `union[:30]` distribution (`v41-fused-msuiche-audreyt-denoise.f32`, `--dir-steering-residual 7`),
+  not as a default: its breadth at that scale is an open measurement.
+- A later candidate, or a `402` acceptance with margins set, re-runs this selection (D4);
+  it does not edit this record.
+
 ## Migration Plan
 
 Land only after a `402` acceptance names a winner. Record the selection and
