@@ -23614,6 +23614,28 @@ static bool ds41_steer_attention_input2(const ds41_gpu_graph *g, ds4_gpu_tensor 
                DS4_N_EMBD, rows, g->residual_scale2) != 0;
 }
 
+/* sf: third-source extraction — append one row of the UNSTEERED attention-input
+ * fold (DS4_N_EMBD f32) to DS4_V41_DUMP_STEER_INPUT. Called from the prefill path
+ * with the last prompt row, which is the refusal-decision position (it produces
+ * the first generated token). The extraction script runs one prompt (n=1) per
+ * server request and truncates the file between requests, so a single-chunk
+ * prompt yields layers 0..39 in order (read the last 40 rows if the prompt spans
+ * several prefill chunks). A diagnostic: it never alters the computed output. */
+static void ds41_dump_fold_row(const ds4_gpu_tensor *x, uint32_t row) {
+    const char *path = getenv("DS4_V41_DUMP_STEER_INPUT");
+    if (!path || !path[0] || !x) return;
+    /* Same safe bracket as metal_graph_debug_dump_tensor: commit+wait so the
+     * tensor value is ready, read (nonzero = success), then resume the batch. */
+    if (ds4_gpu_synchronize() == 0) return;
+    float buf[DS4_N_EMBD];
+    if (ds4_gpu_tensor_read(x, (uint64_t)row * DS4_N_EMBD * sizeof(buf[0]),
+                            buf, (uint64_t)DS4_N_EMBD * sizeof(buf[0])) != 0) {
+        FILE *fp = fopen(path, "ab");
+        if (fp) { fwrite(buf, sizeof(buf[0]), DS4_N_EMBD, fp); fclose(fp); }
+    }
+    ds4_gpu_begin_commands();
+}
+
 /* One block's HC input: the mixer projection, then split, weighted sum with
  * the previous block's pre weights and norm; each half fused where the fused
  * kernel reproduces the separate ones. */
@@ -23631,7 +23653,8 @@ static bool ds41_hc_mix(ds41_gpu_graph *g, const ds4_model *m,
      * fold with the rms-norm), so a steered layer skips the two fused paths:
      * weighted sum rounded to BF16, projection, norm. Off (scale 0, ffn side,
      * or the disable env) keeps the fast paths, bitwise. */
-    const bool steer = !ffn && (ds41_steering_active(g) || ds41_steering2_active(g));
+    const bool dump = !ffn && getenv("DS4_V41_DUMP_STEER_INPUT") != NULL;
+    const bool steer = !ffn && (ds41_steering_active(g) || ds41_steering2_active(g) || dump);
     if (!steer && fn->type == DS4_TENSOR_F16 && !ds41_hc_block_input_off() &&
         ds4_gpu_dsv41_hc_block_input_rows(g->mix, g->x, g->norm, split, residual, pre, m->map, m->size,
                                           fn->abs_offset, scale->abs_offset, base->abs_offset, norm->abs_offset,
@@ -23651,6 +23674,7 @@ static bool ds41_hc_mix(ds41_gpu_graph *g, const ds4_model *m,
               scale->abs_offset, base->abs_offset, DS4_N_HC, DS4_N_HC_SINKHORN_ITER, DS4_HC_EPS) &&
           ds4_gpu_hc_weighted_sum_bf16_tensor(g->x, residual, pre, DS4_N_EMBD, DS4_N_HC)))
         return false;
+    if (dump) ds41_dump_fold_row(g->x, 0u);  /* sf: unsteered fold, before any steering (decode / token-major prefill) */
     if (steer && !ds41_steer_attention_input(g, g->x, il, 1u)) return false;
     if (steer && !ds41_steer_attention_input2(g, g->x, il, 1u)) return false;
     return ds41_norm(g->norm, g->x, m, norm);
@@ -24019,8 +24043,9 @@ static bool ds41_before_attention_batch(ds41_gpu_graph *g, ds41_prefill_row *b,
      * steered in f32 with no second rounding before the norm (route agreement:
      * tests/test_deepseek41_graph.c --steering-fold). Off, the quantize and
      * the norm run as before, bitwise. */
-    return ds4_gpu_dsv41_quantize(b->x, DS4_N_EMBD, count, DS4_V41_BF16) &&
-        ds41_steer_attention_input(g, b->x, il, count) &&
+    if (!ds4_gpu_dsv41_quantize(b->x, DS4_N_EMBD, count, DS4_V41_BF16)) return false;
+    if (count > 0) ds41_dump_fold_row(b->x, count - 1u);  /* sf: decision position; no-op unless the dump env is set */
+    return ds41_steer_attention_input(g, b->x, il, count) &&
         ds41_steer_attention_input2(g, b->x, il, count) &&
         ds41_norm_batch(b->norm, b->x, m, l->attn_norm, count);
 }
@@ -24670,10 +24695,13 @@ static bool ds41_decoder_prepare(ds41_gpu_graph *g, const ds4_model *m,
         /* sf: 401 reconstructed rows take the same edit as directly processed
          * ones; the token-major branch below reaches it through
          * ds41_graph_before_attention. */
-        if (ok && batch_attention) ok = ds4_gpu_dsv41_quantize(active.x, DS4_N_EMBD, count, DS4_V41_BF16) &&
-            ds41_steer_attention_input(g, active.x, il, count) &&
-            ds41_steer_attention_input2(g, active.x, il, count) &&
-            ds41_norm_batch(active.norm, active.x, m, l->attn_norm, count);
+        if (ok && batch_attention) {
+            ok = ds4_gpu_dsv41_quantize(active.x, DS4_N_EMBD, count, DS4_V41_BF16);
+            if (ok && count > 0) ds41_dump_fold_row(active.x, count - 1u);  /* sf: decision position (token-major); no-op unless dump env set */
+            ok = ok && ds41_steer_attention_input(g, active.x, il, count) &&
+                 ds41_steer_attention_input2(g, active.x, il, count) &&
+                 ds41_norm_batch(active.norm, active.x, m, l->attn_norm, count);
+        }
         if (ok && batch_publish)
             ok = ds41_attention_publish_batch(g, &active, m, l, il, initial_start + off, count);
         if (ok && !publish && batch_attention)
