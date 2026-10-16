@@ -68,3 +68,26 @@ Use one development/holdout split, the same primary metric/guard margins and com
 ## Migration Plan
 
 Correct loader/algebra and their tests before regenerating candidate files and rerunning `402`. Old denoise/subspace_k1 outputs count as one geometric candidate, not two confirmations. Update candidate naming and provenance alongside the tool. No runtime or cache migration occurs except the changed vector content naturally receiving a new `401` identity.
+
+## Measured outcome (2026-10-16) — the fair rank-1 comparison is done; denoise is rejected on breadth
+
+The comparison this change demanded (denoise vs single-source at the same site,
+held-out, comparable budgets) ran as the broad vector×scale screen
+(`eval/discover.py`, `docs/steering-measurements.md` block of 2026-10-16). Result:
+**the scalar `denoise` merge is the wrong tool for broad refusal removal.** On
+breadth it is strictly worse than msuiche alone — 179 vs 195 prompts opened at the
+8-token screen, and 4/32 vs 29/32 at full length on the hard set. A rank-1 merge can
+only **rotate** the single removed direction, trading away msuiche's breadth for the
+second source's contribution; it cannot **add** a dimension. So the useful part of a
+second source is its msuiche-**orthogonal** component, and it must be applied as a
+*separate* runtime removal (rank-2), not blended into one vector. Per D4 and the
+"extra runtime rank" risk, that rank-2 runtime apply stays **out of 404** and is the
+trigger for a new change.
+
+Lead (pending full-length confirm): the complement worth harvesting is **abliteration**,
+not audreyt — at the 8-token screen abliteration opens 10 prompts msuiche never opens
+at any scale 3–6, including two of the three floor prompts (6, 426), which audreyt's
+share (via denoise) misses. Geometry supports a real new dimension: per-layer
+cos(msuiche, abliteration) median 0.72 (min 0.12), orthogonal fraction median 0.69,
+concentrated in early layers (L1–8). This is a screen-level lead until the abliteration
+full-length axis-A run confirms 6/426 actually open (not a screen artifact).
