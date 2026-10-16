@@ -47,6 +47,8 @@ format example.
 --dir-steering-ffn F       apply steering after FFN outputs; default is 1 when a file is provided (V4 hook; V4.1 refuses a nonzero value)
 --dir-steering-attn F      apply steering after attention outputs; default is 0 (V4 hook; V4.1 refuses a nonzero value)
 --dir-steering-residual F  steer the V4.1 attention-input fold; default is 0
+--dir-steering-file-2 FILE  rank-2: a second direction file (should be orthogonal to the first, e.g. fuse_directions.py 'ortho')
+--dir-steering-residual-2 F rank-2: constant scale for the second direction at the same site; default 0 (off, no 403 schedule)
 --dir-steering-residual-decay-tokens N        (403, experimental) decay the residual scale from its start to its final over N generated tokens; 0 = constant
 --dir-steering-residual-decay-final F         (403, experimental) the residual (minimum) scale the decay holds at; default 0
 --dir-steering-think-residual-decay-tokens N  (403, experimental) decay window for the thinking phase; 0 = use the answer window
@@ -77,6 +79,20 @@ rounding before the norm, on every route that produces an attention input:
 decode, batch prefill and the rows the wide-sweep decoder suffix reconstructs
 (`make test-deepseek41-steering-routes`). With a unit `d`, F=1 removes the
 component along `d`, 2 reflects it, 4 and 8 multiply it by -3 and -7.
+
+**Rank-2 (`--dir-steering-file-2 FILE2 --dir-steering-residual-2 G`).** A second
+direction is removed at the same site with its own constant scale, as a second
+in-place fold right after the first: `h -= G*d2*dot(d2,h)`. When `d2` is
+orthogonal to `d` per layer — e.g. `fuse_directions.py`'s `ortho` output,
+`d2 = unit(b - (d.b)d)` — the two sequential removals equal projecting out their
+2D span exactly, so the first direction's effect is untouched. Non-orthogonal
+pairs still run, but compose as two rank-1 removals rather than a clean 2D
+projection. The second slot has no `403` decay schedule (constant scale only),
+shares the opt-in and the disable env, and the persistence/KV guards apply when
+either scale is nonzero. Motivation: one vector (rank-1) can only rotate the
+removed direction; a second orthogonal direction adds a dimension, which is what
+reaches refusals the single direction leaves (measured union ceiling, see
+`docs/steering-measurements.md`).
 
 This fold is transient, and it is **not** the post-layer residual
 (`residual_stream_post_layer`) the msuiche vector was derived at: the direct

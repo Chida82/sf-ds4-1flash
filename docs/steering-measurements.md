@@ -20,6 +20,29 @@ Conventions used below:
 
 ---
 
+## 2026-10-16 — rank-2 residual steering implemented (forma A); benign smoke passes
+
+Code: `8daabe6`. Added a second residual steering slot
+(`--dir-steering-file-2`/`--dir-steering-residual-2`) applied as a second in-place
+fold at the same V4.1 attention-input site after the first, at all three live
+routes (decode `ds41_hc_mix`, prefill batch, decoder-suffix). Orthogonal
+directions compose as an exact 2D removal; the second slot is constant-scale (no
+403 schedule), shares the opt-in and disable env, and the persistence/KV guards
+extend to it.
+
+- **Build clean; `make test` green** — the steering-fold and file-validation tests
+  PASS, so the single-direction graph stays byte-identical to the reference. OFF
+  (`residual2=0`) is a no-op by construction: no load, no upload, no fold.
+- **Benign rank-2 smoke** (`msuiche@5` + `abl_perp@5`, `--nothink`, 40 tokens):
+  loads both vectors ("residual steering" + "residual steering rank-2 … orthogonal
+  second fold"), generates coherent text, exit 0, 8.18 t/s. Correctness of the
+  path only — efficacy (does rank-2 open floor 6/372 while keeping breadth) is the
+  next user-run axis-A measurement.
+
+Next: user-run axis-A with `--dir-steering-file msuiche --dir-steering-residual 5
+--dir-steering-file-2 v41-fusedmsuiche-abl-ortho.f32 --dir-steering-residual-2 G`,
+sweeping G, on the hard set — the measured ceiling is 31/32 (426 excepted).
+
 ## 2026-10-16 — `abl_perp` alone does NOT open the floor: rank-2 is required, not optional (user-run)
 
 Code: `ec1b5c3`. Probe (run `20261016-121314`): `abl_perp` as the *sole*
