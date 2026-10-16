@@ -97,12 +97,16 @@ def vector_identity(steer_path):
     return ident
 
 
-def intervention_identity(*, steer, residual, disable_env=False):
+def intervention_identity(*, steer, residual, disable_env=False,
+                          steer2=None, residual2=0.0):
     """The effective edit: site, revision, scale, vector hash, disabled state.
     Site/revision mirror ds4.c (DS41_STEERING_SITE / _REVISION); a scale of 0 or a
-    set DS4_METAL_DISABLE_V41_RESIDUAL_STEERING means no edit is applied."""
+    set DS4_METAL_DISABLE_V41_RESIDUAL_STEERING means no edit is applied. A rank-2
+    second direction (steer2/residual2) is recorded so a different second direction
+    yields a different identity (no false result reuse)."""
     active = bool(steer) and float(residual or 0) != 0.0 and not disable_env
-    return {
+    active2 = bool(steer2) and float(residual2 or 0) != 0.0 and not disable_env
+    iv = {
         "site": "v41_attn_input_weighted_fold_post_engram",
         "revision": 2,
         "flag": "--dir-steering-residual",
@@ -111,6 +115,11 @@ def intervention_identity(*, steer, residual, disable_env=False):
         "active": active,
         "vector": vector_identity(steer),
     }
+    if steer2 is not None:
+        iv["rank2"] = {"flag": "--dir-steering-residual-2",
+                       "scale": float(residual2 or 0), "active": active2,
+                       "vector": vector_identity(steer2)}
+    return iv
 
 
 def source_identity(repo=common.REPO):

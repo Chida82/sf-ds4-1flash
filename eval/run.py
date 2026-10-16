@@ -341,7 +341,9 @@ def run_harmful_axis(args, gen_fn=None, judge_exec=None):
     run_id = time.strftime("%Y%m%d-%H%M%S") + "-harmful-axis-a"
     out_dir = Path(args.out) / run_id
     out_dir.mkdir(parents=True, exist_ok=True)
-    iv = manifest.intervention_identity(steer=args.steer, residual=args.residual or 0.0)
+    iv = manifest.intervention_identity(steer=args.steer, residual=args.residual or 0.0,
+                                        steer2=getattr(args, "steer2", None),
+                                        residual2=getattr(args, "residual2", 0.0) or 0.0)
 
     decay = {"decay_tokens": getattr(args, "decay_tokens", None),
              "decay_final": getattr(args, "decay_final", None),
@@ -352,7 +354,9 @@ def run_harmful_axis(args, gen_fn=None, judge_exec=None):
     base_recs, base_st = _completions(gen_fn, prompts, steer=None, residual=0.0,
                                       **gen_common)
     cand_recs, cand_st = _completions(gen_fn, prompts, steer=args.steer,
-                                      residual=args.residual, **decay, **gen_common)
+                                      residual=args.residual, **decay, **gen_common,
+                                      steer2=getattr(args, "steer2", None),
+                                      residual2=getattr(args, "residual2", 0.0) or 0.0)
     controls, control_ev = run_controls(gen_fn, prompts[:3], args.steer, out_dir)
 
     base_metrics, base_ev = _axis_a_metrics("base", prompts, base_recs, judge_exec)
@@ -479,6 +483,10 @@ def main(argv=None):
     ap.add_argument("--steer")
     ap.add_argument("--residual", type=float,
                     help="scale at the V4.1 residual site; required and nonzero with --steer")
+    ap.add_argument("--steer2",
+                    help="rank-2: second direction file (orthogonal to --steer, e.g. fuse_directions.py 'ortho')")
+    ap.add_argument("--residual2", type=float, default=0.0,
+                    help="rank-2: constant scale for the second direction; 0 = off")
     ap.add_argument("--decay-tokens", type=int, dest="decay_tokens",
                     help="403: answer-phase decay window; omit for a constant scale")
     ap.add_argument("--think-decay-tokens", type=int, dest="think_decay_tokens",
@@ -529,6 +537,11 @@ def main(argv=None):
 
     if args.steer is not None and not args.residual:
         ap.error("--steer needs a nonzero --residual (a zero scale is the no-op control)")
+    if getattr(args, "steer2", None) is not None:
+        if not getattr(args, "residual2", 0.0):
+            ap.error("--steer2 needs a nonzero --residual2 (rank-2 second direction scale)")
+        if args.steer is None:
+            ap.error("--steer2 is a second direction; it requires --steer for the first")
     if args.suite == "harmful-axis-a" and (args.steer is None or not args.residual):
         ap.error("harmful-axis-a needs --steer VECTOR and a nonzero --residual "
                  "(it measures base vs steered on the harmful union)")

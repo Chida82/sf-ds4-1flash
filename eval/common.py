@@ -80,7 +80,8 @@ def load_hf_dataset(repo_id, *, config=None, split="train"):
 def build_cli(prompt, *, steer=None, residual=0.0, think=True,
               max_tokens=None, logprobs=None, top_k=None, system=None, extra=None,
               logits=None, decay_tokens=None, decay_final=None,
-              think_decay_tokens=None, cycle_peak=None):
+              think_decay_tokens=None, cycle_peak=None,
+              steer2=None, residual2=0.0):
     """argv for one greedy generation.
 
     base arm:    steer=None  -> no steering block at all.
@@ -120,6 +121,10 @@ def build_cli(prompt, *, steer=None, residual=0.0, think=True,
         # with rises climbing to this peak. Omitted -> one-shot decay.
         if cycle_peak is not None:
             argv += ["--dir-steering-residual-cycle-peak", _num(cycle_peak)]
+        # sf: rank-2 second orthogonal direction (constant scale). Only with a first.
+        if steer2 is not None:
+            argv += ["--dir-steering-file-2", str(steer2),
+                     "--dir-steering-residual-2", _num(residual2)]
     if extra:
         argv += list(extra)
     argv += ["-p", prompt]
@@ -286,6 +291,13 @@ def _selfcheck():
     # the V4-graph sites are never named: the CLI would default ffn to 1
     assert "--dir-steering-ffn" not in steered and "--dir-steering-attn" not in steered
     assert arms_differ_only_by_steering(base, steered), "arms diverge beyond steering"
+    # rank-2: the second direction rides inside the steering block; base vs rank-2
+    # still differ only by steering, and no block when steer2 is absent
+    r2 = build_cli("hi", steer="/tmp/v.f32", residual=4.0, steer2="/tmp/w.f32", residual2=3.0)
+    assert steering_block(r2)[-4:] == ["--dir-steering-file-2", "/tmp/w.f32",
+                                       "--dir-steering-residual-2", "3"], steering_block(r2)
+    assert arms_differ_only_by_steering(base, r2), "rank-2 arm diverges beyond steering"
+    assert "--dir-steering-file-2" not in steered
     # scale-0 control: the file is named, the residual scale is 0, no FFN default
     z = build_cli("hi", steer="/tmp/v.f32", residual=0.0)
     assert steering_block(z)[-2:] == ["--dir-steering-residual", "0"]
