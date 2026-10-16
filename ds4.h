@@ -144,6 +144,8 @@ typedef struct {
     uint32_t directional_steering_think_residual_decay_tokens; /* sf: 403 thinking-phase decay window; 0 = use the answer window */
     float directional_steering_residual_cycle_peak; /* sf: 403c cyclic schedule peak (>0 oscillates down/hold-min/up over 3 windows, rising to this; first descent from the start scale); 0 = one-shot decay */
     bool allow_v41_steering;    /* sf: opt into V4.1 steering, lifting its startup refusal */
+    const char *directional_steering_file2;  /* sf: rank-2 second direction file; should be orthogonal to the first (e.g. fuse_directions.py 'ortho') for an exact 2D removal */
+    float directional_steering_residual2;    /* sf: rank-2 second direction constant scale at the residual site (0 = off, no schedule) */
     int power_percent;
     uint32_t ssd_streaming_cache_experts;
     uint64_t ssd_streaming_cache_bytes;

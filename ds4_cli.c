@@ -1998,6 +1998,9 @@ static cli_config parse_options(int argc, char **argv) {
             }
         } else if (!strcmp(arg, "--dir-steering-file")) {
             c.engine.directional_steering_file = need_arg(&i, argc, argv, arg);
+        } else if (!strcmp(arg, "--dir-steering-file-2")) {
+            /* sf: rank-2 second direction file (orthogonal to the first) */
+            c.engine.directional_steering_file2 = need_arg(&i, argc, argv, arg);
         } else if (!strcmp(arg, "--allow-v41-steering")) {
             c.engine.allow_v41_steering = true;
         } else if (!strcmp(arg, "--expert-profile")) {
@@ -2012,6 +2015,10 @@ static cli_config parse_options(int argc, char **argv) {
             /* sf: 401 post-HC-fold residual site; setting it suppresses the ffn=1
              * default so a residual-hook vector is not also applied at ffn. */
             c.engine.directional_steering_residual = parse_float_range(need_arg(&i, argc, argv, arg), arg, -100.0f, 100.0f);
+            directional_steering_scale_set = true;
+        } else if (!strcmp(arg, "--dir-steering-residual-2")) {
+            /* sf: rank-2 second orthogonal direction, constant scale at the residual site */
+            c.engine.directional_steering_residual2 = parse_float_range(need_arg(&i, argc, argv, arg), arg, -100.0f, 100.0f);
             directional_steering_scale_set = true;
         } else if (!strcmp(arg, "--dir-steering-residual-decay-final")) {
             /* sf: 403 the residual (minimum) scale the decay holds at */
