@@ -213,7 +213,9 @@ static void print_steering(FILE *fp, const help_colors *c) {
     opt(fp, c, "--dir-steering-file FILE", "Load one f32 direction per layer: 40x5120 on V4.1, row 0 zero, other rows unit or zero.");
     opt(fp, c, "--dir-steering-ffn F", "Apply steering after FFN outputs (V4 hook; V4.1 refuses a nonzero value). Default with file: 1");
     opt(fp, c, "--dir-steering-residual F", "Steer the V4.1 attention-input fold (weighted HC fold, after Engram, before the norm): h -= F*d*dot(d,h). Default 0. 4 and 8 were screening candidates, not a validated default.");
-    opt(fp, c, "--dir-steering-attn F", "Apply steering after attention outputs (V4 hook; V4.1 refuses a nonzero value). Default: 0");
+    opt(fp, c, "--dir-steering-file-2 FILE", "V4.1 second direction (same format), folded after the first at the same site. Needs --dir-steering-residual-2.");
+    opt(fp, c, "--dir-steering-residual-2 F", "Scale of the second fold, constant over layers. Default 0 (second file unused). Engine open prints the median |cos| to the first direction: near 0 composes as an exact 2D removal, near 1 folds one axis twice.");
+    opt(fp, c, "--dir-steering-attn F","Apply steering after attention outputs (V4 hook; V4.1 refuses a nonzero value). Default: 0");
     opt(fp, c, "--allow-v41-steering", "Lift the V4.1 startup refusal for --dir-steering-file (single-box Metal); admits the file, --dir-steering-residual applies the edit.");
     fputc('\n', fp);
 }

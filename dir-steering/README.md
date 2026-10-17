@@ -148,6 +148,55 @@ The examples below use the FFN site. On V4.1 they refuse to start: without the
 opt-in with upstream's line, with it because the FFN site is a V4 hook. They
 document the tooling and the file format.
 
+### Second direction (`412`)
+
+`--dir-steering-file-2 FILE --dir-steering-residual-2 F` folds a second direction
+at the same site, right after the first, with a constant scale (the `403` decay
+schedule applies to the first direction only). Same file format and the same
+validation at engine open. A scale of 0, the default, leaves the second slot
+unloaded, whatever file is named.
+
+Order and angle decide what the pair does:
+
+- **Orthogonal pair** (per-layer cosine near 0, e.g. an `ortho` fusion): at
+  scale 1 each the two folds are an exact 2D removal, in either order.
+- **Non-orthogonal pair** (msuiche against the abliteration vector, median
+  |cos| 0.72): the second fold re-opens part of the first axis, so the order
+  changes the result, and the pair over-doses the shared axis. After the two
+  folds the second coordinate is zero and the first is not (the synthetic 0.72
+  test asserts both), so the second flag is the one removed completely.
+
+Engine open prints the median |cos| of the pair over the layers where both rows
+are nonzero (`median |cos| to the first direction 0.722 over 39 layers` for
+msuiche + abliteration; 0.0 for msuiche + its abliteration residual). The same
+per-layer cosines are written into the run identity (`rank2.cosine_to_first` in
+`eval/manifest.py`), and `eval/extract_floor_direction.py --ref LABEL:PATH`
+(repeatable) records the cosine of a freshly extracted direction against each
+reference in its sidecar.
+
+Off-path guarantee, checked by `make test-deepseek41-steering-rank2` (model
+backed, 3 engine opens): the single-direction run, the same run with a second
+file named at scale 0, and the same run with the second fold active on an
+all-zero direction give bitwise equal logits, Engram history and KV state. The
+model-less `make test` runs `test_deepseek41_graph --steering-rank2` (orthogonal
+pair nulls both coordinates, `|dot|` under 1e-4, in either order; the 0.72 pair
+is order dependent) and `python3 eval/manifest.py` (layer cosines).
+
+### Fold capture (`412`)
+
+`DS4_V41_DUMP_STEER_INPUT=PATH` appends the unsteered attention-input fold of
+each layer to `PATH`, for extracting a direction from the model's own
+activations (`eval/extract_floor_direction.py`). It is a `probe` variable: it
+forces the slow fold path, synchronizes the GPU and reads one row back per layer
+per token, so it is a diagnostic and **never set in a measured run**. Engine
+open prints exactly one `(probe)` line when it is set and nothing when it is not.
+
+Layout: raw f32, 5120 values per row, one row per token and layer in order
+(token 0 layers 0..39, token 1 layers 0..39, ...), so a file of `T` tokens has
+`T x 40` rows. The last 40 rows are the fold of the final position; with a
+request of `n=1` that is the decision position, which is what the extractor
+reads. Truncate the file between requests to keep one position per file.
+
 ## Verbosity Example
 
 The bundled example builds a style direction from 100 paired prompts. Each pair

@@ -97,6 +97,28 @@ def vector_identity(steer_path):
     return ident
 
 
+def layer_cosines(path_a, path_b, d=5120):
+    """Per-layer cosine between two f32 direction files (layers x d), None where
+    either row is zero (a mask), plus the median |cos| over the layers where both
+    exist: the same figure the engine prints at open for a rank-2 pair (412)."""
+    import array
+    a, b = array.array("f"), array.array("f")
+    a.frombytes(Path(path_a).read_bytes())
+    b.frombytes(Path(path_b).read_bytes())
+    if len(a) != len(b) or len(a) % d:
+        raise ValueError(f"{path_a} and {path_b} are not the same layers x {d} f32 matrix")
+    per = []
+    for off in range(0, len(a), d):
+        ra, rb = a[off:off + d], b[off:off + d]
+        na, nb = sum(x * x for x in ra) ** 0.5, sum(x * x for x in rb) ** 0.5
+        per.append(None if na == 0 or nb == 0 else sum(x * y for x, y in zip(ra, rb)) / (na * nb))
+    vals = sorted(abs(c) for c in per if c is not None)
+    n = len(vals)
+    med = None if n == 0 else vals[n // 2] if n % 2 else 0.5 * (vals[n // 2 - 1] + vals[n // 2])
+    return {"per_layer": [None if c is None else round(c, 4) for c in per],
+            "median_abs": None if med is None else round(med, 4), "layers": n}
+
+
 def intervention_identity(*, steer, residual, disable_env=False,
                           steer2=None, residual2=0.0):
     """The effective edit: site, revision, scale, vector hash, disabled state.
@@ -119,6 +141,8 @@ def intervention_identity(*, steer, residual, disable_env=False,
         iv["rank2"] = {"flag": "--dir-steering-residual-2",
                        "scale": float(residual2 or 0), "active": active2,
                        "vector": vector_identity(steer2)}
+        if steer and Path(steer).exists() and Path(steer2).exists():
+            iv["rank2"]["cosine_to_first"] = layer_cosines(steer, steer2)
     return iv
 
 
@@ -267,6 +291,27 @@ def _selfcheck():
     assert ivd["active"] is False
     iv = intervention_identity(steer=None, residual=4)
     assert iv["active"] is False and iv["vector"] is None
+
+    # layer cosines: an orthogonal pair reads 0, a 0.6/0.8 mix reads 0.6, a zero row is skipped
+    with tempfile.TemporaryDirectory() as d:
+        import array
+        D = 5120
+        e1 = [1.0] + [0.0] * (D - 1)
+        e2 = [0.0, 1.0] + [0.0] * (D - 2)
+        mix = [0.6, 0.8] + [0.0] * (D - 2)
+        zero = [0.0] * D
+        def f32(rows):
+            return array.array("f", [x for r in rows for x in r]).tobytes()
+        pa, pb, pc = (Path(d) / n for n in ("a.f32", "b.f32", "c.f32"))
+        pa.write_bytes(f32([zero, e1, e1, e1]))
+        pb.write_bytes(f32([zero, e2, mix, zero]))
+        pc.write_bytes(f32([zero, e2, e2, e2]))
+        lc = layer_cosines(pa, pb)
+        assert lc["per_layer"] == [None, 0.0, 0.6, None] and lc["layers"] == 2, lc
+        assert lc["median_abs"] == 0.3, lc
+        assert layer_cosines(pa, pc)["median_abs"] == 0.0
+        riv = intervention_identity(steer=str(pa), residual=5, steer2=str(pb), residual2=6)
+        assert riv["rank2"]["cosine_to_first"]["median_abs"] == 0.3
 
     # reuse: a changed vector hash is a different experiment
     def expid(sha):

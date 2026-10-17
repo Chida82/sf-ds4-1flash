@@ -27,6 +27,7 @@ from pathlib import Path
 import common
 import compose
 import datasets_harmful as dh
+import manifest
 import scale_sweep as ss
 
 PORT = 8014
@@ -121,15 +122,30 @@ def extract(args):
             for k in range(D):
                 rows_out[off + k] = diff[k] / nrm
     out.write_bytes(rows_out.tobytes())
-    _write_sidecar(out, A, B, raw_norms)
+    _write_sidecar(out, A, B, raw_norms, args.ref)
     print(f"wrote {out} ({out.stat().st_size} B); per-layer raw |mean_A-mean_B| "
           f"median {sorted(raw_norms)[nL // 2]:.3f}")
     return 0
 
 
-def _write_sidecar(out, A, B, raw_norms):
+def _ref_cosines(out, refs):
+    """Per-layer cosine of the produced direction against each `--ref LABEL:PATH`."""
+    res = {}
+    for spec in refs or []:
+        label, _, path = spec.partition(":")
+        if not label or not path:
+            raise SystemExit(f"--ref expects LABEL:PATH, got {spec!r}")
+        res[label] = manifest.layer_cosines(out, path)
+    return res
+
+
+def _write_sidecar(out, A, B, raw_norms, refs=None):
     h = hashlib.sha256(out.read_bytes()).hexdigest()
+    cos = _ref_cosines(out, refs)
+    for label, c in cos.items():
+        print(f"cosine to {label}: median |cos| {c['median_abs']} over {c['layers']} layers")
     (out.with_suffix(".json")).write_text(json.dumps({
+        "cosine_to_refs": cos,
         "method": "activation diff-of-means (resist A - open B) at the V4.1 fold, base",
         "site": "v41_attn_input_weighted_fold_post_engram",
         "class_a_resist_idx": A, "class_b_open_idx": B,
@@ -154,6 +170,12 @@ def _self_check():
         rows = read_last_decision(p)
         assert len(rows) == nL
         assert rows[0][0] == 200.0 and rows[nL - 1][0] == 200.0 + (nL - 1), rows[0][0]
+        # --ref: a direction against itself reads |cos| 1 on its nonzero layers, a zero row is skipped
+        rows = array.array("f", [0.0] * D + [1.0] + [0.0] * (D - 1) + [1.0] + [0.0] * (D - 1))
+        out = Path(d) / "dir.f32"
+        out.write_bytes(rows.tobytes())
+        c = _ref_cosines(out, [f"self:{out}"])["self"]
+        assert c["per_layer"] == [None, 1.0, 1.0] and c["median_abs"] == 1.0, c
     print("extract_floor_direction.py self-check: OK")
     return 0
 
@@ -164,6 +186,8 @@ def main(argv=None):
     ap.add_argument("--out", default="dir-steering/out/v41-floor-resist.f32")
     ap.add_argument("--b-count", type=int, default=40, help="even-sampled class-B prompts")
     ap.add_argument("--dump", default=None, help="activation dump scratch file")
+    ap.add_argument("--ref", action="append", default=[], metavar="LABEL:PATH",
+                    help="reference direction file; its per-layer cosine to the result goes in the sidecar (repeatable)")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--self-check", action="store_true")
     args = ap.parse_args(argv)

@@ -48,6 +48,7 @@ help:
 	@echo "  make test-deepseek41-decode-switch SWITCH=VAR  Decode bitwise with and without a switch"
 	@echo "  make test-deepseek41-steering-admission  Steering opt-in and state controls, CLI/server gate cases"
 	@echo "  make test-deepseek41-steering-routes  Steering enabled on every prefill route, exact against the plain route"
+	@echo "  make test-deepseek41-steering-rank2  Second steering direction off path: scale 0 and a masked direction are exact"
 	@echo "  make test-engram         Run the Engram store tests"
 	@echo "  make clean        Remove build outputs"
 
@@ -193,6 +194,13 @@ test-deepseek41-steering-admission: tests/test_deepseek41_graph $(BIN) $(BIN)-se
 .PHONY: test-deepseek41-steering-routes
 test-deepseek41-steering-routes: tests/test_deepseek41_graph
 	./tests/test_deepseek41_graph deepseek-v4.1-flash.gguf --steering-routes speed-bench/promessi_sposi.txt
+
+# V4.1 steering rank-2 off path (OpenSpec 412): a second direction file at
+# scale 0 leaves logits, Engram history and KV state bitwise the
+# single-direction run's; a second fold on a masked direction does too.
+.PHONY: test-deepseek41-steering-rank2
+test-deepseek41-steering-rank2: tests/test_deepseek41_graph
+	./tests/test_deepseek41_graph deepseek-v4.1-flash.gguf --steering-rank2-off speed-bench/promessi_sposi.txt
 
 tests/test_deepseek41_graph.o: tests/test_deepseek41_graph.c ds4.c ds4_gpu.h ds4_engram.h
 	$(CC) $(filter-out -ffast-math,$(CFLAGS)) -Wno-unused-function -I. -c -o $@ $<
@@ -433,6 +441,7 @@ test: env-check ds4_test $(BIN)-eval q4k-dot-test mxfp4-dot-test test-session-st
 	./tests/test_deepseek41_graph --prefill-expert-discard
 	./tests/test_deepseek41_graph --prefill-expert-stream
 	./tests/test_deepseek41_graph --steering-fold
+	./tests/test_deepseek41_graph --steering-rank2
 	./tests/test_deepseek41_graph --steering-file
 	python3 dir-steering/tools/controlvector_to_f32.py --self-check
 

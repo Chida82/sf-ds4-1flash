@@ -2743,6 +2743,105 @@ done:
     return rc;
 }
 
+/* sf: 412 two residual folds, model-less. Two per-layer orthogonal unit
+ * directions at scale 1 each null both coordinates, whichever fold comes first.
+ * A pair at |cos| 0.72 (msuiche against the abliteration vector) does not: the
+ * second fold re-opens part of the first axis, so the order changes the result.
+ * The open-time report of that |cos| is read back from the same matrices. */
+static int check_steering_rank2(void) {
+    enum { ROWS = 4 };
+    const uint32_t width = DS4_N_EMBD, layers = directional_steering_layer_count(), il = 3;
+    const uint64_t count = (uint64_t)ROWS * width, mat = (uint64_t)layers * width;
+    const double target_cos = 0.72, sin_part = sqrt(1.0 - target_cos * target_cos);
+    float *d1 = xcalloc((size_t)mat, sizeof(float)), *d2 = xcalloc((size_t)mat, sizeof(float));
+    float *d3 = xcalloc((size_t)mat, sizeof(float)), *h = xmalloc((size_t)count * sizeof(float));
+    float *ab = xmalloc((size_t)count * sizeof(float)), *ba = xmalloc((size_t)count * sizeof(float));
+    ds4_gpu_tensor *t_h = NULL, *t_1 = NULL, *t_2 = NULL, *t_3 = NULL;
+    uint32_t seed = 4242;
+    double med = 0.0, order_gap = 0.0, worst = 0.0;
+    int rc = 1;
+    REQUIRE(layers == 40 && width == 5120);
+    for (uint32_t l = 1; l < layers; l++) {
+        float *r1 = d1 + (uint64_t)l * width, *r2 = d2 + (uint64_t)l * width, *r3 = d3 + (uint64_t)l * width;
+        double n1 = 0.0, n2 = 0.0, dot = 0.0;
+        for (uint32_t i = 0; i < width; i++) {
+            seed = seed * 1664525u + 1013904223u; r1[i] = (float)(seed >> 8) / 16777216.0f - 0.5f;
+            seed = seed * 1664525u + 1013904223u; r2[i] = (float)(seed >> 8) / 16777216.0f - 0.5f;
+            n1 += (double)r1[i] * r1[i];
+        }
+        for (uint32_t i = 0; i < width; i++) r1[i] = (float)(r1[i] / sqrt(n1));
+        for (uint32_t i = 0; i < width; i++) dot += (double)r1[i] * r2[i];
+        for (uint32_t i = 0; i < width; i++) { r2[i] = (float)(r2[i] - dot * r1[i]); n2 += (double)r2[i] * r2[i]; }
+        for (uint32_t i = 0; i < width; i++) r2[i] = (float)(r2[i] / sqrt(n2));
+        for (uint32_t i = 0; i < width; i++) r3[i] = (float)(target_cos * r1[i] + sin_part * r2[i]);
+    }
+    for (uint64_t i = 0; i < count; i++) {
+        seed = seed * 1664525u + 1013904223u;
+        h[i] = (float)(seed >> 8) / 16777216.0f * 2.0f - 1.0f;
+    }
+    REQUIRE(ds4_gpu_init());
+    REQUIRE((t_h = ds4_gpu_tensor_alloc(count * sizeof(float))) != NULL);
+    REQUIRE((t_1 = ds4_gpu_tensor_alloc(mat * sizeof(float))) != NULL &&
+            ds4_gpu_tensor_write(t_1, 0, d1, mat * sizeof(float)));
+    REQUIRE((t_2 = ds4_gpu_tensor_alloc(mat * sizeof(float))) != NULL &&
+            ds4_gpu_tensor_write(t_2, 0, d2, mat * sizeof(float)));
+    REQUIRE((t_3 = ds4_gpu_tensor_alloc(mat * sizeof(float))) != NULL &&
+            ds4_gpu_tensor_write(t_3, 0, d3, mat * sizeof(float)));
+    /* orthogonal pair: both orders null both coordinates and agree */
+    REQUIRE(ds4_gpu_tensor_write(t_h, 0, h, count * sizeof(float)));
+    REQUIRE(ds4_gpu_directional_steering_project_tensor(t_h, t_1, il, width, ROWS, 1.0f));
+    REQUIRE(ds4_gpu_directional_steering_project_tensor(t_h, t_2, il, width, ROWS, 1.0f));
+    REQUIRE(ds4_gpu_tensor_read(t_h, 0, ab, count * sizeof(float)));
+    REQUIRE(ds4_gpu_tensor_write(t_h, 0, h, count * sizeof(float)));
+    REQUIRE(ds4_gpu_directional_steering_project_tensor(t_h, t_2, il, width, ROWS, 1.0f));
+    REQUIRE(ds4_gpu_directional_steering_project_tensor(t_h, t_1, il, width, ROWS, 1.0f));
+    REQUIRE(ds4_gpu_tensor_read(t_h, 0, ba, count * sizeof(float)));
+    for (uint32_t r = 0; r < ROWS; r++) {
+        double a1 = 0.0, a2 = 0.0, b1 = 0.0, b2 = 0.0;
+        for (uint32_t i = 0; i < width; i++) {
+            const uint64_t k = (uint64_t)r * width + i;
+            a1 += (double)d1[(uint64_t)il * width + i] * ab[k]; a2 += (double)d2[(uint64_t)il * width + i] * ab[k];
+            b1 += (double)d1[(uint64_t)il * width + i] * ba[k]; b2 += (double)d2[(uint64_t)il * width + i] * ba[k];
+        }
+        worst = fmax(worst, fmax(fmax(fabs(a1), fabs(a2)), fmax(fabs(b1), fabs(b2))));
+    }
+    for (uint64_t i = 0; i < count; i++) order_gap = fmax(order_gap, fabs((double)ab[i] - ba[i]));
+    REQUIRE(worst < 1e-4);
+    REQUIRE(order_gap < 1e-4);
+    /* |cos| 0.72 pair: after d1 then d3 the d3 coordinate is gone but d1's is not, and the order matters */
+    REQUIRE(ds4_gpu_tensor_write(t_h, 0, h, count * sizeof(float)));
+    REQUIRE(ds4_gpu_directional_steering_project_tensor(t_h, t_1, il, width, ROWS, 1.0f));
+    REQUIRE(ds4_gpu_directional_steering_project_tensor(t_h, t_3, il, width, ROWS, 1.0f));
+    REQUIRE(ds4_gpu_tensor_read(t_h, 0, ab, count * sizeof(float)));
+    REQUIRE(ds4_gpu_tensor_write(t_h, 0, h, count * sizeof(float)));
+    REQUIRE(ds4_gpu_directional_steering_project_tensor(t_h, t_3, il, width, ROWS, 1.0f));
+    REQUIRE(ds4_gpu_directional_steering_project_tensor(t_h, t_1, il, width, ROWS, 1.0f));
+    REQUIRE(ds4_gpu_tensor_read(t_h, 0, ba, count * sizeof(float)));
+    double order_gap_skew = 0.0, left_on_d1 = 0.0;
+    for (uint64_t i = 0; i < count; i++) order_gap_skew = fmax(order_gap_skew, fabs((double)ab[i] - ba[i]));
+    for (uint32_t r = 0; r < ROWS; r++) {
+        double c1 = 0.0;
+        for (uint32_t i = 0; i < width; i++)
+            c1 += (double)d1[(uint64_t)il * width + i] * ab[(uint64_t)r * width + i];
+        left_on_d1 = fmax(left_on_d1, fabs(c1));
+    }
+    REQUIRE(order_gap_skew > 1e-2);
+    REQUIRE(left_on_d1 > 1e-2);
+    /* the open-time report: median |cos| per pair */
+    REQUIRE(ds41_steering_pair_median_abs_cos(d1, d2, layers, &med) == layers - 1 && med < 1e-6);
+    REQUIRE(ds41_steering_pair_median_abs_cos(d1, d3, layers, &med) == layers - 1 && fabs(med - target_cos) < 1e-5);
+    printf("V4.1 steering rank-2: orthogonal pair nulls both coordinates in either order "
+           "(max |dot| %.2e, order gap %.2e); the |cos| 0.72 pair is order dependent "
+           "(gap %.2e, d1 left %.2e); open-time median |cos| exact: PASS\n",
+           worst, order_gap, order_gap_skew, left_on_d1);
+    rc = 0;
+done:
+    ds4_gpu_tensor_free(t_h); ds4_gpu_tensor_free(t_1); ds4_gpu_tensor_free(t_2); ds4_gpu_tensor_free(t_3);
+    ds4_gpu_cleanup();
+    free(d1); free(d2); free(d3); free(h); free(ab); free(ba);
+    return rc;
+}
+
 /* sf: 401 the direction file is checked at engine open, before any session
  * exists to upload it: exact size, finite values, row 0 zero, every other row
  * unit within 1e-2 or all zero (a mask), finite scales. Model-less: the
@@ -2931,6 +3030,119 @@ done:
     return rc;
 }
 
+/* sf: 412 the second residual slot's off path. One engine with a unit
+ * direction at scale 4 is the control; the same run with a second file present
+ * at scale 0 must leave the second slot unloaded and every logit, the Engram
+ * history and the KV state bitwise the control's. A third run with the second
+ * slot active on an all-zero (masked) direction exercises the second fold on
+ * every layer and projects nothing, so it must be exact too. */
+typedef struct {
+    float *logits;
+    void *state[64];
+    uint64_t bytes[64];
+    uint32_t n;
+    unsigned char history[sizeof(((ds41_gpu_graph *)0)->history)];
+} steer_probe;
+
+static bool steer_probe_run(ds4_engine_options opt, const char *prompt, ds4_tokens *tokens,
+                            bool want_dirs2, steer_probe *o) {
+    enum { PREFIX = 511, STEPS = 17 };
+    ds4_engine *engine = NULL;
+    ds4_session *s = NULL;
+    char err[256] = "";
+    bool ok = false;
+    REQUIRE(ds4_engine_open(&engine, &opt) == 0);
+    REQUIRE((engine->directional_steering_dirs2 != NULL) == want_dirs2);
+    if (!tokens->len) {
+        ds4_tokenize_text(engine, prompt, tokens);
+        REQUIRE(tokens->len > PREFIX + STEPS);
+    }
+    REQUIRE(ds4_session_create(&s, engine, 4096) == 0);
+    REQUIRE((s->ds41_graph.residual_dirs2 != NULL) == want_dirs2);
+    REQUIRE((o->logits = malloc((size_t)STEPS * DS4_N_VOCAB * sizeof(float))) != NULL);
+    ds4_tokens input = {.v = tokens->v, .len = PREFIX, .cap = PREFIX};
+    REQUIRE(ds4_session_sync(s, &input, err, sizeof(err)) == 0);
+    for (int step = 0; step < STEPS; step++) {
+        if (step) REQUIRE(ds4_session_eval(s, tokens->v[PREFIX + step - 1], err, sizeof(err)) == 0);
+        memcpy(o->logits + (size_t)step * DS4_N_VOCAB, s->logits, DS4_N_VOCAB * sizeof(float));
+    }
+    {
+        ds41_state_span spans[64];
+        o->n = ds41_state_spans(&s->ds41_graph, s->ds41_graph.pos, spans);
+        memcpy(o->history, &s->ds41_graph.history, sizeof(o->history));
+        for (uint32_t j = 0; j < o->n; j++) {
+            o->bytes[j] = spans[j].bytes;
+            REQUIRE((o->state[j] = malloc((size_t)spans[j].bytes)) != NULL);
+            memcpy(o->state[j], ds4_gpu_tensor_contents(spans[j].tensor), (size_t)spans[j].bytes);
+        }
+    }
+    ok = true;
+done:
+    if (err[0]) fprintf(stderr, "%s\n", err);
+    if (ds4_gpu_commands_active()) ds4_gpu_end_commands();
+    ds4_session_free(s); ds4_engine_close(engine);
+    return ok;
+}
+
+static bool steer_probe_equal(const steer_probe *a, const steer_probe *b, const char *what) {
+    enum { STEPS = 17 };
+    if (a->n != b->n || memcmp(a->history, b->history, sizeof(a->history)) ||
+        memcmp(a->logits, b->logits, (size_t)STEPS * DS4_N_VOCAB * sizeof(float))) {
+        fprintf(stderr, "steering rank-2 off path: %s: logits or Engram history differ\n", what);
+        return false;
+    }
+    for (uint32_t j = 0; j < a->n; j++) {
+        if (a->bytes[j] != b->bytes[j] || memcmp(a->state[j], b->state[j], (size_t)a->bytes[j])) {
+            fprintf(stderr, "steering rank-2 off path: %s: state span %u differs\n", what, j);
+            return false;
+        }
+    }
+    return true;
+}
+
+static void steer_probe_free(steer_probe *p) {
+    free(p->logits);
+    for (uint32_t j = 0; j < 64; j++) free(p->state[j]);
+}
+
+static int check_steering_rank2_off(const char *path, const char *prompt_path) {
+    steer_probe control = {0}, off = {0}, nulled = {0};
+    char unit_path[] = "/tmp/ds41-steering-unit-XXXXXX";
+    char zero_path[] = "/tmp/ds41-steering-zero-XXXXXX";
+    bool unit_written = false, zero_written = false;
+    ds4_tokens tokens = {0};
+    char *prompt = NULL;
+    size_t prompt_bytes;
+    int rc = 1;
+    unsetenv("DS4_ALLOW_V41_STEERING");
+    unsetenv("DS4_METAL_DISABLE_V41_RESIDUAL_STEERING");
+    REQUIRE(read_text_file(prompt_path, &prompt, &prompt_bytes));
+    REQUIRE((unit_written = write_steering_dirs(unit_path, false, NULL)));
+    REQUIRE((zero_written = write_steering_dirs(zero_path, true, NULL)));
+    ds4_engine_options opt = {.model_path = path, .backend = DS4_BACKEND_METAL,
+        .context_size = 4096, .power_percent = 100, .ssd_streaming = true,
+        .ssd_streaming_cache_bytes = UINT64_C(16) << 30, .allow_v41_steering = true,
+        .directional_steering_file = unit_path, .directional_steering_residual = 4.0f};
+    REQUIRE(steer_probe_run(opt, prompt, &tokens, false, &control));
+    opt.directional_steering_file2 = zero_path;
+    REQUIRE(steer_probe_run(opt, prompt, &tokens, false, &off));
+    REQUIRE(steer_probe_equal(&control, &off, "second file at scale 0"));
+    opt.directional_steering_residual2 = 4.0f;
+    REQUIRE(steer_probe_run(opt, prompt, &tokens, true, &nulled));
+    REQUIRE(steer_probe_equal(&control, &nulled, "second fold on a masked direction"));
+    puts("V4.1 steering rank-2 off path: a second file at scale 0 stays unloaded, and a second fold on an "
+         "all-zero direction projects nothing; 17 exact logits and final KV/Engram states against the "
+         "single-direction run after a 511-token prefix: PASS");
+    rc = 0;
+done:
+    steer_probe_free(&control); steer_probe_free(&off); steer_probe_free(&nulled);
+    if (unit_written) unlink(unit_path);
+    if (zero_written) unlink(zero_path);
+    ds4_tokens_free(&tokens);
+    free(prompt);
+    return rc;
+}
+
 /* sf: 401 enabled coverage. With a unit direction at scale 4, every prefill
  * route must leave the same state as the plain batch route for the same
  * tokens: the short-wide sweeps of 3072 and 4096 tokens and the 8192-token
@@ -3107,10 +3319,14 @@ int main(int argc, char **argv) {
         return check_prefill_replica(argv[1], argv[3], argv[4]);
     if (argc == 4 && !strcmp(argv[2], "--steering-admission"))
         return check_steering_admission(argv[1], argv[3]);
+    if (argc == 4 && !strcmp(argv[2], "--steering-rank2-off"))
+        return check_steering_rank2_off(argv[1], argv[3]);
     if (argc == 4 && !strcmp(argv[2], "--steering-routes"))
         return check_steering_routes(argv[1], argv[3]);
     if (argc == 2 && !strcmp(argv[1], "--steering-fold"))
         return check_steering_fold();
+    if (argc == 2 && !strcmp(argv[1], "--steering-rank2"))
+        return check_steering_rank2();
     if (argc == 2 && !strcmp(argv[1], "--steering-file"))
         return check_steering_file();
     if (argc == 2 && !strcmp(argv[1], "--prefill-expert-stream"))

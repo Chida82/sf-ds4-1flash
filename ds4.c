@@ -26073,6 +26073,35 @@ static float *ds41_load_steering_matrix(const char *path, uint32_t n_layers) {
     return dirs;
 }
 
+/* sf: 412 how far apart two loaded directions are: the median |cos| over the
+ * layers where both rows are nonzero (rows are unit, so the dot is the cosine).
+ * Orthogonal pairs compose as an exact 2D removal; a pair near 1 folds the same
+ * axis twice. Returns the layer count used, 0 when no layer has both. */
+static uint32_t ds41_steering_pair_median_abs_cos(const float *a, const float *b,
+                                                  uint32_t n_layers, double *median) {
+    double cos_abs[64];
+    uint32_t n = 0;
+    for (uint32_t il = 0; il < n_layers && n < 64; il++) {
+        const float *ra = a + (uint64_t)il * DS4_N_EMBD, *rb = b + (uint64_t)il * DS4_N_EMBD;
+        double dot = 0.0, na = 0.0, nb = 0.0;
+        for (uint32_t i = 0; i < DS4_N_EMBD; i++) {
+            dot += (double)ra[i] * rb[i];
+            na += (double)ra[i] * ra[i];
+            nb += (double)rb[i] * rb[i];
+        }
+        if (na == 0.0 || nb == 0.0) continue;
+        cos_abs[n++] = fabs(dot) / sqrt(na * nb);
+    }
+    for (uint32_t i = 1; i < n; i++) {
+        const double v = cos_abs[i];
+        uint32_t j = i;
+        for (; j > 0 && cos_abs[j - 1] > v; j--) cos_abs[j] = cos_abs[j - 1];
+        cos_abs[j] = v;
+    }
+    *median = n == 0 ? 0.0 : (n & 1 ? cos_abs[n / 2] : 0.5 * (cos_abs[n / 2 - 1] + cos_abs[n / 2]));
+    return n;
+}
+
 static bool cpu_load_directional_steering(ds4_engine *e) {
     if (!e ||
         (e->directional_steering_attn_scale == 0.0f &&
@@ -26116,10 +26145,16 @@ static bool cpu_load_directional_steering(ds4_engine *e) {
         fprintf(stderr, "ds4: V4.1 residual steering: %s at %s rev %u, scale %g\n",
                 path, DS41_STEERING_SITE, DS41_STEERING_REVISION,
                 (double)e->directional_steering_residual_scale);
-        if (e->directional_steering_residual2_scale != 0.0f)
-            fprintf(stderr, "ds4: V4.1 residual steering rank-2: %s scale %g (orthogonal second fold)\n",
+        if (e->directional_steering_residual2_scale != 0.0f) {
+            double med = 0.0;
+            const uint32_t used = ds41_steering_pair_median_abs_cos(e->directional_steering_dirs,
+                                                                    e->directional_steering_dirs2,
+                                                                    n_layers, &med);
+            fprintf(stderr, "ds4: V4.1 residual steering rank-2: %s scale %g (orthogonal second fold), "
+                    "median |cos| to the first direction %.3f over %u layers\n",
                     e->directional_steering_file2,
-                    (double)e->directional_steering_residual2_scale);
+                    (double)e->directional_steering_residual2_scale, med, used);
+        }
         return true;
     }
     fprintf(stderr, "ds4: CPU directional steering enabled: %s attn=%g ffn=%g\n",
