@@ -494,6 +494,9 @@ eval-refusal-selfcheck:
 	python3 eval/probe_firsttoken.py
 	python3 eval/scale_sweep.py --self-check
 	python3 eval/run.py --self-check
+	python3 eval/aggregate_judged_labels.py --self-check
+	python3 eval/extract_floor_direction.py --self-check
+	python3 eval/compare_steering.py --self-check
 
 ds4.o ds4_cpu.o ds4_server.o ds4_server_cpu.o ds4_test.o \
 ds4_cpu_test_hooks.o tests/test_session_state.o \
