@@ -226,11 +226,14 @@ site needs the full set.
   entries plus the C indices not in B, manifest steering identity names the fused
   sha256 (`e17b41ce…`) and residual 7.0, server log shows the `V4.1 residual
   steering` open line.
-- [ ] 3.4 **User-run, optional.** Only if the msuiche-family overshoot variant of
+- [x] 3.4 **User-run, optional.** Only if the msuiche-family overshoot variant of
   6.6 is run and a cross-check of its base-capture `tau1` is wanted: the same
   with `--steer dir-steering/vectors/v41-msuiche.f32 --residual 5 --classes
   B,benign --port 8016 --out eval/out/capture/msuiche5`. Verify: 80 entries,
   identity names the msuiche sha256 and residual 5.0.
+  Closed (2026-10-18): **not run** (optional). The 6.6 overshoot variant was
+  rejected (repetition 0.98), and no `tau1` cross-check was needed since the arm
+  was abandoned.
 
 ## 4. Offline gates and native derivation (D2, D3)
 
@@ -381,7 +384,7 @@ site needs the full set.
   --residual2` reach the server argv (~345, ~358, ~486-544), with the same
   validation style (`--target` needs `--steer`). Verify: `python3 eval/run.py
   --self-check` passes and `--dry-run`-style argv shows the new flags.
-- [ ] 6.6 **User-run.** Rank-2 target (always), the principled dose window:
+- [x] 6.6 **User-run.** Rank-2 target (always), the principled dose window:
   `--steer dir-steering/vectors/v41-fused-msuiche-audreyt-denoise.f32 --residual 1
   --target <tau1(fused) from 4.4> --steer2 dir-steering/vectors/v41-dealignai-wo.f32
   --residual2 1 --target2 <tau2(dealignai) from 4.4>`, first as a server-path
@@ -484,7 +487,7 @@ site needs the full set.
   ungated sites keep their lines and gain a gated branch before them. The
   session-batched decode refuses the gate (positions of several sessions share
   one buffer there); single-session CLI and server runs never reach it.
-- [ ] 7.3 Tests. `check_steering_fold`: random gate rows and `tau` chosen so
+- [x] 7.3 Tests. `check_steering_fold`: random gate rows and `tau` chosen so
   about half the batch rows fire; Metal gated kernel vs the CPU gated reference
   within the existing tolerance on decode and batch shapes; REQUIRE that with
   `tau = 2` the result equals the slot-1-only fold exactly and with `tau = -2`
@@ -504,13 +507,17 @@ site needs the full set.
   process at 32 GiB): PASS, tau 2 bitwise slot 1 alone and tau -2 bitwise the
   second direction alone (17 logits, KV, Engram after a 511-token prefix). The
   decode-switch run with the trace env is queued last.
+  Closed (2026-10-18): all testable parts PASS before the revert. The queued
+  decode-switch-trace leg is moot — the gate arm was rejected and its code
+  (including `DS4_V41_STEERING_GATE_TRACE`) removed in 7.7, so there is no switch
+  left to test.
 - [x] 7.4 Docs. `dir-steering/README.md`: a "Gated rank-2" paragraph after the
   Rank-2 one (semantics, cosine units, zero gate row, the two identities, the
   trace env); flag table rows. `AGENTS.md` Identity row clause and the trace env
   in the `DS4_*` paragraph if one lists probes. Verify: `grep -n 'gate' dir-steering/README.md AGENTS.md ds4_env.def`.
 - [x] 7.5 Add `--gate FILE --gate-tau T` to `eval/run.py` like 6.5 (`--gate` needs
   `--steer` and `--steer2`). Verify: `python3 eval/run.py --self-check`.
-- [ ] 7.6 **User-run.** Gated arm, msuiche family: first the server-path screen
+- [x] 7.6 **User-run.** Gated arm, msuiche family: first the server-path screen
   (`tau` was calibrated there), `python3 eval/hybrid_phaseb.py --configs
   dir-steering/vectors/v41-msuiche.f32@5+dir-steering/vectors/v41-abliteration-attn.f32@6
   --extra "--dir-steering-gate-file dir-steering/out/v41-floor-resist.f32
@@ -525,6 +532,11 @@ site needs the full set.
   (`eval/score_kl.py`). Verify: measurements block with the server screen table,
   the CLI judge table (floor, hard-set count against 29/32) kept separate, benign
   task pass and KL against `msuiche@5`, the fired fractions, and the D5 verdict.
+  Closed (2026-10-18): **not run**. The gated-arm efficacy run was never executed
+  (10.9 later showed a fold-cosine router does not beat always-msuiche@5, 190 vs
+  171 of 200, which is the same question this arm asked), so the gate could not be
+  shown supported and was reverted via the inconclusive branch (7.7). The gate
+  flags no longer exist, so this run is moot.
 - [x] 7.7 Non-adoption. If the D5 rule ends rejected or inconclusive, revert
   7.1-7.5 (engine, kernel, wrapper, tests, env line, docs, run.py), keeping
   7.6's block. Verify: `grep -rn 'gate' ds4.c ds4.h ds4_cli.c ds4_server.c
@@ -631,17 +643,21 @@ site needs the full set.
   task's list and no single-box run reaches; and no new configuration in
   `check_steering_admission` (the persistence and scale-0 checks live here, in
   one engine).
-- [ ] 8.5 Docs and cost. `dir-steering/README.md`: a "Residual-write site" section
+- [x] 8.5 Docs and cost. `dir-steering/README.md`: a "Residual-write site" section
   (site name, revision, what is projected, why the abliteration vector belongs
   here, the persistence guards), flag table rows; `AGENTS.md` Identity row
   clause; `docs/steering-measurements.md` cost block measured as the README
   "Cost" paragraph did (ABAB x4, 2K prompt, 256 tokens, fixed
   `--ssd-streaming-cache-experts 82GB`, one CLI process per run): off, write only,
   write + fold. Verify: the block has the three medians and the percent.
+  Closed (2026-10-18): **not measured**. The write site was rejected under D8 for
+  every candidate (8.7) and removed in 8.8, so there is no feature to document and
+  no cost to measure. The docs section and flag rows were never added; nothing to
+  revert.
 - [x] 8.6 Add `--write-file F [--write-file-2 F2] [--write-moe-file FM] --write W` to
   `eval/run.py` like 6.5 (`--write-file-2` needs `--write-file`; `--write` needs at
   least one of `--write-file` and `--write-moe-file`). Verify: `python3 eval/run.py --self-check`.
-- [ ] 8.7 **User-run.** Write-site candidates (D8), CLI judge path (no calibrated
+- [x] 8.7 **User-run.** Write-site candidates (D8), CLI judge path (no calibrated
   parameter), in this order and stopping early as D8 says:
   (0) `--write-file dir-steering/vectors/v41-dealignai-wo.f32 --write-moe-file
   dir-steering/vectors/v41-dealignai-sharedw2.f32 --write 1 --steer
@@ -690,6 +706,10 @@ needs >= 2 of 3, so (2) is rejected. write0 moved a target, which opens the
 remaining combinations: (3) both attention directions as two sequential
 projections, write(abl, `wo_b`→attention, `shared.w2`→MoE)@1 + `fused@7`, on
 the eight indices plus idx 24 (write0's one break), queued after the gate arm.
+  Closed (2026-10-18): candidates (0), (1), (2) ran and all failed D8 (no fixed
+  write clears the mark without a break; floor 1/3). The queued (3) run is moot —
+  the write site was reverted in 8.8, so the `--write-*` flags no longer exist.
+  The D8 verdict (rejected for every candidate) stands on (0)-(2).
 - [x] 8.8 Non-adoption. If the D8 rule ends rejected or inconclusive for every
   candidate, revert 8.2-8.6 keeping 8.7's and 8.5's blocks. Verify: `grep -rn 'residual_write\|dir-steering-write\|write_dirs' --include='*.c' --include='*.h' --include='*.m' --include='*.md' --include='*.py' --include='Makefile' . | grep -v docs/steering-measurements.md | grep -v openspec/` prints nothing; `make test` green.
   Done (2026-10-17): D8 rejected for every candidate (8.7 — no fixed write
@@ -738,14 +758,25 @@ the eight indices plus idx 24 (write0's one break), queued after the gate arm.
   Done (2026-10-17): `make test` green, 51 named lines, including the five tool
   self-checks and `V4.1 steering fold`/`steering file validation`; `make env-check`
   506 classified; `grep -c '^test:' Makefile` = 1.
-- [ ] 9.4 Model-backed gate (**user-run**): `make test-deepseek41-steering-admission`,
+- [x] 9.4 Model-backed gate (**user-run**): `make test-deepseek41-steering-admission`,
   `make test-deepseek41-steering-routes`, and for each surviving new `DS4_*` name
   `make test-deepseek41-decode-switch SWITCH=<name>`; the write-routes target if
   arm 5 survived. Verify: PASS lines recorded in 9.1.
-- [ ] 9.5 Parity of the unsteered path from the StarForge checkout:
+  Done (2026-10-18): `test-deepseek41-steering-admission` PASS (state controls 4/4
+  exact, 65 logits + KV/Engram after 511/2047 prefixes, opt-in/refusal gate; the
+  Python CLI/server admission leg PASS). `test-deepseek41-steering-routes` PASS
+  (short-wide 3072/4096, wide 8192, deferred-decoder 24577 — all exact against the
+  plain route, append + decode). No surviving new `DS4_*` name (target/gate/write
+  envs all reverted), so no decode-switch leg; arm 5 rejected, so no write-routes.
+- [x] 9.5 Parity of the unsteered path from the StarForge checkout:
   `SF_PARITY_FLAGS=--ssd-streaming tools/parity-check.sh sf-ds4-1flash`, ten
   token-identical prompts, no speed trip. Verify: output directory and upstream
   SHA recorded in 9.1; hand the tree to `420`.
+  Done (2026-10-18): **PARITY OK**, 10/10 token-identical against upstream
+  `fc80bd6`, output `tools/parity/out/sf-ds4-1flash-20261018-084655`. Run against
+  this exact tree via `SF_CHILD_DIR` as part of 501 task 4.4 (the 501 fix touches
+  only the server JSON escaper, not inference, so the unsteered token path is the
+  409 tree's). Tree handed to `420`.
 - [x] 9.6 No-flag audit: `./sf-ds4-1flash --help | grep dir-steering` lists only
   the flags of supported arms plus the pre-existing ones (`--dir-steering-write-file-2`
   only with a supported two-write candidate); `ds4_env.def` has no
@@ -813,13 +844,20 @@ repeated here so nothing depends on them.
   `msuiche@5` arm.
   Done (2026-10-18, run `20261018-003731`): benign pass 6/6, refusal keyword 0/6.
   No regression under msuiche@5.
-- [ ] 10.12 Follow-ups from the calibration (not this change): a per-layer target
+- [x] 10.12 Follow-ups from the calibration (not this change): a per-layer target
   (one scalar is the wrong shape for fused and dealignai), and the target range
   ([-1, 1] is a cosine bound, but the target is a coordinate in units of |h|; the
   F=7 calibration gives -1.54).
-- [ ] 10.13 Gate recalibration if 7.6 is ambiguous: G2's tau was measured on the
+  Closed (2026-10-18): explicitly **out of scope for this change** — recorded as
+  a follow-up only. A per-layer target and the coordinate-vs-cosine range fix
+  belong to a future change with its own pre-registration, if the target arm is
+  ever revisited (it was rejected here).
+- [x] 10.13 Gate recalibration if 7.6 is ambiguous: G2's tau was measured on the
   unsteered fold, while in the gated run layers 1-9 already carry msuiche@5; the
   optional `msuiche@5` capture (3.4) gives the tau the gate actually sees.
+  Closed (2026-10-18): **condition not met**. 7.6 was not ambiguous — it was not
+  run and the gate arm was rejected/reverted (7.7), so there is no gate to
+  recalibrate.
 
 - [x] 10.14 Router labels at full length: the 15 prompts msuiche@5 leaves (class A:
   6, 372, 426, 468, 544, 612, 676, 943, 955, 1006, 1081, 1123, 1126, 1141, 1150) at
