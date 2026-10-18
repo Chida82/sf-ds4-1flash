@@ -119,6 +119,26 @@ def run_arm(gen_fn, prompt, *, steer, residual, think=False, logprobs=None,
     return rec, "ok"
 
 
+def _arm_record(prompt, rec, status):
+    """Evidence row of one arm; a failed record keeps the tail of its stderr
+    (the exception text for `error`), so the cause survives the run."""
+    row = {"prompt": prompt, "completion": rec["completion"], "status": status}
+    if status != "ok":
+        row["returncode"] = rec.get("returncode")
+        row["stderr_tail"] = (rec.get("raw_stderr") or "")[-800:]
+    return row
+
+
+def _rank2_kwargs(args):
+    """Optional steered-arm knobs shared by every suite: the rank-2 second slot.
+    Only set values are passed, so a scale-only run builds the same argv and
+    identity as before."""
+    kw = {}
+    if getattr(args, "steer2", None) is not None:
+        kw.update(steer2=args.steer2, residual2=args.residual2 or 0.0)
+    return kw
+
+
 def _completions(gen_fn, prompts, *, steer, residual, **gen_kwargs):
     recs, statuses = [], []
     for p in prompts:
@@ -188,7 +208,8 @@ def run_profile(args, gen_fn=None):
     prompts = [t["prompt"] for t in tasks]
 
     steered = args.steer is not None
-    iv = manifest.intervention_identity(steer=args.steer, residual=args.residual or 0.0)
+    iv = manifest.intervention_identity(steer=args.steer, residual=args.residual or 0.0,
+                                        **_rank2_kwargs(args))
 
     # arms
     base_recs, base_st = _completions(gen_fn, prompts, steer=None, residual=0.0)
@@ -200,7 +221,7 @@ def run_profile(args, gen_fn=None):
     controls, control_ev = {}, {}
     if steered:
         cand_recs, cand_st = _completions(gen_fn, prompts, steer=args.steer,
-                                          residual=args.residual)
+                                          residual=args.residual, **_rank2_kwargs(args))
         arms_evidence["steered"] = [{"prompt": p, "completion": r["completion"],
                                      "status": s, "returncode": r.get("returncode")}
                                     for p, r, s in zip(prompts, cand_recs, cand_st)]
@@ -342,8 +363,7 @@ def run_harmful_axis(args, gen_fn=None, judge_exec=None):
     out_dir = Path(args.out) / run_id
     out_dir.mkdir(parents=True, exist_ok=True)
     iv = manifest.intervention_identity(steer=args.steer, residual=args.residual or 0.0,
-                                        steer2=getattr(args, "steer2", None),
-                                        residual2=getattr(args, "residual2", 0.0) or 0.0)
+                                        **_rank2_kwargs(args))
 
     decay = {"decay_tokens": getattr(args, "decay_tokens", None),
              "decay_final": getattr(args, "decay_final", None),
@@ -355,8 +375,7 @@ def run_harmful_axis(args, gen_fn=None, judge_exec=None):
                                       **gen_common)
     cand_recs, cand_st = _completions(gen_fn, prompts, steer=args.steer,
                                       residual=args.residual, **decay, **gen_common,
-                                      steer2=getattr(args, "steer2", None),
-                                      residual2=getattr(args, "residual2", 0.0) or 0.0)
+                                      **_rank2_kwargs(args))
     controls, control_ev = run_controls(gen_fn, prompts[:3], args.steer, out_dir)
 
     base_metrics, base_ev = _axis_a_metrics("base", prompts, base_recs, judge_exec)
@@ -399,10 +418,8 @@ def run_harmful_axis(args, gen_fn=None, judge_exec=None):
                      "ctx": common.DECODE["ctx"], "think": False,
                      "steered_schedule": decay},
         "arms": {
-            "base": [{"prompt": p, "completion": r["completion"], "status": s}
-                     for p, r, s in zip(prompts, base_recs, base_st)],
-            "steered": [{"prompt": p, "completion": r["completion"], "status": s}
-                        for p, r, s in zip(prompts, cand_recs, cand_st)],
+            "base": [_arm_record(p, r, s) for p, r, s in zip(prompts, base_recs, base_st)],
+            "steered": [_arm_record(p, r, s) for p, r, s in zip(prompts, cand_recs, cand_st)],
         },
         "judge_evidence": {"base": base_ev, "steered": steer_ev},
         "controls": controls, "control_evidence": control_ev, "counts": counts,

@@ -107,7 +107,9 @@ def build_cli(prompt, *, steer=None, residual=0.0, think=True,
         if top_k is not None:
             argv += ["--logprobs-top-k", str(int(top_k))]
     if steer is not None:
-        argv += ["--allow-v41-steering", "--dir-steering-file", str(steer),
+        argv += ["--allow-v41-steering"]
+    if steer is not None:
+        argv += ["--dir-steering-file", str(steer),
                  "--dir-steering-residual", _num(residual)]
         # sf: 403 decay schedule (experimental). Omitted -> constant scale.
         if decay_tokens is not None:
@@ -263,13 +265,47 @@ def compare_arms(base_argv, steered_argv):
     return True, "arms differ only by the residual steering block"
 
 
+def invalid_utf8_report(raw):
+    """(count, first_offset, hex_window) of maximal invalid UTF-8 subparts in
+    `raw` bytes; count 0 means raw is valid UTF-8. Follows the same maximal
+    subpart rule as the server fix (501), so a response the server left invalid
+    is detected here with the offset to chase in a --trace."""
+    n, first, i = 0, None, 0
+    while i < len(raw):
+        try:
+            raw[i:].decode("utf-8")
+            break
+        except UnicodeDecodeError as e:
+            start, end = i + e.start, i + e.end
+            if first is None:
+                first = start
+            n += 1
+            i = end if end > start else start + 1
+    window = raw[first:first + 8].hex() if first is not None else ""
+    return n, first, window
+
+
+def _warn_invalid_utf8(raw, where):
+    """Print one stderr line if `raw` is not valid UTF-8, then return it decoded
+    with U+FFFD. The byte offset and hex window point at a --trace (501)."""
+    n, first, window = invalid_utf8_report(raw)
+    if n:
+        print(f"warning: invalid UTF-8 in {where}: {n} subparts, "
+              f"first at byte {first}, window {window}", file=sys.stderr)
+    return raw.decode("utf-8", errors="replace")
+
+
 def execute(argv, *, timeout=1800, caffeinate=True):
     """Run one arm. caffeinate keeps the Mac awake for long sweeps; the child
     serializes on /tmp/sf-ds4-1flash.lock so arms never overlap."""
     cmd = (["caffeinate", "-i"] if caffeinate else []) + argv
-    p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    # Capture bytes so a non-UTF-8 stdout is detected, not silently replaced:
+    # a heavily steered model can emit such a byte (409, 4b idx 6). The warning
+    # names the offset; U+FFFD still marks it so the completion stays evidence.
+    p = subprocess.run(cmd, capture_output=True, timeout=timeout)
     return {"argv": argv, "returncode": p.returncode,
-            "stdout": p.stdout, "stderr": p.stderr}
+            "stdout": _warn_invalid_utf8(p.stdout, "CLI stdout"),
+            "stderr": p.stderr.decode("utf-8", errors="replace")}
 
 
 def save_json(path, obj):
@@ -352,6 +388,12 @@ def _selfcheck():
     # --dump-logits is an invariant dump target between arms
     lg = parse_arm(build_cli("q", logits="/tmp/first.json"))
     assert lg["logprobs"] == "/tmp/first.json"
+    # invalid-UTF-8 detector (501): count, first offset, window
+    assert invalid_utf8_report(b"hello") == (0, None, "")
+    assert invalid_utf8_report(b"a\xe2(b") == (1, 1, "e22862")
+    assert invalid_utf8_report(b"ok\xe2\x80") == (1, 2, "e280")
+    assert invalid_utf8_report(b"\x80\x80") == (2, 0, "8080")
+    assert invalid_utf8_report("caffè".encode()) == (0, None, "")
     print("common.py self-check: OK")
 
 

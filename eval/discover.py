@@ -20,6 +20,7 @@ judge settle that. The judge stays user-run, as in the axis-A flow.
 Self-check:  python3 eval/discover.py --self-check
 """
 import argparse
+import hashlib
 import json
 import subprocess
 import sys
@@ -67,11 +68,17 @@ def stratified(records, per_source):
     return sorted(picked)
 
 
-def run_config(idxs, records, steer, residual, max_tokens):
+def extra_tag(extra):
+    """Short stable hash of extra server flags, so their logs and B_ files never collide."""
+    return "" if not extra else "~" + hashlib.sha256(" ".join(map(str, extra)).encode()).hexdigest()[:6]
+
+
+def run_config(idxs, records, steer, residual, max_tokens, extra=()):
     """One engine open from the repo root (so metal/ and the model resolve by
-    relative path), generate for each index, stop it. Returns {idx: completion}."""
-    tag = "base" if steer is None else f"{Path(steer).stem}@{residual:g}"
-    argv = ss._server_args(steer, residual, PORT, ctx=32768)
+    relative path), generate for each index, stop it. Returns {idx: completion}.
+    `extra` is appended verbatim to the server argv after the steering flags."""
+    tag = ("base" if steer is None else f"{Path(steer).stem}@{residual:g}") + extra_tag(extra)
+    argv = ss._server_args(steer, residual, PORT, ctx=32768, extra=extra)
     with open(OUT / f"server_{tag}.log", "w") as log:
         proc = subprocess.Popen(argv, stdout=log, stderr=subprocess.STDOUT,
                                 cwd=str(common.REPO))

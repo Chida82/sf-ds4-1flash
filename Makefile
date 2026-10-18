@@ -444,6 +444,11 @@ test: env-check ds4_test $(BIN)-eval q4k-dot-test mxfp4-dot-test test-session-st
 	./tests/test_deepseek41_graph --steering-rank2
 	./tests/test_deepseek41_graph --steering-file
 	python3 dir-steering/tools/controlvector_to_f32.py --self-check
+	python3 dir-steering/tools/compose_geometry.py --self-check
+	python3 dir-steering/tools/mask_layers.py --self-check
+	python3 eval/capture_fold.py --self-check
+	python3 eval/analyze_fold.py --self-check
+	python3 eval/derive_native_direction.py --self-check
 
 .PHONY: test-download-model
 test-download-model:

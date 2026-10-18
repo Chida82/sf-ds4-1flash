@@ -13,6 +13,22 @@ consume that context; a client limit does not enlarge the server allocation.
 The examples use Flash and localhost. Change the address for a trusted remote
 server. The `dsv4-local` strings are placeholders, not server authentication.
 
+## Text encoding
+
+The server's JSON responses are always valid UTF-8. A model can emit a token
+whose bytes do not form a complete UTF-8 character — likelier under steering, or
+when `max_tokens` cuts an answer mid-character. The server replaces each such
+ill-formed byte subpart with U+FFFD (the replacement character) in the response,
+streaming and non-streaming alike, and logs one line naming the request, the
+number of replaced subparts and the first byte offset. Valid text is passed
+through byte for byte. A client that sends a replaced answer back as prompt
+re-tokenizes U+FFFD differently from the original tokens, so the KV prefix match
+ends at that character.
+
+The CLI (`./sf-ds4-1flash`) is a byte-faithful view and writes the raw token
+bytes to stdout; the terminal renders or replaces them. Use the server for a
+client that needs valid UTF-8.
+
 ## Pi
 
 Add this provider to `~/.pi/agent/models.json`:

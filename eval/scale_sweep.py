@@ -133,13 +133,13 @@ def grid_hint(rows):
 
 # --- server-backed decision prefixes (model) ---------------------------------
 
-def _server_args(steer, residual, port, ctx):
+def _server_args(steer, residual, port, ctx, extra=()):
     argv = [str(common.SERVER), "-m", common.MODEL, "--ssd-streaming",
             "--ctx", str(ctx), "--port", str(port)]
     if steer is not None:
         argv += ["--allow-v41-steering", "--dir-steering-file", str(steer),
                  "--dir-steering-residual", common._num(residual)]
-    return argv
+    return argv + [str(x) for x in extra]
 
 
 def _wait_listening(logpath, proc, timeout):
@@ -165,7 +165,9 @@ def _post(port, prompt, max_tokens, timeout=300):
         f"http://127.0.0.1:{port}/v1/chat/completions",
         data=body, headers={"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=timeout) as r:
-        d = json.loads(r.read())
+        # a steered model can emit a byte sequence that is not UTF-8 (409 gate
+        # screen); warn with the offset to chase in a --trace (501), then replace
+        d = json.loads(common._warn_invalid_utf8(r.read(), "server response"))
     return d["choices"][0]["message"]["content"] or ""
 
 
@@ -404,6 +406,8 @@ def _selfcheck():
     assert "efficacy (flip)" in md and "Knee:" in md
     # the report carries no prompt or completion text, only rates/counts
     assert "I cannot" not in md and "Sure" not in md and "h1" not in md
+    # _post warns and still parses a response with an invalid byte (501)
+    assert common.invalid_utf8_report(b'{"x":"\xe2"}') == (1, 6, "e2227d")
     print("scale_sweep.py self-check: OK")
 
 

@@ -167,8 +167,18 @@ Order and angle decide what the pair does:
   test asserts both), so the second flag is the one removed completely.
 
 Engine open prints the median |cos| of the pair over the layers where both rows
-are nonzero (`median |cos| to the first direction 0.722 over 39 layers` for
-msuiche + abliteration; 0.0 for msuiche + its abliteration residual). The same
+are nonzero (`median |cos(d1,d2)| 0.722 over 39 layers` for msuiche +
+abliteration; 0.0 for msuiche + its abliteration residual), and on the same line
+the norm of the two folds composed in their plane (`409`) next to the larger
+single fold `max(|1-F|, |1-G|, 1)`. The norm is how much the pair can amplify an
+activation: an orthogonal pair equals the larger single fold at any scales, while
+0.72 at 5 and 6 gives 15.03 against 5 (a rotation by 87.9 deg that leaves +8.44
+on the first axis) and 0.22 at 7 and 6 gives 9.58 against 6, the two compositions
+that re-closed the floor and broke breadth. When the norm is more than 20% above
+the single fold the open also prints `warning: the two folds over-dose`; 0.22 at
+7 and 2 (6.00 against 6) stays silent, and
+`python3 dir-steering/tools/compose_geometry.py --cos C --f F --g G` prints the
+full in-plane operator for any pair. The same
 per-layer cosines are written into the run identity (`rank2.cosine_to_first` in
 `eval/manifest.py`), and `eval/extract_floor_direction.py --ref LABEL:PATH`
 (repeatable) records the cosine of a freshly extracted direction against each

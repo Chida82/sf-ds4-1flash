@@ -27,11 +27,11 @@ Each experiment is completed by evidence and a supported/rejected/inconclusive d
 
 ## 4. Directions derived at the real site
 
-- [ ] 4.1 Select controlled benign contrast pairs and pin capture site, token-selection/pooling rule, normalization and train/development/holdout split. Verify the chosen capture call sites are active V4.1 paths, not legacy hooks retained for another purpose.
-- [ ] 4.2 Reuse/extend existing extraction tooling for a local difference-of-means baseline with bounded captures. Add distinguishable-layer synthetic fixtures and record source/example hashes; verify exact row mapping and deterministic extraction before a model-derived vector is used.
-- [ ] 4.3 Evaluate the local direction on complete held-out benign behavior and task correctness using `402`. Record a measured benefit or negative result; verify a changed output style does not hide failure of the underlying task.
-- [ ] 4.4 If useful to separate method effects, compare a properly derived additive contrastive baseline with the projective candidate in task-local code. Verify separate sign/scale/site identities and quality guards; do not reinterpret the external projective controlvector as additive. Document the result without shipping a method selector by default.
-- [ ] 4.5 Decide the layer-id base convention for an own-derived vector and prove it against the runtime. msuiche's GGUF exposes the ambiguity: the key `glp.layer_ids_zero_based` is named zero-based but lists the 1-based `direction.N` indices (a misnomer `402` worked around by parsing the values, not the name). Verify empirically whether the runtime maps `direction.N` to layer N (row N, the current converter and `--dir-steering-file` contract) or to layer N-1, by steering a single known layer and reading the per-layer projection norms from task 1.1; record whether capture layer k and application row k coincide. Pin one convention in the derivation tooling and its sidecar, and state plainly whether "zero_based" was a naming slip or a real off-by-one, so an own vector does not inherit the ambiguity.
+- [ ] 4.1 Select controlled benign contrast pairs and pin capture site, token-selection/pooling rule, normalization and train/development/holdout split. Verify the chosen capture call sites are active V4.1 paths, not legacy hooks retained for another purpose. — moved to 409 (groups 4-5)
+- [ ] 4.2 Reuse/extend existing extraction tooling for a local difference-of-means baseline with bounded captures. Add distinguishable-layer synthetic fixtures and record source/example hashes; verify exact row mapping and deterministic extraction before a model-derived vector is used. — moved to 409 (groups 4-5)
+- [ ] 4.3 Evaluate the local direction on complete held-out benign behavior and task correctness using `402`. Record a measured benefit or negative result; verify a changed output style does not hide failure of the underlying task. — moved to 409 (groups 4-5)
+- [ ] 4.4 If useful to separate method effects, compare a properly derived additive contrastive baseline with the projective candidate in task-local code. Verify separate sign/scale/site identities and quality guards; do not reinterpret the external projective controlvector as additive. Document the result without shipping a method selector by default. — moved to 409 (groups 4-5)
+- [ ] 4.5 Decide the layer-id base convention for an own-derived vector and prove it against the runtime. msuiche's GGUF exposes the ambiguity: the key `glp.layer_ids_zero_based` is named zero-based but lists the 1-based `direction.N` indices (a misnomer `402` worked around by parsing the values, not the name). Verify empirically whether the runtime maps `direction.N` to layer N (row N, the current converter and `--dir-steering-file` contract) or to layer N-1, by steering a single known layer and reading the per-layer projection norms from task 1.1; record whether capture layer k and application row k coincide. Pin one convention in the derivation tooling and its sidecar, and state plainly whether "zero_based" was a naming slip or a real off-by-one, so an own vector does not inherit the ambiguity. — moved to 409 (groups 4-5)
 
 ## 5. Specificity, generalization and limits
 
@@ -69,19 +69,19 @@ hardest prompts. The first experiment therefore needs NO code change — only a 
   does `union[:N]` today) so a sweep can re-test just the non-COMPLY residue of each vector
   (msuiche 14, audreyt 11, fused 7) instead of all 30, with a COMPLY spot-check. Record the
   subset in the selector so the manifest stays honest.
-- [ ] 6A.3 (refinement, only if a single scale cannot both convert weak-refusal DEFLECT and avoid
+- [ ] 6A.3 (refinement, only if a single scale cannot both convert weak-refusal DEFLECT and avoid — moved to 409 (task 6.x)
   breakage on strong-refusal prompts) Cap the overshoot: `coeff = clamp(scale·dot, 0, cap)` in the
   fold (`ds4.c` + Metal kernel). Gate behind a flag, default off; decode-switch parity test must
   show the uncapped fold bitwise identical when off. Cost: one extra clamp per row, negligible.
-- [ ] 6A.4 (diagnostic, supports 6A.3) Read-only probe of `dot(d,h)` per layer at the fold
+- [ ] 6A.4 (diagnostic, supports 6A.3) Read-only probe of `dot(d,h)` per layer at the fold — moved to 409 (task 6.x)
   (reuses 1.1-1.3): dump the projection distribution across prompts to see the overshoot magnitude
   and inform the cap. Prefill-only, no generation; no harmful completion produced.
 
 ## 7. Attention second channel only after a real-site gate
 
-- [ ] 7.1 Establish a measured limitation of the stronger residual-only candidate and locate an active V4.1 attention-output site/direction suitable for testing. Verify call-site reachability and source-site compatibility; varying an inactive legacy flag must fail the experiment setup.
-- [ ] 7.2 Only if that prerequisite is met, run a bounded task-local residual-plus-attention comparison with controls and fair dose tuning. Verify benefit over the stronger single-site comparator with `402`, or record a negative/inconclusive result; do not ship an attention knob before this gate.
-- [ ] 7.3 Document any justified follow-up with its required active hook, identity and acceptance evidence. Verify no absent second channel is described as a measured neutral or implemented feature.
+- [ ] 7.1 Establish a measured limitation of the stronger residual-only candidate and locate an active V4.1 attention-output site/direction suitable for testing. Verify call-site reachability and source-site compatibility; varying an inactive legacy flag must fail the experiment setup. — moved to 409 (task 8.x)
+- [ ] 7.2 Only if that prerequisite is met, run a bounded task-local residual-plus-attention comparison with controls and fair dose tuning. Verify benefit over the stronger single-site comparator with `402`, or record a negative/inconclusive result; do not ship an attention knob before this gate. — moved to 409 (task 8.x)
+- [ ] 7.3 Document any justified follow-up with its required active hook, identity and acceptance evidence. Verify no absent second channel is described as a measured neutral or implemented feature. — moved to 409 (task 8.x)
 
 ## 8. Prefill-phase and reference-model investigations
 
