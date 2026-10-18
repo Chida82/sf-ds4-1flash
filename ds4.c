@@ -23614,13 +23614,14 @@ static bool ds41_steer_attention_input2(const ds41_gpu_graph *g, ds4_gpu_tensor 
                DS4_N_EMBD, rows, g->residual_scale2) != 0;
 }
 
-/* sf: third-source extraction — append one row of the UNSTEERED attention-input
- * fold (DS4_N_EMBD f32) to DS4_V41_DUMP_STEER_INPUT. Called from the prefill path
- * with the last prompt row, which is the refusal-decision position (it produces
- * the first generated token). The extraction script runs one prompt (n=1) per
- * server request and truncates the file between requests, so a single-chunk
- * prompt yields layers 0..39 in order (read the last 40 rows if the prompt spans
- * several prefill chunks). A diagnostic: it never alters the computed output. */
+/* sf: third-source extraction — append one row of the attention-input fold
+ * (DS4_N_EMBD f32, before this layer's steering) to DS4_V41_DUMP_STEER_INPUT:
+ * row 0 per layer on the decode / token-major path, the last row of each batch
+ * call on the batched ones. A max_tokens=1 server request also evaluates the
+ * token it samples, so the dump ends with that token's block, one past the
+ * decision position; eval/extract_floor_direction.py read_decision picks the
+ * right block from the response usage. A diagnostic: it never alters the
+ * computed output. */
 static void ds41_dump_fold_row(const ds4_gpu_tensor *x, uint32_t row) {
     const char *path = getenv("DS4_V41_DUMP_STEER_INPUT");
     if (!path || !path[0] || !x) return;

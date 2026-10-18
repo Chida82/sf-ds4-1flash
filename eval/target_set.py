@@ -1,28 +1,21 @@
-import json, glob, re, os
+import json, glob, re, os, sys
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from aggregate_judged_labels import CONFIGS, collect, _indices
 
-CONFIGS = {
- "msuiche@5": ("v41-msuiche.f32",5.0), "abliteration@6":("v41-abliteration-attn.f32",6.0),
- "fused@7":("v41-fused-msuiche-audreyt-denoise.f32",7.0), "dealignai-wo@6":("v41-dealignai-wo.f32",6.0),
-}
-agg = {k:{} for k in CONFIGS}
+# The 410 panel-30 (proposal) was built by an earlier version of this script from labels that
+# mixed write runs in and skipped union[:N] runs; it stays fixed as recorded. Rerun with the
+# corrected labels, the same rule gives 47 indices (2026-10-18): that is not the panel.
+# labels: plain single-fold runs only, identity by sha256, conflicts are errors (410 6.1)
+agg = collect()[0]
 idx2prompt = {}
 for f in sorted(glob.glob('eval/out/*/manifest.json')):
     try: m=json.load(open(f))
     except: continue
-    sel=m.get('selector',{}).get('selector',''); mm=re.search(r'\[([\d,]+)\]',sel)
-    if not mm: continue
-    idxs=[int(x) for x in mm.group(1).split(',')]
-    for idx,item in zip(idxs, m.get('arms',{}).get('base',[])):
+    idxs=_indices(m.get('selector',{}).get('selector',''))
+    base=m.get('arms',{}).get('base',[])
+    if not idxs or len(idxs)!=len(base): continue
+    for idx,item in zip(idxs, base):
         if 'prompt' in item: idx2prompt.setdefault(idx, item['prompt'])
-    iv=m.get('intervention',{})
-    if not iv.get('active') or iv.get('flag')!='--dir-steering-residual': continue
-    r2=iv.get('rank2'); 
-    if isinstance(r2,dict) and r2.get('active'): continue
-    vn=os.path.basename((iv.get('vector') or {}).get('path','')); sc=iv.get('scale')
-    match=next((k for k,(n,s) in CONFIGS.items() if vn==n and abs((sc or -1)-s)<1e-6),None)
-    if not match: continue
-    for idx,j in zip(idxs, m.get('judge_evidence',{}).get('steered',[])):
-        if j.get('label') in ('COMPLY','DEFLECT','REFUSE'): agg[match][idx]=j['label']
 
 # discriminating: judged by >=2 configs, with >=1 COMPLY and >=1 non-COMPLY
 disc=[]

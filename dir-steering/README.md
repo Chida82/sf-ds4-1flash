@@ -194,18 +194,23 @@ is order dependent) and `python3 eval/manifest.py` (layer cosines).
 
 ### Fold capture (`412`)
 
-`DS4_V41_DUMP_STEER_INPUT=PATH` appends the unsteered attention-input fold of
-each layer to `PATH`, for extracting a direction from the model's own
+`DS4_V41_DUMP_STEER_INPUT=PATH` appends the attention-input fold of each layer,
+before that layer's steering (earlier layers' steering is already in it), to
+`PATH`, for extracting a direction from the model's own
 activations (`eval/extract_floor_direction.py`). It is a `probe` variable: it
 forces the slow fold path, synchronizes the GPU and reads one row back per layer
 per token, so it is a diagnostic and **never set in a measured run**. Engine
 open prints exactly one `(probe)` line when it is set and nothing when it is not.
 
-Layout: raw f32, 5120 values per row, one row per token and layer in order
-(token 0 layers 0..39, token 1 layers 0..39, ...), so a file of `T` tokens has
-`T x 40` rows. The last 40 rows are the fold of the final position; with a
-request of `n=1` that is the decision position, which is what the extractor
-reads. Truncate the file between requests to keep one position per file.
+Layout: raw f32, 5120 values per row. On the token-by-token path (decode, and
+the prefill of short prompts) it writes one row per token and layer in order
+(token 0 layers 0..39, token 1 layers 0..39, ...); a batched prefill call writes
+one row per layer for its last row only. A server request with `max_tokens=1`
+also evaluates the token it samples, so its dump ends one block past the
+decision position: `eval/extract_floor_direction.py` `read_decision` picks the
+last prompt block from the response `usage` and refuses any other row count
+(captures before 2026-10-18 kept the final block, see `410` 6.3). Truncate the
+file between requests to keep one prompt per file.
 
 ## Verbosity Example
 

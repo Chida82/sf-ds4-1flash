@@ -155,6 +155,11 @@ def _wait_listening(logpath, proc, timeout):
 
 
 def _post(port, prompt, max_tokens, timeout=300):
+    return _post_json(port, prompt, max_tokens, timeout)["choices"][0]["message"]["content"] or ""
+
+
+def _post_json(port, prompt, max_tokens, timeout=300):
+    """The parsed chat-completion response (content, finish_reason, usage)."""
     body = json.dumps({
         "model": "sf-ds4-1flash",
         "messages": [{"role": "user", "content": prompt}],
@@ -167,8 +172,7 @@ def _post(port, prompt, max_tokens, timeout=300):
     with urllib.request.urlopen(req, timeout=timeout) as r:
         # a steered model can emit a byte sequence that is not UTF-8 (409 gate
         # screen); warn with the offset to chase in a --trace (501), then replace
-        d = json.loads(common._warn_invalid_utf8(r.read(), "server response"))
-    return d["choices"][0]["message"]["content"] or ""
+        return json.loads(common._warn_invalid_utf8(r.read(), "server response"))
 
 
 def server_decider(out_dir, *, port=SERVER_PORT, ctx=4096, open_timeout=1200):

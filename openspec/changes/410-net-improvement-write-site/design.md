@@ -237,9 +237,23 @@ The reviewed manifests show:
 | `eval/out/capture/fused7` | 82/82 | 6/30 | 0/15 |
 | `eval/out/capture/pool` | 205/205 | 26/30 | 15/15 |
 
-A valid-sized file is not proof of layer/position ordering. Preflight checks the
-"last 40 rows" convention against chunked and reconstructed routes as well as
-single-chunk input. Join by recorded prompt identity, preserving missing records.
+A valid-sized file is not proof of layer/position ordering. Preflight (6.3)
+found that the "last 40 rows" convention was wrong for every stored capture: a
+`max_tokens=1` server request also evaluates the sampled token, so those rows are
+position T (the first generated token), not the decision position T-1. The
+capture tool now selects the block from the response usage and refuses other
+row counts; the recaptures (`row_rule: 2`) are:
+
+| Capture | Valid records | Panel-30 coverage | Hard-15 coverage |
+|---|---:|---:|---:|
+| `eval/out/capture/base-r2` | 97/97 | 21/30 | 15/15 |
+| `eval/out/capture/fused7-r2` | 82/82 | 6/30 | 0/15 |
+| `eval/out/capture/pool-r2` | 205/205 | 26/30 | 15/15 |
+
+The old directories stay as position-T records; directions and calibrations
+derived from them (floor-resist, native, gate tau) carry that identity. Batched
+prefill would change the row order and remains unverified. Join by recorded
+prompt identity, preserving missing records.
 
 Capture tools use the server path; the cited complete-response judge runs use
 the CLI path. Template and trajectory differences were already documented in
@@ -280,6 +294,39 @@ Neither a syntactically valid change nor a higher retrospective score authorizes
 runtime restoration, vector promotion or a live adaptive policy. An implementation
 handoff requires completed evidence review, a resolved numerical/behavioural
 contract and separately approved scope. No model command is run by this revision.
+
+### D9. Combining directions from several sources: independence, not count
+
+Several unit directions exist for the attention-input fold (`v41-msuiche`, the
+fused msuiche/audreyt file (`unit(msuiche + audreyt)`, 2.4), `v41-abliteration-attn`, the native and
+floor-resist directions) and two for write sites (`v41-dealignai-wo`,
+`v41-dealignai-sharedw2`). Several files do not establish several mechanisms
+(D3). Three external results bear on combining them; each was read in its arXiv
+HTML version on 2026-10-18:
+
+| Source | Reported | Limits for this child |
+|---|---|---|
+| Wollschläger et al., Concept Cones, arXiv 2502.17420 | Ablating the top-k *representationally independent* refusal directions raises attack success monotonically, above the single difference-in-means direction from k >= 4, with diminishing returns; cones plateau at 4 dimensions. Orthogonality is stated as insufficient: independence is the change of one direction's cosine with the activations, across layers, when the other is ablated. Difference-in-means directions from different layers combined did not help | Dense models 1.5B-14B, MoE not stated; directions optimized jointly on the same targets with a KL retain loss, not collected from different authors; k > 1 values only in figures; high run-to-run variance |
+| van der Weij et al., arXiv 2403.05767 | One merged vector gave "unexpected and often smaller" effects; each vector at its own layer "appears more effective" | Llama 2 7B, binary-choice datasets, one global coefficient; no numeric comparison; interference not measured directly |
+| Conceptors, arXiv 2410.16314 | Soft projections `C = R(R + α^-2 I)^-1` from activation correlations; AND/OR/NOT compositions beat additive and averaged vectors | Needs activation sets, not a direction; ICL function tasks (GPT-J, GPT-NeoX), not refusal; a d x d operator per layer the runtime does not apply |
+
+Consequences:
+- Pairwise cosines and a numerical rank of the set (rule stated as in 6.5) are
+  necessary, not sufficient: low |cos| is orthogonality, not independence.
+- Independence is defined under intervention. Existing captures give it for one
+  intervention only: `base-r2` against `fused7-r2`, both position T-1 (6.3),
+  pre-intervention at each layer and post-intervention of earlier ones (D6).
+  fused@7 is a scaled operation, not an ablation (D3), so the result is
+  "independence under fused@7" on the prompts both captures share. Any other
+  intervening direction needs a new capture: missing evidence, not authorized here.
+- Write-site directions act on other tensors (D2); a cosine between a write and a
+  fold direction compares files in the same coordinates, not operations.
+- For `R = s dd^T`, `I - C` tends to `I - dd^T` as `α -> ∞`: rank-1 removal is the
+  limit of a NOT-conceptor. This is an identity to check, not evidence that a
+  conceptor behaves better. A conceptor fitted on captured folds is a hypothesis;
+  its fitting set must exclude evaluation prompts (D7) and applying it would be a
+  new runtime operator, outside this change.
+- None of this authorizes a combined vector, a rank-k operator or a new site.
 
 ## Risks / Trade-offs
 

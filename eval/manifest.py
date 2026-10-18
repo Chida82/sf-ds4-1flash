@@ -147,12 +147,16 @@ def intervention_identity(*, steer, residual, disable_env=False,
 
 
 def source_identity(repo=common.REPO):
-    """Git commit + dirty flag and the two binaries' identity."""
+    """Git commit + dirty flag, the two binaries' identity, and the scorers'
+    (the judge prompt lives in score_judge.py; a dirty tree can change either)."""
+    here = Path(__file__).resolve().parent
     return {
         "commit": _git(["rev-parse", "HEAD"], repo) or "unknown",
         "dirty": bool(_git(["status", "--porcelain"], repo)),
         "cli": file_identity(common.CLI, do_hash=True),
         "eval_bin": file_identity(common.EVAL_BIN, do_hash=True),
+        "scorers": {name: file_identity(here / f"{name}.py", do_hash=True)["sha256"]
+                    for name in ("score_judge", "score_quality")},
     }
 
 

@@ -53,14 +53,20 @@ candidate transformation, router or retry policy as an improvement.
   are withdrawn; no replacement direction or optimized coefficient is prescribed.
 - **Audit captures before using them as features.** Current fold dumps precede
   the current layer's intervention, although they can reflect earlier layers'
-  interventions. The `fused7` capture covers only 6/30 panel prompts and none of
-  the hard-15. Server captures and CLI grades are not assumed interchangeable.
+  interventions. The stored captures held position T (the first generated
+  token), not the decision position; they were recaptured at T-1 (`*-r2`, 6.3).
+  The `fused7` capture covers only 6/30 panel prompts and none of the hard-15.
+  Server captures and CLI grades are not assumed interchangeable.
 - **Distinguish routing, retries and transformer recurrence.** An observed gate
   failure does not identify its cause or reject a whole method family. A fresh
   generation retry is not a loop transformer, a short prefix does not determine
   final response quality, and a selector need not attain an oracle union. Remove
   guaranteed-monotonicity and zero-overhead claims; assess observable information,
   state validity and measured costs before any live design is considered.
+- **Independence before combination.** Directions from several sources do not
+  establish several mechanisms. Task 2.4 measures their orthogonality and, where
+  captures allow, their independence under intervention (design D9, with the
+  literature's limits); conceptors remain a hypothesis.
 
 ## Capabilities
 
@@ -79,7 +85,8 @@ None.
 ## Impact
 
 - **Current work:** corrections to this change's four planning artifacts only.
-  All 24 tasks remain unchecked; completing documents is not completing research.
+  The 24 original task IDs are preserved and 2.4 is added; Group 6 is complete,
+  the rest unchecked. Completing documents is not completing research.
 - **Evidence/tools:** `eval/` manifests, capture tools, scorers and existing
   `dir-steering/tools/` supply the audit inputs. Proposed helper names from the
   earlier draft are not promises to implement an unvalidated algorithm.

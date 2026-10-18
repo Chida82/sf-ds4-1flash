@@ -8,8 +8,8 @@ floor toward the openable region. This is NOT a msuiche/abliteration combination
 is extracted from the model's own activations on these prompts.
 
 One base server (no steering) with the dump env; one prompt at n=1 per request,
-truncating the dump between requests and reading the last 40 rows (the decision
-position, layers 0..39). Pure-python (diff-of-means needs no numpy).
+truncating the dump between requests and reading the decision position's 40 rows
+(layers 0..39; see read_decision). Pure-python (diff-of-means needs no numpy).
 
   python3 eval/extract_floor_direction.py --out dir-steering/out/v41-floor-resist.f32
   python3 eval/extract_floor_direction.py --self-check
@@ -54,22 +54,32 @@ def classes_from_discovery():
     return A, B
 
 
-def read_last_decision(dump_path):
-    """Last 40 rows of the dump = the decision token's fold, layers 0..39."""
-    raw = Path(dump_path).read_bytes()
-    a = array.array("f"); a.frombytes(raw)
-    rows = len(a) // D
-    if rows < N_LAYERS or rows % N_LAYERS != 0:
-        raise RuntimeError(f"dump has {rows} rows, not a multiple of {N_LAYERS}")
-    base = (rows - N_LAYERS) * D
+def read_decision(dump_path, usage):
+    """The last prompt token's fold, layers 0..39, from a max_tokens=1 request.
+
+    The dump holds one 40-row block per token that ran through the graph, in token
+    order (prefill of these short prompts runs token by token). The server evaluates
+    the token it samples before it stops, unless that token is a stop token, so the
+    final block is usually the first generated token, not the decision position.
+    `usage` (the response's) says how many blocks to expect; any other count
+    (a batched prefill, an unreported cache hit) is refused rather than guessed."""
+    a = array.array("f"); a.frombytes(Path(dump_path).read_bytes())
+    blocks, rem = divmod(len(a), N_LAYERS * D)
+    cached = (usage.get("prompt_tokens_details") or {}).get("cached_tokens", 0)
+    prefilled = usage["prompt_tokens"] - cached
+    evaluated = 1 if usage.get("completion_tokens", 0) > 0 else 0
+    if rem or prefilled < 1 or blocks != prefilled + evaluated:
+        raise RuntimeError(f"dump has {len(a) // D} rows; expected {prefilled + evaluated} "
+                           f"blocks of {N_LAYERS} ({prefilled} prefilled + {evaluated} evaluated)")
+    base = (blocks - 1 - evaluated) * N_LAYERS * D
     return [a[base + il * D: base + (il + 1) * D] for il in range(N_LAYERS)]
 
 
 def accumulate(idxs, records, dump_path, port, acc, n_layers):
     for i in idxs:
         open(dump_path, "wb").close()  # truncate before the request
-        _ = ss._post(port, records[i]["text"], 1, timeout=600)
-        rows = read_last_decision(dump_path)
+        d = ss._post_json(port, records[i]["text"], 1, timeout=600)
+        rows = read_decision(dump_path, d["usage"])
         for il in range(n_layers):
             s = acc[il]; r = rows[il]
             for k in range(D):
@@ -157,7 +167,7 @@ def _write_sidecar(out, A, B, raw_norms, refs=None):
 
 
 def _self_check():
-    # read_last_decision picks the final 40-row block
+    # read_decision picks the last prefilled block, not the evaluated sampled token's
     import tempfile
     nL = N_LAYERS
     with tempfile.TemporaryDirectory() as d:
@@ -167,9 +177,20 @@ def _self_check():
             for il in range(nL):
                 a.extend([float(tok * 100 + il)] * D)
         p.write_bytes(a.tobytes())
-        rows = read_last_decision(p)
+        rows = read_decision(p, {"prompt_tokens": 2, "completion_tokens": 1})
         assert len(rows) == nL
-        assert rows[0][0] == 200.0 and rows[nL - 1][0] == 200.0 + (nL - 1), rows[0][0]
+        assert rows[0][0] == 100.0 and rows[nL - 1][0] == 100.0 + (nL - 1), rows[0][0]
+        # a stop token is not evaluated: the final block is the decision
+        assert read_decision(p, {"prompt_tokens": 3, "completion_tokens": 0})[0][0] == 200.0
+        # a cached prefix is not dumped
+        assert read_decision(p, {"prompt_tokens": 7, "completion_tokens": 1,
+                                 "prompt_tokens_details": {"cached_tokens": 5}})[0][0] == 100.0
+        for bad in ({"prompt_tokens": 3, "completion_tokens": 1}, {"prompt_tokens": 1, "completion_tokens": 1}):
+            try:
+                read_decision(p, bad)
+                raise AssertionError(f"accepted {bad}")
+            except RuntimeError:
+                pass
         # --ref: a direction against itself reads |cos| 1 on its nonzero layers, a zero row is skipped
         rows = array.array("f", [0.0] * D + [1.0] + [0.0] * (D - 1) + [1.0] + [0.0] * (D - 1))
         out = Path(d) / "dir.f32"

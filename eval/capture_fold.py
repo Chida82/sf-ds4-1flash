@@ -1,8 +1,8 @@
 """Per-prompt capture of the V4.1 attention-input fold at the decision position (409 D1).
 
 One server (base, or steered with --steer/--residual) with DS4_V41_DUMP_STEER_INPUT;
-each prompt is posted with max_tokens=1 after truncating the dump, and the last 40
-rows (layers 0..39 of the last prompt token) are stored as `rows_<idx>.f32`
+each prompt is posted with max_tokens=1 after truncating the dump, and the decision
+block (layers 0..39 of the last prompt token, `efd.read_decision`) is stored as `rows_<idx>.f32`
 (40 x 5120 f32, 819200 bytes) with a `manifest.json`. Classes: A (msuiche@5
 survivors), B (opened by msuiche@5, strided to --b-count as the extraction did),
 C (union 23, 27: the mark's residue), floor (6, 372, 426), benign (alpaca, indices
@@ -92,11 +92,11 @@ def capture(entries, out, argv, port, dump):
             ss._wait_listening(log.name, proc, efd.OPEN_TIMEOUT)
             for e in entries:
                 open(dump, "wb").close()
-                e.update(file=None, file_sha256=None, rows_in_dump=None, error=None)
+                e.update(file=None, file_sha256=None, rows_in_dump=None, usage=None, error=None)
                 try:
-                    ss._post(port, e["text"], 1, timeout=600)
+                    e["usage"] = ss._post_json(port, e["text"], 1, timeout=600).get("usage")
                     e["rows_in_dump"] = os.path.getsize(dump) // (efd.D * 4)
-                    rows = efd.read_last_decision(dump)
+                    rows = efd.read_decision(dump, e["usage"] or {})
                 except Exception as ex:
                     e["error"] = str(ex)
                     print(f"capture: {e['idx']}: {ex}", file=sys.stderr)
@@ -117,12 +117,14 @@ def write_manifest(out, run_id, argv, ident, commit, entries):
     prompts = []
     for e in entries:
         p = {k: e.get(k) for k in ("idx", "class", "tags", "source", "file", "file_sha256",
-                                   "rows_in_dump", "error")}
+                                   "rows_in_dump", "usage", "error")}
         p["text_sha256"] = hashlib.sha256(e["text"].encode()).hexdigest()
         prompts.append(p)
     m = {"run_id": run_id, "server_argv": argv, "steering": ident, "commit": commit,
-         "site": "v41_attn_input_weighted_fold_post_engram", "rows": "last 40 of the dump: "
-         "layers 0..39 of the last prompt token", "prompts": prompts}
+         "site": "v41_attn_input_weighted_fold_post_engram", "row_rule": 2,
+         "rows": "layers 0..39 of the last prompt token: the last prefilled 40-row block, "
+         "checked against usage (rule 1, before 2026-10-18, kept the final block: the "
+         "evaluated first generated token)", "prompts": prompts}
     (out / "manifest.json").write_text(json.dumps(m, indent=2))
     return m
 
@@ -175,11 +177,11 @@ def _self_check():
             for il in range(efd.N_LAYERS):
                 a.extend([float(tok * 100 + il)] * efd.D)
         p.write_bytes(a.tobytes())
-        rows = efd.read_last_decision(p)
-        assert len(rows) == efd.N_LAYERS and rows[0][0] == 100.0 and rows[-1][0] == 100.0 + efd.N_LAYERS - 1
+        rows = efd.read_decision(p, {"prompt_tokens": 1, "completion_tokens": 1})
+        assert len(rows) == efd.N_LAYERS and rows[0][0] == 0.0 and rows[-1][0] == efd.N_LAYERS - 1
         p.write_bytes(a[:41 * efd.D].tobytes())
         try:
-            efd.read_last_decision(p)
+            efd.read_decision(p, {"prompt_tokens": 1, "completion_tokens": 0})
             raise AssertionError("41-row dump accepted")
         except RuntimeError:
             pass
@@ -193,7 +195,8 @@ def _self_check():
         assert e6["class"] == "A" and e6["tags"] == ["floor"], e6
         assert entries[-1]["idx"] == "b0" and entries[-1]["class"] == "benign"
         for e in entries:
-            e.update(file=f"rows_{e['idx']}.f32", file_sha256="x", rows_in_dump=80, error=None)
+            e.update(file=f"rows_{e['idx']}.f32", file_sha256="x", rows_in_dump=80,
+                     usage={"prompt_tokens": 1, "completion_tokens": 1}, error=None)
         m = write_manifest(d, "rid", ["srv"], "none", "abc", entries)
         assert json.loads((d / "manifest.json").read_text()) == m
         assert summary(plan(set(ALL), [6, 372, 426], [1, 2], ["x"], records)) == \
