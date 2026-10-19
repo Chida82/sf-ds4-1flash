@@ -1,0 +1,31 @@
+# name|run.py steering args  (read by stages.sh; $V $O $F expand; order = priority)
+fused7-diff1|--steer $F --residual 7 --steer2 $O/v41-poly-diff.f32 --residual2 1
+abl6-mperpa1|--steer $V/v41-abliteration-attn.f32 --residual 6 --steer2 $O/v41-poly-m-perp-a.f32 --residual2 1
+msu5-aperpm1|--steer $V/v41-msuiche.f32 --residual 5 --steer2 $O/v41-poly-a-perp-m.f32 --residual2 1
+equiangular7|--steer $O/v41-poly-equiangular.f32 --residual 7
+interleave7|--steer $O/v41-poly-interleave.f32 --residual 7
+fused7-patchwork1|--steer $F --residual 7 --steer2 $O/v41-poly-patchwork.f32 --residual2 1
+jitter95-7|--steer $O/v41-poly-jitter95.f32 --residual 7
+fused7-complement1|--steer $F --residual 7 --steer2 $O/v41-poly-complement.f32 --residual2 1
+interleave-tilt7|--steer $O/v41-poly-interleave-tilt.f32 --residual 7
+interleave3-7|--steer $O/v41-poly-interleave3.f32 --residual 7
+interleave-swap7|--steer $O/v41-poly-interleave-swap.f32 --residual 7
+fused6|--steer $F --residual 6
+fused8|--steer $F --residual 8
+jitter95b-7|--steer $O/v41-poly-jitter95b.f32 --residual 7
+jitter95c-7|--steer $O/v41-poly-jitter95c.f32 --residual 7
+jitter90-7|--steer $O/v41-poly-jitter90.f32 --residual 7
+# abliteration-msuiche arc at scale 7 (tilt family + endpoints at matched dose) — see TODO "The parents' arc"
+abliteration7|--steer $V/v41-abliteration-attn.f32 --residual 7
+msuiche7|--steer $V/v41-msuiche.f32 --residual 7
+tiltm05-7|--steer $O/v41-poly-tiltm05.f32 --residual 7
+tilt025-7|--steer $O/v41-poly-tilt025.f32 --residual 7
+tilt075-7|--steer $O/v41-poly-tilt075.f32 --residual 7
+tilt15-7|--steer $O/v41-poly-tilt15.f32 --residual 7
+# dose sweep of the geometry winners (fused@8 hard=15.6 shows scale is a strong lever)
+equiangular6|--steer $O/v41-poly-equiangular.f32 --residual 6
+equiangular8|--steer $O/v41-poly-equiangular.f32 --residual 8
+interleave8|--steer $O/v41-poly-interleave.f32 --residual 8
+# arc peak is msuiche-leaning (tilt0.75@7=13.6 > fused 12.0): locate peak + combine levers
+tilt09-7|--steer $O/v41-poly-tilt09.f32 --residual 7
+tilt075-8|--steer $O/v41-poly-tilt075.f32 --residual 8

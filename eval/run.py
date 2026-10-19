@@ -286,13 +286,57 @@ def _json(obj):
 
 # --- axis-A harmful run (task 6.1, the user-run full-generation path) ---------
 
-def _judge_arm(prompts, recs, judge_exec):
+def load_base_cache(globs, *, max_tokens, model=None):
+    """prompt -> (base arm row, base judge row, run id) from stored axis-A manifests
+    (`--base-from`). Only runs with the same decoding (greedy, think off, the same
+    token cap) and, when `model` is given, the same GGUF size and mtime are read;
+    only ok completions with a clean label count. The base arm is unsteered, so it
+    does not depend on the vector under test; two runs that disagree on a prompt's
+    completion or label are an error, never last-wins."""
+    import glob as _glob
+    import json
+    cache = {}
+    for g in globs:
+        for f in sorted(_glob.glob(g)):
+            try:
+                m = json.loads(Path(f).read_text())
+            except Exception:
+                continue
+            dec = m.get("decoding", {})
+            if (m.get("profile") != "harmful-axis-a" or dec.get("max_tokens") != max_tokens
+                    or dec.get("temp") != 0 or dec.get("think")):
+                continue
+            if model is not None:
+                mi = m.get("model") or {}
+                if (mi.get("size"), mi.get("mtime")) != (model.get("size"), model.get("mtime")):
+                    continue
+            rid = m.get("run_id", Path(f).parent.name)
+            arms = m.get("arms", {}).get("base", [])
+            ev = m.get("judge_evidence", {}).get("base", [])
+            for a, j in zip(arms, ev):
+                p = a.get("prompt")
+                if p != j.get("prompt") or a.get("status") != "ok" or \
+                        j.get("label") not in score_judge.LABELS:
+                    continue
+                old = cache.get(p)
+                if old and (old[0]["completion"] != a["completion"] or old[1]["label"] != j["label"]):
+                    raise SystemExit(f"--base-from: {old[2]} and {rid} disagree on a base prompt")
+                cache.setdefault(p, (a, j, rid))
+    return cache
+
+
+def _judge_arm(prompts, recs, judge_exec, cached=None):
     """Judge each completed (prompt, completion) with the frozen base judge. An
     empty completion is NOT sent to the judge (it would read as REFUSE); it is
     kept as a None label and surfaces as an execution failure, not a refusal.
+    `cached[i]`, when not None, is a stored judge row reused as is (`--base-from`).
     Returns (labels, evidence); labels hold REFUSE/DEFLECT/COMPLY/INVALID or None."""
     labels, ev = [], []
-    for p, r in zip(prompts, recs):
+    for k, (p, r) in enumerate(zip(prompts, recs)):
+        if cached and cached[k] is not None:
+            labels.append(cached[k]["label"])
+            ev.append(cached[k])
+            continue
         comp = (r.get("completion") or "")
         if not comp.strip():
             labels.append(None)
@@ -307,11 +351,11 @@ def _judge_arm(prompts, recs, judge_exec):
     return labels, ev
 
 
-def _axis_a_metrics(arm, prompts, recs, judge_exec):
+def _axis_a_metrics(arm, prompts, recs, judge_exec, cached=None):
     """Judge + keyword axis-A KPIs for one arm. Reported together, never alone
     (design D1): the judge COMPLY/REFUSE rates over VALID grades, the INVALID
     count kept apart, and the fast keyword refusal rate as a cross-check."""
-    labels, ev = _judge_arm(prompts, recs, judge_exec)
+    labels, ev = _judge_arm(prompts, recs, judge_exec, cached)
     graded = [l for l in labels if l is not None]
     comps = [r.get("completion") or "" for r in recs if (r.get("completion") or "").strip()]
     comply = score_judge.behavioral_rate(graded, "COMPLY")
@@ -371,14 +415,35 @@ def run_harmful_axis(args, gen_fn=None, judge_exec=None):
              "cycle_peak": getattr(args, "cycle_peak", None)}
     mt = getattr(args, "max_tokens", None)
     gen_common = {} if mt is None else {"max_tokens": mt}
-    base_recs, base_st = _completions(gen_fn, prompts, steer=None, residual=0.0,
-                                      **gen_common)
+    base_from = getattr(args, "base_from", None) or []
+    cache = load_base_cache(base_from, max_tokens=mt if mt is not None else common.DECODE["max_tokens"],
+                            model=getattr(args, "base_model_ident", None) or
+                            (manifest.model_identity(common.MODEL) if base_from else None)) \
+        if base_from else {}
+    hit = [cache.get(p) for p in prompts]
+    fresh = [p for p, h in zip(prompts, hit) if h is None]
+    f_recs, f_st = _completions(gen_fn, fresh, steer=None, residual=0.0, **gen_common)
+    it = iter(zip(f_recs, f_st))
+    base_recs, base_st, base_cached, base_reused = [], [], [], {}
+    for p, h in zip(prompts, hit):
+        if h is None:
+            r, s = next(it)
+            base_cached.append(None)
+        else:
+            r, s = {"completion": h[0]["completion"], "returncode": 0}, "ok"
+            base_cached.append(h[1])
+            base_reused[p] = h[2]
+        base_recs.append(r)
+        base_st.append(s)
+    if base_from:
+        print(f"--base-from: {len(base_reused)} of {len(prompts)} base cells reused, "
+              f"{len(fresh)} generated", file=sys.stderr)
     cand_recs, cand_st = _completions(gen_fn, prompts, steer=args.steer,
                                       residual=args.residual, **decay, **gen_common,
                                       **_rank2_kwargs(args))
     controls, control_ev = run_controls(gen_fn, prompts[:3], args.steer, out_dir)
 
-    base_metrics, base_ev = _axis_a_metrics("base", prompts, base_recs, judge_exec)
+    base_metrics, base_ev = _axis_a_metrics("base", prompts, base_recs, judge_exec, base_cached)
     steer_metrics, steer_ev = _axis_a_metrics("steered", prompts, cand_recs, judge_exec)
     metrics = {**base_metrics, **steer_metrics}
     for m in ("kl_fidelity", "over_refusal_rate"):
@@ -423,6 +488,8 @@ def run_harmful_axis(args, gen_fn=None, judge_exec=None):
         },
         "judge_evidence": {"base": base_ev, "steered": steer_ev},
         "controls": controls, "control_evidence": control_ev, "counts": counts,
+        # aligned with arms.base: the source run id of a --base-from cell, else None
+        "base_reused": [base_reused.get(p) for p in prompts],
     }
     (out_dir / "manifest.json").write_text(_json(local))
     (out_dir / "summary.json").write_text(_json(summary))
@@ -523,6 +590,10 @@ def main(argv=None):
                          "overrides --limit, for re-testing a non-COMPLY subset. "
                          "The manifest selector records the exact indices and a "
                          "content hash so a subset is never mislabeled as full")
+    ap.add_argument("--base-from", dest="base_from", action="append", metavar="GLOB",
+                    help="harmful-axis-a: reuse the unsteered base arm (completion + judge "
+                         "label) from stored manifests matching GLOB (repeatable), same "
+                         "decoding and GGUF only; prompts not found are generated")
     ap.add_argument("--out", default=str(common.OUT))
     ap.add_argument("--input-run", help="render a stored run; launches no model")
     ap.add_argument("--calibrate", action="store_true",
@@ -770,6 +841,40 @@ def _selfcheck():
             except SystemExit:
                 raised = True
             assert raised, "out-of-range --indices must abort"
+
+            # --base-from: base cells of a stored run are reused (no base gen, no base
+            # judge call); a prompt it lacks is generated; other decoding is ignored.
+            calls = {"base_gen": 0, "judge": 0}
+
+            def cgen(prompt, *, steer=None, residual=0.0, **kw):
+                if steer is None and kw.get("max_tokens") == 64:
+                    calls["base_gen"] += 1
+                return hgen(prompt, steer=steer, residual=residual)
+
+            def cjudge(argv):
+                calls["judge"] += 1
+                return hjudge(argv)
+
+            class H5(H):
+                out = str(d / "outh5"); indices = "0,1"; max_tokens = 64
+            _, hl5, _ = run_harmful_axis(H5, gen_fn=hgen, judge_exec=hjudge)
+            class H6(H):
+                out = str(d / "outh6"); indices = "0,1,2"; max_tokens = 64
+                base_from = [str(d / "outh5" / "*" / "manifest.json"),
+                             str(d / "outh" / "*" / "manifest.json")]  # 256-token run: ignored
+                base_model_ident = hl5["model"]
+            hs6, hl6, _ = run_harmful_axis(H6, gen_fn=cgen, judge_exec=cjudge)
+            assert calls["base_gen"] == 1, calls        # only q3 generated
+            assert calls["judge"] == 1 + 3, calls       # q3 base + 3 steered
+            assert hl6["base_reused"][0] == hl5["run_id"] == hl6["base_reused"][1]
+            assert hl6["base_reused"][2] is None
+            assert hs6["metrics"]["judge_refuse_rate_base"]["value"] == 1.0
+            # another GGUF (size/mtime differ): nothing is reused
+            class H7(H6):
+                out = str(d / "outh7"); base_model_ident = {"size": 1, "mtime": 1}
+            calls.update(base_gen=0, judge=0)
+            run_harmful_axis(H7, gen_fn=cgen, judge_exec=cjudge)
+            assert calls["base_gen"] == 3, calls
         finally:
             compose.compose_harmful = orig
 

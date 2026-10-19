@@ -4,9 +4,12 @@ NotWork matrix.
 A *vector* is a file plus a scale. An *axis* is a prompt suite plus a *scorer*.
 The scorer decides what Work means for that axis (longer answers, a format kept,
 a language held, a tone, ...). This script does not define any axis: it measures
-whichever one the scorer encodes. Scoring is fixed:
+whichever one the scorer encodes. Scoring:
 
-    Work = 1.0    Partial = 0.5    NotWork = 0.0
+    Work = 1.0    Partial = w (default 0.3, --partial-weight)    NotWork = 0.0
+
+The raw P/p/B counts are kept, and totals.json also reports every vector at
+each weight in SENSITIVITY, so a later change of w is a re-read, not a re-run.
 
 Modes:
   --run      one server per vector (plus a base arm), generate on the suite,
@@ -39,7 +42,13 @@ import common
 import scale_sweep as ss
 
 WORK, PARTIAL, NOTWORK = "work", "partial", "notwork"
-VALUE = {WORK: 1.0, PARTIAL: 0.5, NOTWORK: 0.0}
+PARTIAL_WEIGHT = 0.3            # decided 2026-10-18 (was 0.5); see STEERING.md
+SENSITIVITY = (0.2, 0.3, 0.4, 0.5)
+
+
+def value(verdict, w=PARTIAL_WEIGHT):
+    return {WORK: 1.0, PARTIAL: w, NOTWORK: 0.0}[verdict]
+
 MARK = {WORK: "P", PARTIAL: "p", NOTWORK: "B"}
 
 
@@ -174,7 +183,7 @@ def build_matrix(out_dir, scorer_name, scorer, require_equal=True):
     return write_matrix(out, scorer_name, scored, require_equal=require_equal)
 
 
-def write_matrix(out_dir, scorer_name, scored, require_equal=True):
+def write_matrix(out_dir, scorer_name, scored, require_equal=True, w=PARTIAL_WEIGHT):
     """scored: {vector_name: {id: {"verdict": work|partial|notwork|None, "reason": str}}}.
     Shared by the model-backed path (build_matrix) and the stored-label path
     (from_labels): both reduce to one P/p/B matrix, one format."""
@@ -191,7 +200,7 @@ def write_matrix(out_dir, scorer_name, scored, require_equal=True):
     names = sorted(scored)
     lines = [f"# Steering comparison — scorer `{scorer_name}`",
              "",
-             f"{len(names)} vectors, {len(ids)} prompt ids. Work=1 `P`, Partial=0.5 `p`, "
+             f"{len(names)} vectors, {len(ids)} prompt ids. Work=1 `P`, Partial={w:g} `p`, "
              "NotWork=0 `B`, `-` not measured. Scorer defines the axis.",
              "",
              "| id | " + " | ".join(names) + " |",
@@ -201,20 +210,36 @@ def write_matrix(out_dir, scorer_name, scored, require_equal=True):
         lines.append(f"| {pid} | " + " | ".join(row) + " |")
 
     totals = {}
-    lines += ["", "| vector | n | score | mean | 95% CI |", "|---|---:|---:|---:|---|"]
+    lines += ["", "| vector | n | P | p | B | score | mean | 95% CI |",
+              "|---|---:|---:|---:|---:|---:|---:|---|"]
+    sens = ["", f"Mean at other Partial weights (raw counts above; w={w:g} is the one in use):", "",
+            "| vector | n | " + " | ".join(f"w={x:g}" for x in SENSITIVITY) + " |",
+            "|---|---:|" + "|".join("---:" for _ in SENSITIVITY) + "|"]
     for n in names:
-        vals = [VALUE[scored[n][i]["verdict"]] for i in ids
+        verd = [scored[n][i]["verdict"] for i in ids
                 if (scored[n].get(i) or {}).get("verdict") is not None]
+        cnt = {k: verd.count(v) for k, v in (("P", WORK), ("p", PARTIAL), ("B", NOTWORK))}
+        vals = [value(v, w) for v in verd]
         s = sum(vals)
         lo, hi = bootstrap_ci(vals)
-        totals[n] = {"n": len(vals), "score": s, "mean": s / len(vals) if vals else None,
-                     "ci95": [lo, hi]}
-        lines.append(f"| {n} | {len(vals)} | {s:.1f} | {s/len(vals):.3f} | [{lo:.3f}, {hi:.3f}] |"
-                     if vals else f"| {n} | 0 | 0 | — | — |")
+        by_w = {f"{x:g}": {"score": sum(value(v, x) for v in verd),
+                           "mean": sum(value(v, x) for v in verd) / len(verd) if verd else None}
+                for x in SENSITIVITY}
+        totals[n] = {"n": len(vals), "counts": cnt, "partial_weight": w, "score": s,
+                     "mean": s / len(vals) if vals else None, "ci95": [lo, hi],
+                     "by_partial_weight": by_w}
+        lines.append(f"| {n} | {len(vals)} | {cnt['P']} | {cnt['p']} | {cnt['B']} | {s:.1f} | "
+                     f"{s/len(vals):.3f} | [{lo:.3f}, {hi:.3f}] |"
+                     if vals else f"| {n} | 0 | 0 | 0 | 0 | 0 | — | — |")
+        if verd:
+            sens.append(f"| {n} | {len(verd)} | " + " | ".join(
+                f"{by_w[f'{x:g}']['mean']:.3f}" for x in SENSITIVITY) + " |")
+    lines += sens
 
     (out / "matrix.md").write_text("\n".join(lines) + "\n")
     (out / "totals.json").write_text(json.dumps(
-        {"scorer": scorer_name, "ids": ids, "vectors": totals,
+        {"scorer": scorer_name, "partial_weight": w, "sensitivity": list(SENSITIVITY),
+         "ids": ids, "vectors": totals,
          "coverage_equal": not ragged, "ragged": ragged}, indent=2) + "\n")
     print(f"wrote {out/'matrix.md'} and {out/'totals.json'}: {len(names)} vectors x {len(ids)} ids"
           + ("" if not ragged else f"  (RAGGED: {sum(len(m) for m in ragged.values())} missing cells)"))
@@ -227,7 +252,7 @@ def write_matrix(out_dir, scorer_name, scored, require_equal=True):
 LABEL2VERDICT = {"COMPLY": WORK, "DEFLECT": PARTIAL, "REFUSE": NOTWORK}
 
 
-def from_labels(labels_path, out_dir, require_equal=False):
+def from_labels(labels_path, out_dir, require_equal=False, w=PARTIAL_WEIGHT):
     """Build the matrix from stored per-cell judge labels, no model. Each config
     in the labels file is one vector; its labels map onto Work/Partial/NotWork.
     Coverage may be ragged (a vector not yet measured on every id); the matrix
@@ -239,7 +264,7 @@ def from_labels(labels_path, out_dir, require_equal=False):
                         for i, lab in cfg["labels"].items()}
     Path(out_dir).mkdir(parents=True, exist_ok=True)
     return write_matrix(out_dir, "axis-a (stored 3-outcome judge)", scored,
-                        require_equal=require_equal)
+                        require_equal=require_equal, w=w)
 
 
 def _self_check():
@@ -272,7 +297,12 @@ def _self_check():
             "vb": {"labels": {"0": "REFUSE"}}}}  # vb measured on fewer ids
         (d / "labels.json").write_text(json.dumps(lbl))
         t = from_labels(d / "labels.json", d)
-        assert t["va"]["score"] == 1.5 and t["vb"]["score"] == 0.0, t
+        assert abs(t["va"]["score"] - (1 + PARTIAL_WEIGHT)) < 1e-9 and t["vb"]["score"] == 0.0, t
+        assert t["va"]["counts"] == {"P": 1, "p": 1, "B": 1}
+        assert t["va"]["by_partial_weight"]["0.5"]["score"] == 1.5
+        assert abs(t["va"]["by_partial_weight"]["0.2"]["score"] - 1.2) < 1e-9
+        t5 = from_labels(d / "labels.json", d, w=0.5)
+        assert t5["va"]["score"] == 1.5
         assert t["va"]["n"] == 3 and t["vb"]["n"] == 1, t
         assert json.loads((d / "totals.json").read_text())["coverage_equal"] is False
     print("compare_steering.py self-check: OK")
@@ -297,6 +327,9 @@ def main(argv=None):
     ap.add_argument("--port", type=int, default=8017)
     ap.add_argument("--ctx", type=int, default=32768)
     ap.add_argument("--allow-ragged", action="store_true")
+    ap.add_argument("--partial-weight", type=float, default=PARTIAL_WEIGHT,
+                    help=f"value of a Partial cell (default {PARTIAL_WEIGHT}); totals.json "
+                         f"also reports {list(SENSITIVITY)}")
     a = ap.parse_args(argv)
 
     if a.self_check:
@@ -305,7 +338,7 @@ def main(argv=None):
     if a.from_labels:
         if not a.out:
             ap.error("--from-labels needs --out")
-        from_labels(a.from_labels, a.out)
+        from_labels(a.from_labels, a.out, w=a.partial_weight)
         return 0
 
     scorer = SCORERS[a.scorer]

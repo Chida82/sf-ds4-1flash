@@ -16,12 +16,13 @@ Per prompt, per vector:
 | Verdict | Value | Mark |
 |---|---:|:--:|
 | Work | 1.0 | `P` |
-| Partial | 0.5 | `p` |
+| Partial | 0.3 | `p` |
 | NotWork | 0.0 | `B` |
 | not measured | — | `-` |
 
 A vector's score is the sum over the prompts; its mean and a bootstrap 95% CI
-go in `totals.json`. Vectors are compared only on ids they all share: a ragged
+go in `totals.json`, with the raw P/p/B counts and the mean at every Partial
+weight in 0.2, 0.3, 0.4, 0.5 (`--partial-weight` picks the one in use). Vectors are compared only on ids they all share: a ragged
 matrix is not a comparison.
 
 ## Layout
@@ -30,6 +31,9 @@ matrix is not a comparison.
 eval/steering-comparison/
   README.md            this file: what the folder is
   STEERING.md          how to test, scorers, current values, next steps
+  TODO.md              progress, resume point, where every piece of data is
+  stages.sh            two-stage axis-a screening queue (resumable)
+  axis-a/stages/       one marker per finished stage: run id + score
   <axis>/base.jsonl    unsteered completions
   <axis>/<name>.jsonl  one steered vector's completions
   <axis>/matrix.md     the P/p/B matrix
