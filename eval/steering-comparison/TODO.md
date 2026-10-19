@@ -12,7 +12,31 @@ fusion: every idea keeps a variant that starts from the two originals.
 
 ## Where we are (update this block)
 
-- **⏸ PAUSED 2026-10-19 07:48 (user needed the machine). GPU free: queue, run.py,
+- **⏸ PAUSED 2026-10-19 12:35 (user needed resources). Queue, run.py and model
+  killed; `fused6` s2 was half done (no marker, reruns from scratch).** Same
+  resume command as below. Done since 07:48:
+  - **All 27 stage 1 finished.** New ones, on the 18 hard (PW 0.3): equiangular6
+    10.8, equiangular8 11.3 (equiangular peaks at dose 7: 14.6), interleave8 13.6
+    (passes, below interleave@7 14.3), tilt09-7 11.6 (arc peak stays at tilt 0.75),
+    tilt075-8 13.3 (passes, no gain over tilt075-7 13.6).
+  - **Stage 2 still to run (7):** fused6, fused8, jitter95b-7, jitter95c-7,
+    tilt075-7, interleave8, tilt075-8. ~30 min each, ~3.5 h.
+  - **Then** (same stages.sh run): base44 capture + router study, ~1-2 h. Router
+    results are NOT available yet.
+  - **Free-weight fuse (new, no GPU used yet):** `polymorph.py --mode weighted
+    --bands "lo-hi:w_a,w_m,w_d;..."` (self-check ok). Finding: equiangular = fused
+    outside L10-36 and ~(a .28, m .28, d .46) inside, so its edge over fused is
+    probably dealignai's share in the mid band. Round 1 = 4 candidates, fused outside
+    L10-36 and mid-band (a,m,d): wf-g30 (.35,.35,.30), wf-g60 (.20,.20,.60), wf-a40
+    (.40,.14,.46), wf-m40 (.14,.40,.46). Vectors in dir-steering/out/v41-poly-wf-*.f32,
+    registered in aggregate_judged_labels.py, appended to candidates.txt. They are
+    NOT run: the first stages.sh run read the list before they were added, so **a
+    second `stages.sh` run is needed after the router tail.** Next round: refine on
+    the best (outer band tilt 0.75, dose), then stage 2 for passers.
+  - Partial weight to revisit with the user after all stage 2.
+  - Uncommitted: polymorph.py (weighted mode), aggregate_judged_labels.py, candidates.txt, this file.
+
+- **(earlier) ⏸ PAUSED 2026-10-19 07:48 (user needed the machine). GPU free: queue, run.py,
   model, watchers all stopped (herdr's own caffeinate processes left alone).**
   **Resume with ONE command from the worktree root — it is resumable and reads the
   full 27-candidate candidates.txt, skipping everything already done:**
@@ -439,6 +463,14 @@ to msuiche, and past the ends). Interleave is a per-layer tilt. Order:
    for it, nor after a single stage 2. Show the 44-id means at w = 0.2–0.5 from
    `totals.json` `by_partial_weight`, and say whether any ranking against
    fused@7 flips with w.
+0b. **Larger-set validation, at the END of the whole investigation (user,
+   2026-10-19; NOT now).** The investigation and its objective stay on the 44
+   axis-a ids. Once the finalists are settled, rerun them on the full public sets
+   to see whether tuning further pays and whether the 44-id ranking holds:
+   AdvBench 520, HarmBench 400, StrongREJECT 313 prompts (loaders in
+   `eval/datasets_harmful.py`). A 44-id result carries noise of ~0.01-0.02 (random
+   jitter controls span 0.855-0.870 vs fused@7 0.864), so the big set is also the
+   way to separate close configs and to give the router more than 44 training prompts.
 1. Fill the candidate table and `STEERING.md` "Polymorphic candidates" results.
 2. Compare each passer with `jitter95@7`: a flip that the random control also
    makes is not evidence for the geometry.

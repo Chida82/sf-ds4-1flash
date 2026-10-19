@@ -102,6 +102,20 @@ CONFIGS = {
                        "efcfa279e144561b89ea0366fe80b10ff20c643e0d672d791abfe91d59096b63", 7.0),
     "tilt0.75@8":     ("v41-poly-tilt075.f32",
                        "2d2f9661ae4d6c6806017b4d2fd56a59c1cc829c57be0fc433aa45e638de483f", 8.0),
+    # free-weight fuse (polymorph.py --mode weighted): fused outside L10-36, inside it
+    # unit(w_a*abliteration + w_m*msuiche + w_d*dealignai). equiangular's mid-band weights
+    # are (.28,.28,.46); round 1 moves the dealignai share and the a/m lean around that.
+    "wf-g30@7": ("v41-poly-wf-g30.f32",
+                         "494569843572c749085860570dea3f02c29a98cd6413f560f40249411e93adc3", 7.0),
+    "wf-g60@7": ("v41-poly-wf-g60.f32",
+                         "b8fdbd554d788d06572ac08fa9ea23189067ece0fabe147de58b67fc5de1bc62", 7.0),
+    "wf-a40@7": ("v41-poly-wf-a40.f32",
+                         "04ff73ff66f9ef509a8870fb5e7f494e5b0f8ded19f026ca6200ca3c845267eb", 7.0),
+    "wf-m40@7": ("v41-poly-wf-m40.f32",
+                         "76615832feb2fa6d39f06ac1ec102be17aed03178f5f74c9ede4be04b8a7f45f", 7.0),
+    # control: equiangular's median mid-band weights held constant per band
+    "wf-e46@7": ("v41-poly-wf-e46.f32",
+                 "63e14e093d5f808408d151b5fd0522322919cb080b2627cad1b30bc33d8d25cd", 7.0),
 }
 OUT_DEFAULT = "eval/data/judged_labels.json"
 RUN_GLOB = "eval/out/*/manifest.json"

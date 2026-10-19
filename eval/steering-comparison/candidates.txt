@@ -29,3 +29,9 @@ interleave8|--steer $O/v41-poly-interleave.f32 --residual 8
 # arc peak is msuiche-leaning (tilt0.75@7=13.6 > fused 12.0): locate peak + combine levers
 tilt09-7|--steer $O/v41-poly-tilt09.f32 --residual 7
 tilt075-8|--steer $O/v41-poly-tilt075.f32 --residual 8
+# free-weight fuse, round 1: fused outside L10-36, mid-band (a,m,d) weights vary (equiangular ~ .28,.28,.46)
+wf-g30-7|--steer $O/v41-poly-wf-g30.f32 --residual 7
+wf-g60-7|--steer $O/v41-poly-wf-g60.f32 --residual 7
+wf-a40-7|--steer $O/v41-poly-wf-a40.f32 --residual 7
+wf-m40-7|--steer $O/v41-poly-wf-m40.f32 --residual 7
+wf-e46-7|--steer $O/v41-poly-wf-e46.f32 --residual 7

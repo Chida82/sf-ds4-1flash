@@ -26,6 +26,10 @@ fold `h -= F*d*dot(d,h)` is sign-invariant):
   patchwork    second-slot direction orthogonal to REF that changes identity by
                band: the residual of the LAST input orthogonal to REF where that
                input is nonzero, else diff(v1, v2). Needs --ref and 3 inputs.
+  weighted     d = unit(sum_i w_i v_i) with free weights per layer band, inputs unit and
+               sign-aligned. --bands "1-9:1,1,0;10-36:.28,.28,.46;37-39:1,1,0" gives w
+               (input order) per inclusive layer range; layers in no band use equal
+               weights. (1,1) is fused, (1-t,t) the tilt, and G^-1 1 equiangular.
   jitter       control: REF rotated by a random orthogonal direction to cosine
                --cos (default 0.95), seeded. Tells whether a flip comes from the
                geometry or from any perturbation of the same size. Needs --ref.
@@ -46,7 +50,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from fuse_directions import (N_EMBD, N_LAYERS, dot, is_zero, load_f32, norm,  # noqa: E402
                              ortho_residual, sign_align, unit, write_f32)
 
-MODES = ("equiangular", "interleave", "interleave-tilt", "diff", "complement", "patchwork", "jitter", "tilt")
+MODES = ("equiangular", "interleave", "interleave-tilt", "diff", "complement", "patchwork", "jitter", "tilt", "weighted")
 
 
 def _solve(G, b):
@@ -128,6 +132,29 @@ def tilt(a, b, t):
     return [0.0] * len(a) if is_zero(v, 1e-6) else unit(v)
 
 
+def parse_bands(spec):
+    """"1-9:1,1,0;10-36:.3,.3,.4" -> {layer: [w, ...]}."""
+    out = {}
+    for part in filter(None, (p.strip() for p in (spec or "").split(";"))):
+        rng_, ws = part.split(":")
+        lo, hi = (int(x) for x in rng_.split("-"))
+        for L in range(lo, hi + 1):
+            out[L] = [float(x) for x in ws.split(",")]
+    return out
+
+
+def weighted(rows, w):
+    """unit(sum w_i * v_i) over unit sign-aligned inputs; a zero input drops out with its weight."""
+    live = [(i, unit(r)) for i, r in enumerate(rows) if not is_zero(r)]
+    if not live:
+        return [0.0] * len(rows[0])
+    i0, v0 = live[0]
+    v = [(i0, v0)] +[(i, sign_align(v0, x)) for i, x in live[1:]]
+    ws = w if w else [1.0] * len(rows)
+    d = [sum(ws[i] * x[j] for i, x in v) for j in range(len(v0))]
+    return [0.0] * len(v0) if is_zero(d, 1e-6) else unit(d)
+
+
 def jitter(ref, cos, rng):
     if is_zero(ref):
         return [0.0] * len(ref)
@@ -138,7 +165,7 @@ def jitter(ref, cos, rng):
     return unit([x + eps * y for x, y in zip(r, n)])
 
 
-def build(mode, vecs, ref=None, cos=0.95, seed=1, t=0.5):
+def build(mode, vecs, ref=None, cos=0.95, seed=1, t=0.5, bands=None):
     n_layers = len(vecs[0]) if vecs else len(ref)
     rng = random.Random(seed)
     out = []
@@ -162,6 +189,8 @@ def build(mode, vecs, ref=None, cos=0.95, seed=1, t=0.5):
             d = jitter(ref[L], cos, rng)
         elif mode == "tilt":
             d = tilt(rows[0], rows[1], t)
+        elif mode == "weighted":
+            d = weighted(rows, (bands or {}).get(L))
         else:
             raise ValueError(mode)
         out.append(d)
@@ -238,6 +267,20 @@ def _self_check():
     assert all(abs(abs(dot(t0[L], a[L])) - 1) < 1e-9 for L in range(1, n)), "tilt t=0 != a"
     assert all(abs(abs(dot(t1[L], m[L])) - 1) < 1e-9 for L in range(1, n)), "tilt t=1 != m"
     assert all(abs(dot(th[L], fused[L]) - 1) < 1e-9 for L in range(1, n)), "tilt t=0.5 != fused"
+    # weighted: (1,1,0) is fused, (1-t,t,0) is tilt, the equiangular weights give equiangular,
+    # a banded spec changes only its band
+    wf = build("weighted", [a, m, d], bands=parse_bands("1-39:1,1,0"))
+    assert all(abs(dot(wf[L], fused[L]) - 1) < 1e-9 for L in range(1, n)), "weighted(1,1,0) != fused"
+    wt = build("weighted", [a, m], bands=parse_bands("1-39:.25,.75"))
+    tt = build("tilt", [a, m], t=0.75)
+    assert all(abs(dot(wt[L], tt[L]) - 1) < 1e-9 for L in range(1, n)), "weighted != tilt"
+    L = 20
+    v = _aligned([a[L], m[L], d[L]])
+    w = _solve([[dot(x, y) for y in v] for x in v], [1.0] * 3)
+    we = build("weighted", [a, m, d], bands=parse_bands(f"20-20:{w[0]},{w[1]},{w[2]}"))
+    assert abs(dot(we[L], eq[L]) - 1) < 1e-9, "weighted != equiangular"
+    wb = build("weighted", [a, m, d], bands=parse_bands("10-36:1,1,1"))
+    assert abs(dot(wb[5], fused[5]) - 1) < 1e-9, "unlisted layer must be equal weights"
     print("ok")
     return 0
 
@@ -250,6 +293,7 @@ def main(argv=None):
     ap.add_argument("--ref", help="reference .f32 (complement/patchwork/jitter; diff/equiangular report cosines to it)")
     ap.add_argument("--cos", type=float, default=0.95, help="jitter: cosine to REF")
     ap.add_argument("--t", type=float, default=0.5, help="tilt: 0=first vector, 1=second, 0.5=bisector")
+    ap.add_argument("--bands", help="weighted: 'lo-hi:w1,w2,..;lo-hi:...' per inclusive layer range")
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--out")
     ap.add_argument("vectors", nargs="*")
@@ -265,11 +309,12 @@ def main(argv=None):
         ap.error(f"{a.mode} needs --ref")
     vecs = [load_f32(p) for p in a.vectors]
     ref = load_f32(a.ref) if a.ref else None
-    rows = build(a.mode, vecs, ref=ref, cos=a.cos, seed=a.seed, t=a.t)
+    rows = build(a.mode, vecs, ref=ref, cos=a.cos, seed=a.seed, t=a.t, bands=parse_bands(a.bands))
     write_f32(a.out, rows)
     side = {
         "mode": a.mode, "seed": a.seed if a.mode == "jitter" else None,
         "t": a.t if a.mode == "tilt" else None,
+        "bands": a.bands if a.mode == "weighted" else None,
         "inputs": [{"path": p, "sha256": sha256(p)} for p in a.vectors],
         "ref": {"path": a.ref, "sha256": sha256(a.ref)} if a.ref else None,
         "output": {"path": a.out, "sha256": sha256(a.out)},

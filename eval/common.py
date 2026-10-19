@@ -97,6 +97,9 @@ def build_cli(prompt, *, steer=None, residual=0.0, think=True,
     argv = [str(CLI), "-m", MODEL, "--ssd-streaming",
             "--ctx", str(DECODE["ctx"]), "--temp", "0", "-n", str(mt)]
     argv += [] if think else ["--nothink"]
+    # sf: expert-cache target for runs that must leave RAM to other work; output is unchanged
+    if os.environ.get("SF_EVAL_CACHE_EXPERTS"):
+        argv += ["--ssd-streaming-cache-experts", os.environ["SF_EVAL_CACHE_EXPERTS"]]
     if system:
         argv += ["--system", system]
     if logits is not None:
