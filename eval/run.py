@@ -136,6 +136,8 @@ def _rank2_kwargs(args):
     kw = {}
     if getattr(args, "steer2", None) is not None:
         kw.update(steer2=args.steer2, residual2=args.residual2 or 0.0)
+        if getattr(args, "probe2", None) is not None:
+            kw.update(probe2=args.probe2)
     return kw
 
 
@@ -571,6 +573,8 @@ def main(argv=None):
                     help="rank-2: second direction file (orthogonal to --steer, e.g. fuse_directions.py 'ortho')")
     ap.add_argument("--residual2", type=float, default=0.0,
                     help="rank-2: constant scale for the second direction; 0 = off")
+    ap.add_argument("--probe2",
+                    help="slot-2 probe file: h -= residual2*d2*dot(p,h) before the first fold (d2 rows carry the dose)")
     ap.add_argument("--decay-tokens", type=int, dest="decay_tokens",
                     help="403: answer-phase decay window; omit for a constant scale")
     ap.add_argument("--think-decay-tokens", type=int, dest="think_decay_tokens",

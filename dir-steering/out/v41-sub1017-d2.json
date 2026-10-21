@@ -1,0 +1,6 @@
+{
+ "source": "refused-minus-complied mean difference (harmful prompts only, model 1017, rows position), orthogonalized to v41-sub1017-u1 per layer; eval/out-subspace-1017/capture",
+ "direction": "d2",
+ "rows": "unit per layer 1..39, row 0 zero; the refuse-vs-comply decision direction not already in u1",
+ "sha256": "9fe7060e67f992e8396ca45c374111fced43f3f61135d5005c0dfdbd69e34dde"
+}

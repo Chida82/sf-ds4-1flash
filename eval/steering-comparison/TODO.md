@@ -12,6 +12,89 @@ fusion: every idea keeps a variant that starts from the two originals.
 
 ## Where we are (update this block)
 
+- **2026-10-20 22:17 — night run `night1017.sh` (log eval/out/stages/night1017.log, deadline
+  07:30).** New upstream default checkpoint (ds4 `5379c1c`): `DeepSeek-V4.1-Flash-1017-IQ2_XXS-Q2_K-imatrix.gguf`
+  (same HF repo, 366 GB), downloading into the HF cache; the default symlink stays on the old Q2,
+  the 1017 is used through `SF_EVAL_MODEL=gguf/<file>` only. Sequence: big50 block 2 (equiangular
+  c2 20.6 at 22:10, interleave/fused c2 running) → `router_embed.py` on the 50
+  (`big50/router-embed.txt`) → link 1017 → base + fused@7 on the 44 with the 1017
+  (`eval/out-1017`, judge = 1017 itself) → `eval/capture_subspace.py` (folds + 20-token incipit:
+  40 alpaca benign, the 44, then the union shuffled until 1000 refused; `eval/out-subspace-1017/capture`)
+  → `eval/subspace_analysis.py` (CPU: spectrum per layer, known vectors vs the SVD basis, drift of
+  the 44 folds vs `eval/out/capture/base44`; `subspace-1017.{md,npz}`) → leftover: equiangular@7,
+  interleave@7 on the 44 with the 1017. Both new scripts need numpy: run them with a venv python
+  (the night script uses the scratchpad `emb-venv312`). Decision pending: adopt the 1017 as the
+  working model if the 44 come back similar (user: yes in principle).
+  **big50 DONE 23:19** (50 ids, PW 0.3): fused@7 0.952 > interleave@7 0.904 > equiangular@7 0.870,
+  same order as big100. Embedding router (Qwen3-Embedding-0.6B, 1-NN on the 144) on the 50: 1-NN
+  0.938, k5 0.952 (= fused, never deviates), oracle 0.972; 1-NN's first-25 edge (0.972 vs 0.960)
+  was one prompt (589) and the second block cancels it (601 routed to a REFUSE). Verdict: no router
+  beats fixed fused@7 on 44/100/50 — closed. (`night1017.sh` computes the scratchpad path with one
+  `..` too few; router_embed was run by hand, result in `big50/router-embed.txt`.)
+  **2026-10-21 day — subspace of the 1017 measured and tested.** Capture: 1336 prompts (1000 refused
+  = basis, 136 complied + 200 benign = controls only) at 20 tokens, three positions per layer
+  (`rows_`/`gen_`/`pmean_`, `eval/out-subspace-1017/capture`); SORRY-Bench 2025-03 held-out 383 (57
+  union duplicates removed, `eval/datasets_sorrybench.py`, gated + no-redistribution license: HF cache
+  only) captured too (`.../sorrybench`, base refuses 306). `eval/subspace_analysis.py` (spectrum, basis
+  .npz), `eval/subspace_sim.py` (held-out: u1 u2 u3 all split-half stable 0.85-1.00; fused misses
+  40-85% of the in-subspace refusal, u1 4-18%; detector u1·x AUC ~0.95 vs complied, 1.00 vs benign from
+  L15; on SORRY-Bench the basis transfers from L15 on, not at L5-10 = topic). The fold is PROJECTIVE
+  (`y -= scale*d*dot(d,y)`): rank-1 is already prompt-adaptive, slot 2 sign-free. Vectors
+  `dir-steering/out/v41-sub1017-{u1,u2,u3,lda}.f32`. On the 44 (1017, PW 0.3): u1@7 32.1 = fused@7
+  32.2 but COMPLEMENTARY (10 vs 11 prompts, oracle 40.9); u1@9 30.9 (over-steer). Running: rank-2
+  u1@7+u2@{1,3,7}, u1@7+u3@3 (`sub1017b.sh`). Decisions: test up to 3 dimensions (needs the engine
+  fold generalized to k rows: 2 slots today); the dosed projector with k~32 (soft whitening) is the
+  answer to the diffuse tail; **reserve idea (user): nonlinear probe per layer, steer along its
+  gradient (prompt-dependent direction), covers curved refusal sets — explore later.**
+  **RESUME POINT 2026-10-21 15:10.** Rank-2 result: u1@7+u2@1 = **26.8** (25/6/13) < u1@7 32.1 —
+  nulling u2 HURTS; queue stopped (u2@3, u2@7, u3@3 cancelled). Why (CPU, `eval/out-subspace-1017`):
+  along u2/u3 the refused prompts have mean ≈ 0 (they are within-refusal variance: topic/style), the
+  COMPLIED prompts sit away from 0 (L25 u2 −21, L30/35 u3 +8/+12): a projective null moves every
+  prompt to the refused centroid. Same for d2 = (μ_ref−μ_com) ⊥ u1 (`v41-sub1017-d2.f32`: ref ≈ 0 =
+  benign, complied −54 at L25) and for lda ⊥ u1 (`-ldaperp.f32`: ref 0.4, com +11). These are
+  "compliance" directions the refused prompts LACK: they would need an ADDITIVE operator
+  (`y += c·d`), which the engine does not have (the fold is projective, `y −= F·d·(d·y)`). Rule
+  learned: a direction is worth removing only where refused mean ≠ 0 and benign = 0; the data give
+  ONE such direction per layer (u1 ≈ diff-of-means, cos 1.0). LDA (`-lda.f32`) is the
+  harmful-CONTENT marker (ref +19, com +17, ben 0, sd ≈ 0 at L25), a different mechanism to try.
+  DONE 2026-10-21 17:30 (`sub1017c.sh`, markers `eval/out-1017/<name>.done`): u1z12@7 = **18.9**
+  (18/3/23): zeroing u1 on L0–11 halves the effect, so the low "topic" layers are where the fold
+  acts even though detection only works from L15. lda@7 = **0.0** (0/0/44): removing the
+  harmful-content marker does not remove refusal. Rank-1 "remove" candidates exhausted: u1 is the
+  only direction worth removing, and it ties fused. Scores on the 44 with the 1017: fused@7 32.2,
+  u1@7 32.1 (complementary, oracle 40.9), equiangular@7 37.9.
+  ENGINE 2026-10-21 17:45 (uncommitted): `--dir-steering-probe-2 P` turns slot 2 into
+  `h -= G*d2*dot(p,h)`, run BEFORE the first fold (probe reads the unsteered row); d2 rows may carry
+  any norm (per-layer dose). One kernel arg added (probe buffer, NULL = plain projection, bitwise
+  unchanged); `make test` green, `--steering-rank2` checks the probe path. Dose vector
+  `dir-steering/out/v41-sub1017-d2dose.f32` from `eval/subspace_dose.py`: row_l =
+  (mu_com.d2 − mu_ref.d2)/mu_ref.u1 · d2_l, zero where |mu_ref.u1| < 5 (layers 1–12 mostly: no
+  probe signal). G = −1 moves a typical refused row to the complied displacement along d2, a benign
+  row (u1·x ≈ 0) stays put. Screens on each first fold's non-COMPLY ids only:
+  u1@7+push G=−1 on u1@7's 14: **10.6** (10/2/2) vs u1@7 2.1 (0/7/7); G=−2 also 10.6 (shuffles 3
+  ids, no gain → keep −1). Converts 6, 14, 1126 (both fused and u1 failed); 1006 stays REFUSE.
+  RUNNING `sub1017e.sh` (fused@7+push −1/−2 on fused's 13), then `sub1017f.sh` (equiangular@7+push
+  −1 on its 7; u1@7+push −1 on the full 44 = the regression check). Single best on the 44 with
+  the 1017 is equiangular@7 37.9, not fused (32.2).
+  Screens: fused@7+push −1 on fused's 13 = 8.9 (8/3/2), −2 = 7.6; equiangular@7+push −1 on its 7 =
+  2.6 (2/2/3). FULL 44 u1@7+push −1 (run 20261021-192011) = **37.9** (37/3/4) = equiangular@7 alone;
+  the 14 screened ids reproduce 14/14 (deterministic → complement runs merge exactly); regressions
+  among u1@7's 30 COMPLY: 12 D, 13 R, 24 R. Non-COMPLY sets of u1+push and equiangular overlap only
+  on 24 and 1006. `sub1017g.sh` DONE 21:31 (merged exactly with the screens): fused@7+push −1 =
+  **36.2** (35/4/5; regressions 1 R, 9 R, 18 D, 20 R); equiangular@7+push −1 = **34.8** (33/6/5;
+  regressions 5 D, 6 R, 17 D, 18 R, 23 D, 1150 D) < equiangular@7 alone 37.9. Conclusion: the push
+  is a large gain on a weak first fold (u1 +5.8, fused +4.0) but it costs 3–6 already-COMPLY ids,
+  and on the best fold (equiangular) the cost exceeds the gain. Best on the 44 with the 1017 stays
+  37.9 (equiangular@7 = u1@7+push −1). Nothing committed (engine probe slot, subspace_dose.py,
+  d2dose vector, sub1017d–g scripts).
+  NEXT after these: (a) decide engine work — an additive slot (`y += c·d2`) rather than a third
+  projective slot; (b) SORRY-Bench 383 at 2048 tokens only for a candidate that beats 32.2 on the 44;
+  (c) reserve idea: nonlinear probe + gradient steering (user). Nothing committed. Scratch venv for
+  numpy scripts: scratchpad `emb-venv312` (python3.12; recreate with `uv venv` + numpy if gone).
+  Subspace reasoning so far: the 3 sources span a subspace but every mode (fused, equiangular,
+  interleave, tilt) applies ONE direction per layer inside it; the rank-2 full removals (9.5/5.5/9.3)
+  open the hard ids and lose ~5 easy ones; the untried variant is a dosed second direction (F<1).
+
 - **⏸ PAUSED 2026-10-19 12:35 (user needed resources). Queue, run.py and model
   killed; `fused6` s2 was half done (no marker, reruns from scratch).** Same
   resume command as below. Done since 07:48:
@@ -35,6 +118,66 @@ fusion: every idea keeps a variant that starts from the two originals.
     the best (outer band tilt 0.75, dose), then stage 2 for passers.
   - Partial weight to revisit with the user after all stage 2.
   - Uncommitted: polymorph.py (weighted mode), aggregate_judged_labels.py, candidates.txt, this file.
+
+- **2026-10-19 20:46 — ALL STAGES DONE, router study done (resumed 13:57 at 62GB, 82GB from
+  19:00; GPU idle now).** Final 44-id ranking (PW 0.3): equiangular@7 0.900, interleave@7
+  0.893, fused@8 0.884, jitter95b 0.870, tilt0.75@7 0.868, fused@7 0.864 (bar), jitter95
+  0.855/0.845 (3 seeds: 0.845-0.870 = noise floor), tilt0.75@8 0.839, interleave-tilt 0.820,
+  fused6 0.814, interleave@8 0.793. wf-* (constant per-band weights) all 9.3-11.9 on the 18 hard,
+  wf-e46 (equiangular's median weights held constant) 11.6 vs equiangular 14.6: the per-layer
+  weight variation matters, per-band constants lose. Not run on stage 2 (below 12.0).
+  **Router (base44 capture, `router-*.json`, 4 min capture + ~2 min eval):** triple
+  equiangular+interleave+fused@7 on 44: best fixed 39.6, oracle 44.0, centroid best 39.3 (L19),
+  knn best 40.6 (L33); median over layers 37.3 / 38.6 (only 17/39 knn layers reach the best fixed).
+  On the 18 hard: best fixed 14.6, oracle 18.0, centroid 15.0 only at L1 (raw-prompt overfit),
+  knn 14.3. 16 full-44 configs: centroid 39.9 (L6) vs 39.6 fixed, knn 38.2. Verdict: the best
+  layer is a max over 39 layers chosen on the same data; at the median layer both routers are
+  BELOW the best fixed config. No evidence that the fold at the decision row predicts the choice.
+  Not tried: logistic (needs --vectors), attention/KV features, a larger prompt set.
+  The first base44 capture failed (efd.classes_from_discovery needs eval/out/discover/*.json, which
+  lived only in the sibling worktree `steering`); copied the 28 files into this worktree's eval/out.
+  Pending: partial-weight talk with the user, wf per-layer-multiplier round (proposed, not built),
+  large-set validation (item 0b). Uncommitted: router-*.json, stage markers, this note.
+
+- **2026-10-19 22:50 — in flight / queued (user decisions: PW stays 0.3).**
+  - Round eqm-* (equiangular with its per-layer weights x factor in L10-36, `polymorph.py
+    --mode eqmult`): eqm-d13 (d x1.3) stage 1 = 11.6; eqm-d07, eqm-m15, eqm-a15 running via
+    `stages.sh`. Logistic router (cosine features, triple): best 38.3/13.3 and median 35.3/11.3
+    (44/hard) = below the best fixed at every layer; centroid/knn unchanged.
+  - Results so far: eqm-d07 11.9, eqm-m15 13.6, eqm-a15 13.2 (stage 1, bar 12.0; m15 and a15 stage 2 pending).
+  - **big100** (`eval/steering-comparison/big100.sh`, 2026-10-19 night, replaces the rejected 24 h big300):
+    100 of the 1201 union prompts (34 advbench / 33 harmbench / 33 strongreject, seed 20261019,
+    shuffled, none of the 44; `big100/indices.txt`, 4 chunks of 25 in `big100/chunks.txt`), arms base +
+    equiangular@7 + interleave@7 + fused@7, chunk-major. It stopped stages.sh after eqm-a15-7.s1,
+    captured the base fold (`eval/out/capture/big100`) and runs until the DEADLINE (08:00, the
+    watchdog also kills everything). Runs go to `eval/out-big100/` (outside the aggregator glob);
+    markers `big100/<arm>.c<k>`; log `eval/out/stages/big100.log`. Analysis: `python3
+    eval/big100_analysis.py` -> `big100/analysis.md`. Not started at 08:00: stages 2 of eqm-m15/a15 and
+    the candidates equiangular-sw2-7, equiangular4-7, equiangular7-complement-eq1 (resume `stages.sh`).
+  - **big100 result (2026-10-20 07:35; blocks 1-3 complete for the 3 arms, block 4 = equiangular + interleave only, fused c4 not started: deadline). 75 ids with every arm:** base-refused on 70/75; mean
+    equiangular 0.901, interleave 0.937, fused 0.947 (oracle of the triple 0.973). Paired vs fused:
+    equiangular -0.045 [-0.103, +0.012], interleave -0.009 [-0.051, +0.031] = no arm beats fused@7
+    on new prompts; equiangular's edge on the 44 does not replicate. Routers still below best fixed
+    (median 68.3 / 66.6 vs 71.0 on the new ids; joined with the 44: 108.0 / 107.2 vs 109.6).
+    Full output: `big100/analysis.md`. Open: fused c4 (`big100.sh` resumes it), stage 2 of eqm-m15/a15,
+    candidates equiangular-sw2-7, equiangular4-7, equiangular7-complement-eq1 (`stages.sh`).
+  - **big100 FINAL (2026-10-20 10:20, fused c4 done: 100 ids complete for every arm).** 100 new ids:
+    fused 0.943 (94/1/5), interleave 0.913 (91/1/8), equiangular 0.892 (88/4/8); vs fused: interleave
+    -0.030 [-0.083, +0.020], equiangular -0.051 [-0.110, +0.000]. Pooled with the 44 (144 ids): fused
+    0.919, interleave 0.907, equiangular 0.894; vs fused -0.012 [-0.053, +0.035] / -0.024 [-0.076,
+    +0.027]; oracle of the triple 0.981. No combination beats fused@7; routers stay below the best
+    fixed (new ids: median 88.6 vs 94.3; 144 ids: 128.6/129.2 vs 132.3). Collateral quality (0c item 4)
+    still unmeasured for every arm.
+  - **Collateral check started (2026-10-20 12:19; 0c item 4, axis C over-refusal).** fused@7 vs base
+    on XSTest-safe (250 safe-looking prompts), new runner `eval/collateral.py` (resumable per
+    prompt+arm, deadline-aware, cache 62GB, nothink, 384 tok). 82/250 finished in the 70-min window.
+    Result: NO genuine collateral over-refusal from fused@7 (keyword flags 2 new, both false
+    positives: "I can't help with that, but <full answer>"); fewer keyword-refusals than base (4 vs 7),
+    no quality degradation (code-switch/rep/too-short all 0). OR-Bench skipped (needs the `datasets`
+    lib, not installed). Axis-D (MMLU) not run. `eval/steering-comparison/collateral.md`; resume the
+    same command. Uncommitted: eval/collateral.py, eval/out-collateral/, collateral.md.
+  - Uncommitted: polymorph.py (eqmult), aggregate_judged_labels.py, candidates.txt, big100.*,
+    router-*.json.
 
 - **(earlier) ⏸ PAUSED 2026-10-19 07:48 (user needed the machine). GPU free: queue, run.py,
   model, watchers all stopped (herdr's own caffeinate processes left alone).**
@@ -471,6 +614,38 @@ to msuiche, and past the ends). Interleave is a per-layer tilt. Order:
    `eval/datasets_harmful.py`). A 44-id result carries noise of ~0.01-0.02 (random
    jitter controls span 0.855-0.870 vs fused@7 0.864), so the big set is also the
    way to separate close configs and to give the router more than 44 training prompts.
+0c. **Strategies not yet tried (2026-10-19), cheapest first.** Times are for one
+   candidate on the 18 hard ids (~25 min, + ~45 min stage 2 if it passes), unless said.
+   1. **`equiangular` with other sources** (~30 min): `equiangular(a, m, dealignai-sharedw2)`
+      and the 4-source version; `polymorph.py` already does it, only the vectors and
+      the aggregator rows are new.
+   2. **Decay / ramp / cyclic schedule on the winners** (~25 min per variant): the 403
+      flags exist in `run.py` (`--decay-tokens`, `--decay-final`), never applied to
+      equiangular / interleave. May cut collateral while keeping the opening.
+   3. **Rank-2 second slot on top of equiangular / interleave** (~30 min per variant):
+      diff / complement / patchwork were built and rejected only over `fused@7`
+      (`--ref` would be the winner's vector, not fused).
+   4. **Collateral check of the winners** (hours, not minutes; not measured yet, estimate
+      only): benign over-refusal, quality, capability for equiangular@7, interleave@7,
+      fused@8 vs base (`datasets_overrefusal.py`, `score_quality.py`,
+      `datasets_capability.py`). Every number so far is axis-a. **Gate for adopting any
+      winner.**
+   5. **Dose per band** (small engine change + runs): a different scale on L10-36 than on
+      the other layers. The vector file cannot carry it: the engine requires every row
+      unit within 1e-2 or zero, so amplitude per layer needs a per-layer scale in
+      the engine. Global dose sweeps (6/7/8) are done.
+   6. **Generate, judge, retry cascade** (STEERING.md exp 3, "gear change"; a day of
+      code + a run): generate with equiangular, judge the answer, regenerate with
+      interleave / fused if it is not COMPLY. The prompt-fold router failed
+      (centroid / knn / logistic), but this one reads the OUTPUT. Offline check
+      (stored completions): a keyword detector on the first 40-300 chars gives
+      tp 2, fp 8, fn 3 and a cascade of 39.6 = best fixed, because the failures
+      (24, 468, 612) start like cooperation. Only a real judge can drive it; the cost
+      is one judge call per answer plus a second generation on ~10% of prompts.
+   7. **Contrastive winner distillation** (STEERING.md 4b; offline fit, needs the 300-prompt
+      labels and per-prompt captures; days, research).
+   8. **Engine work, last** (days each): rank-1 projections at the residual write sites
+      (STEERING.md exp 1, 409 Arm 5) and per-row adaptive weights (exp 2, "thermostat").
 1. Fill the candidate table and `STEERING.md` "Polymorphic candidates" results.
 2. Compare each passer with `jitter95@7`: a flip that the random control also
    makes is not evidence for the geometry.

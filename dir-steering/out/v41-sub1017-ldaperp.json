@@ -1,0 +1,5 @@
+{
+ "source": "v41-sub1017-lda orthogonalized to v41-sub1017-u1 per layer (unit rows 1..39, row 0 zero)",
+ "direction": "ldaperp",
+ "sha256": "02f7e9cc8ce471a8e85ab569bdd4efbade155fe0572f12fe4f24501b31a3117f"
+}

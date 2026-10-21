@@ -35,3 +35,12 @@ wf-g60-7|--steer $O/v41-poly-wf-g60.f32 --residual 7
 wf-a40-7|--steer $O/v41-poly-wf-a40.f32 --residual 7
 wf-m40-7|--steer $O/v41-poly-wf-m40.f32 --residual 7
 wf-e46-7|--steer $O/v41-poly-wf-e46.f32 --residual 7
+# equiangular with per-layer weights kept, scaled in L10-36 (eqmult): d x1.3, d x0.7, m-lean, a-lean
+eqm-d13-7|--steer $O/v41-poly-eqm-d13.f32 --residual 7
+eqm-d07-7|--steer $O/v41-poly-eqm-d07.f32 --residual 7
+eqm-m15-7|--steer $O/v41-poly-eqm-m15.f32 --residual 7
+eqm-a15-7|--steer $O/v41-poly-eqm-a15.f32 --residual 7
+# TODO 0c items 1 and 3 (prepared 2026-10-19 night, queued for the next stages.sh run): equiangular with the MoE write direction, four sources, rank-2 residual over equiangular
+equiangular-sw2-7|--steer $O/v41-poly-equiangular-sw2.f32 --residual 7
+equiangular4-7|--steer $O/v41-poly-equiangular4.f32 --residual 7
+equiangular7-complement-eq1|--steer $O/v41-poly-equiangular.f32 --residual 7 --steer2 $O/v41-poly-complement-eq.f32 --residual2 1

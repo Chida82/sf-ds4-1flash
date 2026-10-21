@@ -1,0 +1,6 @@
+{
+ "source": "eval/subspace_sim.py final_dirs on eval/out-subspace-1017/capture (1000 refused vs 200 benign, model 1017, position rows)",
+ "direction": "lda",
+ "rows": "unit per layer 1..39, row 0 zero, oriented toward refusal (u1.(mu_ref-mu_ben)>0)",
+ "sha256": "d55b590a089ba1c9c895175ba5cd5998a05a623746a2aa5793634af6ad4d6d4b"
+}

@@ -81,7 +81,7 @@ def build_cli(prompt, *, steer=None, residual=0.0, think=True,
               max_tokens=None, logprobs=None, top_k=None, system=None, extra=None,
               logits=None, decay_tokens=None, decay_final=None,
               think_decay_tokens=None, cycle_peak=None,
-              steer2=None, residual2=0.0):
+              steer2=None, residual2=0.0, probe2=None):
     """argv for one greedy generation.
 
     base arm:    steer=None  -> no steering block at all.
@@ -130,6 +130,9 @@ def build_cli(prompt, *, steer=None, residual=0.0, think=True,
         if steer2 is not None:
             argv += ["--dir-steering-file-2", str(steer2),
                      "--dir-steering-residual-2", _num(residual2)]
+            # sf: probe-dosed slot 2 (h -= G*d2*dot(p,h), before the first fold)
+            if probe2 is not None:
+                argv += ["--dir-steering-probe-2", str(probe2)]
     if extra:
         argv += list(extra)
     argv += ["-p", prompt]

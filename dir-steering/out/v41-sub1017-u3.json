@@ -1,0 +1,6 @@
+{
+ "source": "eval/subspace_analysis.py SVD basis column 2 on eval/out-subspace-1017/capture (1000 refused - benign mean, model 1017, rows)",
+ "direction": "u3",
+ "rows": "unit per layer 1..39, row 0 zero, orthogonal to u1; sign irrelevant for the projection fold h -= G*d2*dot(d2,h)",
+ "sha256": "3d521099170bd8ec6186b5fe2e08049bd34422a7a7aa7628c8937f1d45c76ee4"
+}

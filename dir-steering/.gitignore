@@ -1,4 +1,5 @@
 out/*
 !out/v41-poly-*
+!out/v41-sub1017-*
 *.pyc
 __pycache__/

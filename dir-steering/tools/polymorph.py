@@ -30,6 +30,10 @@ fold `h -= F*d*dot(d,h)` is sign-invariant):
                sign-aligned. --bands "1-9:1,1,0;10-36:.28,.28,.46;37-39:1,1,0" gives w
                (input order) per inclusive layer range; layers in no band use equal
                weights. (1,1) is fused, (1-t,t) the tilt, and G^-1 1 equiangular.
+  eqmult       equiangular with its per-layer weights G^-1 1 multiplied by per-band
+               factors, one per input (zero inputs drop out): --bands
+               "10-36:1,1,1.3" scales the third source's weight by 1.3 in L10-36. Keeps
+               the per-layer weight structure that constant per-band weights lose.
   jitter       control: REF rotated by a random orthogonal direction to cosine
                --cos (default 0.95), seeded. Tells whether a flip comes from the
                geometry or from any perturbation of the same size. Needs --ref.
@@ -50,7 +54,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from fuse_directions import (N_EMBD, N_LAYERS, dot, is_zero, load_f32, norm,  # noqa: E402
                              ortho_residual, sign_align, unit, write_f32)
 
-MODES = ("equiangular", "interleave", "interleave-tilt", "diff", "complement", "patchwork", "jitter", "tilt", "weighted")
+MODES = ("equiangular", "interleave", "interleave-tilt", "diff", "complement", "patchwork", "jitter", "tilt", "weighted", "eqmult")
 
 
 def _solve(G, b):
@@ -155,6 +159,20 @@ def weighted(rows, w):
     return [0.0] * len(v0) if is_zero(d, 1e-6) else unit(d)
 
 
+def eqmult(rows, f):
+    """equiangular weights per layer, each input's weight times f[i] (1 if f is None)."""
+    live = [i for i, r in enumerate(rows) if not is_zero(r)]
+    v = _aligned(rows)
+    if not v:
+        return [0.0] * len(rows[0])
+    if len(v) == 1:
+        return v[0]
+    w = _solve([[dot(a, b) for b in v] for a in v], [1.0] * len(v))
+    w = [wi * (f[i] if f else 1.0) for wi, i in zip(w, live)]
+    d = [sum(wi * vi[j] for wi, vi in zip(w, v)) for j in range(len(v[0]))]
+    return [0.0] * len(v[0]) if is_zero(d, 1e-6) else unit(d)
+
+
 def jitter(ref, cos, rng):
     if is_zero(ref):
         return [0.0] * len(ref)
@@ -191,6 +209,8 @@ def build(mode, vecs, ref=None, cos=0.95, seed=1, t=0.5, bands=None):
             d = tilt(rows[0], rows[1], t)
         elif mode == "weighted":
             d = weighted(rows, (bands or {}).get(L))
+        elif mode == "eqmult":
+            d = eqmult(rows, (bands or {}).get(L))
         else:
             raise ValueError(mode)
         out.append(d)
@@ -281,6 +301,13 @@ def _self_check():
     assert abs(dot(we[L], eq[L]) - 1) < 1e-9, "weighted != equiangular"
     wb = build("weighted", [a, m, d], bands=parse_bands("10-36:1,1,1"))
     assert abs(dot(wb[5], fused[5]) - 1) < 1e-9, "unlisted layer must be equal weights"
+    # eqmult: unit factors are equiangular; a factor on the dealignai weight moves the
+    # direction toward d inside its band and leaves the outside layers untouched
+    e1 = build("eqmult", [a, m, d], bands=parse_bands("1-39:1,1,1"))
+    assert all(abs(dot(e1[L], eq[L]) - 1) < 1e-9 for L in range(1, n)), "eqmult(1,1,1) != equiangular"
+    e2 = build("eqmult", [a, m, d], bands=parse_bands("10-36:1,1,2"))
+    assert abs(dot(e2[5], eq[5]) - 1) < 1e-9, "eqmult changed a layer outside its band"
+    assert abs(dot(e2[20], d[20])) > abs(dot(eq[20], d[20])), "factor 2 on d must tilt toward d"
     print("ok")
     return 0
 

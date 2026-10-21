@@ -116,6 +116,24 @@ CONFIGS = {
     # control: equiangular's median mid-band weights held constant per band
     "wf-e46@7": ("v41-poly-wf-e46.f32",
                  "63e14e093d5f808408d151b5fd0522322919cb080b2627cad1b30bc33d8d25cd", 7.0),
+    # equiangular with its per-layer weights scaled in L10-36 (polymorph.py --mode eqmult)
+    "eqm-d13@7": ("v41-poly-eqm-d13.f32",
+                         "20fdd487acecfe8c98bbffc8a69ca1115b83d8c085dc7b74ab370a956c7d7cf6", 7.0),  # dealignai x1.3
+    "eqm-d07@7": ("v41-poly-eqm-d07.f32",
+                         "5ec287ad5ba66cf0e5b092a74eded58623e319635752e0588d07ad93c6473382", 7.0),  # dealignai x0.7
+    "eqm-m15@7": ("v41-poly-eqm-m15.f32",
+                         "a8acff27fa82b9da4ec5623867febd9745c89fff39199043608d93c7061d74bb", 7.0),  # msuiche x1.5, abliteration x0.67
+    "eqm-a15@7": ("v41-poly-eqm-a15.f32",
+                         "2c01d79f1ee47563b4f06857604953b39fb2479e47a21a46db13e4ac48631b83", 7.0),  # abliteration x1.5, msuiche x0.67
+    # TODO 0c items 1 and 3: equiangular with the MoE write direction, with all four sources, and a rank-2 residual over equiangular
+    "equiangular-sw2@7": ("v41-poly-equiangular-sw2.f32",
+                         "135a5ff01d557193a41ac28a356ed9e5ad9eeeddb30127c0a8f522cd51806f2b", 7.0),
+    "equiangular4@7": ("v41-poly-equiangular4.f32",
+                         "5471fddbf78dc3d35a558d8ac53da4287eb3eab2569d4b181c3f34518dc38f5f", 7.0),
+    "equiangular@7+complement-eq@1": ("v41-poly-equiangular.f32",
+                         "2773465fa28dc91d808542da2a0e0795cd5bc10516f730f5edf96cc7e5b7a5aa", 7.0,
+                         "v41-poly-complement-eq.f32",
+                         "8facd9ddc713e4921ab26c294408609cb4f4109386eac7c743a22c7f1312b3bd", 1.0),
 }
 OUT_DEFAULT = "eval/data/judged_labels.json"
 RUN_GLOB = "eval/out/*/manifest.json"
