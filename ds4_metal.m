@@ -29758,12 +29758,14 @@ typedef struct {
 int ds4_gpu_directional_steering_project_tensor(
         ds4_gpu_tensor       *x,
         const ds4_gpu_tensor *directions,
+        const ds4_gpu_tensor *probe,
         uint32_t                layer,
         uint32_t                width,
         uint32_t                rows,
         float                   scale) {
     if (!g_initialized && !ds4_gpu_init()) return 0;
     if (!x || !directions || width == 0 || rows == 0 || scale == 0.0f) return 0;
+    if (!probe) probe = directions;  /* sf: plain projection measures along the direction itself */
 
     @autoreleasepool {
         id<MTLComputePipelineState> pipeline =
@@ -29772,11 +29774,13 @@ int ds4_gpu_directional_steering_project_tensor(
 
         id<MTLBuffer> xbuf = ds4_gpu_tensor_buffer(x);
         id<MTLBuffer> dbuf = ds4_gpu_tensor_buffer(directions);
+        id<MTLBuffer> pbuf = ds4_gpu_tensor_buffer(probe);
         const uint64_t x_bytes = (uint64_t)width * rows * sizeof(float);
         const uint64_t dir_bytes = (uint64_t)(layer + 1u) * width * sizeof(float);
-        if (!xbuf || !dbuf ||
+        if (!xbuf || !dbuf || !pbuf ||
             ds4_gpu_tensor_bytes(x) < x_bytes ||
-            ds4_gpu_tensor_bytes(directions) < dir_bytes) {
+            ds4_gpu_tensor_bytes(directions) < dir_bytes ||
+            ds4_gpu_tensor_bytes(probe) < dir_bytes) {
             fprintf(stderr, "ds4: Metal directional steering received undersized buffers\n");
             return 0;
         }
@@ -29803,6 +29807,7 @@ int ds4_gpu_directional_steering_project_tensor(
         [enc setBytes:&args length:sizeof(args) atIndex:0];
         [enc setBuffer:xbuf offset:ds4_gpu_tensor_offset(x) atIndex:1];
         [enc setBuffer:dbuf offset:ds4_gpu_tensor_offset(directions) atIndex:2];
+        [enc setBuffer:pbuf offset:ds4_gpu_tensor_offset(probe) atIndex:3];
         [enc setThreadgroupMemoryLength:nth * sizeof(float) atIndex:0];
         [enc dispatchThreadgroups:MTLSizeMake((NSUInteger)rows, 1, 1)
              threadsPerThreadgroup:MTLSizeMake(nth, 1, 1)];

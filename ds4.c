@@ -12604,6 +12604,7 @@ static bool metal_graph_apply_directional_steering(
     if (!g || !metal_graph_directional_steering_dirs(g) || scale == 0.0f) return true;
     return ds4_gpu_directional_steering_project_tensor(x,
                                             metal_graph_directional_steering_dirs(g),
+                                            NULL,
                                             il,
                                             DS4_N_EMBD,
                                             rows,
@@ -23170,6 +23171,7 @@ typedef struct {
     ds4_gpu_tensor *residual_dirs;  /* sf: 401 per-layer steering directions (40x5120), NULL when off */
     float residual_scale;           /* sf: 401 residual_stream_post_layer scale (0 = off) */
     ds4_gpu_tensor *residual_dirs2; /* sf: rank-2 second per-layer directions, NULL when off */
+    ds4_gpu_tensor *residual_probe2; /* sf: slot-2 probe directions (dot measured along these), NULL = dirs2 */
     float residual_scale2;          /* sf: rank-2 second constant scale (0 = off) */
     ds41_prefill_row batch, *rows_view;
     ds41_prefill_row carry;
@@ -23208,6 +23210,7 @@ static void ds41_graph_free(ds41_gpu_graph *g) {
     }
     ds4_gpu_tensor_free(g->residual_dirs);  /* sf: 401 */
     ds4_gpu_tensor_free(g->residual_dirs2); /* sf: rank-2 */
+    ds4_gpu_tensor_free(g->residual_probe2);
     for (uint32_t i = 0; i < 40; i++) ds4_gpu_tensor_free(g->window[i]);
     for (uint32_t i = 0; i < 4; i++) {
         ds4_gpu_tensor_free(g->compressed[i]);
@@ -23593,14 +23596,17 @@ static bool ds41_steer_attention_input(const ds41_gpu_graph *g, ds4_gpu_tensor *
                                        uint32_t il, uint32_t rows) {
     if (!ds41_steering_active(g)) return true;
     ds41_steered_rows_total += rows;
-    return ds4_gpu_directional_steering_project_tensor(x, g->residual_dirs, il,
+    return ds4_gpu_directional_steering_project_tensor(x, g->residual_dirs, NULL, il,
                DS4_N_EMBD, rows, g->residual_scale) != 0;
 }
 
 /* sf: rank-2 second orthogonal direction, applied as a second in-place fold at
  * the same site (constant scale, same disable env). When the two directions are
  * orthogonal per layer the sequential removal equals removing their 2D span
- * exactly; non-orthogonal pairs compose as two rank-1 removals. */
+ * exactly; non-orthogonal pairs compose as two rank-1 removals. With a probe
+ * (`--dir-steering-probe-2`) the slot moves the row along dirs2 by
+ * scale2 * dot(probe, x) instead: dirs2 rows then carry a per-layer dose, and
+ * the slot runs BEFORE the first fold so the probe reads the unsteered row. */
 static bool ds41_steering2_active(const ds41_gpu_graph *g) {
     return g->residual_scale2 != 0.0f && g->residual_dirs2 &&
            !getenv("DS4_METAL_DISABLE_V41_RESIDUAL_STEERING");
@@ -23610,8 +23616,16 @@ static bool ds41_steer_attention_input2(const ds41_gpu_graph *g, ds4_gpu_tensor 
                                         uint32_t il, uint32_t rows) {
     if (!ds41_steering2_active(g)) return true;
     ds41_steered_rows_total += rows;
-    return ds4_gpu_directional_steering_project_tensor(x, g->residual_dirs2, il,
-               DS4_N_EMBD, rows, g->residual_scale2) != 0;
+    return ds4_gpu_directional_steering_project_tensor(x, g->residual_dirs2, g->residual_probe2,
+               il, DS4_N_EMBD, rows, g->residual_scale2) != 0;
+}
+
+/* sf: both slots in their order: probe-dosed slot 2 first, else slot 1 first. */
+static bool ds41_steer_attention_input_both(const ds41_gpu_graph *g, ds4_gpu_tensor *x,
+                                            uint32_t il, uint32_t rows) {
+    if (g->residual_probe2)
+        return ds41_steer_attention_input2(g, x, il, rows) && ds41_steer_attention_input(g, x, il, rows);
+    return ds41_steer_attention_input(g, x, il, rows) && ds41_steer_attention_input2(g, x, il, rows);
 }
 
 /* sf: third-source extraction — append one row of the attention-input fold
@@ -23676,8 +23690,7 @@ static bool ds41_hc_mix(ds41_gpu_graph *g, const ds4_model *m,
           ds4_gpu_hc_weighted_sum_bf16_tensor(g->x, residual, pre, DS4_N_EMBD, DS4_N_HC)))
         return false;
     if (dump) ds41_dump_fold_row(g->x, 0u);  /* sf: unsteered fold, before any steering (decode / token-major prefill) */
-    if (steer && !ds41_steer_attention_input(g, g->x, il, 1u)) return false;
-    if (steer && !ds41_steer_attention_input2(g, g->x, il, 1u)) return false;
+    if (steer && !ds41_steer_attention_input_both(g, g->x, il, 1u)) return false;
     return ds41_norm(g->norm, g->x, m, norm);
 }
 
@@ -24046,8 +24059,7 @@ static bool ds41_before_attention_batch(ds41_gpu_graph *g, ds41_prefill_row *b,
      * the norm run as before, bitwise. */
     if (!ds4_gpu_dsv41_quantize(b->x, DS4_N_EMBD, count, DS4_V41_BF16)) return false;
     if (count > 0) ds41_dump_fold_row(b->x, count - 1u);  /* sf: decision position; no-op unless the dump env is set */
-    return ds41_steer_attention_input(g, b->x, il, count) &&
-        ds41_steer_attention_input2(g, b->x, il, count) &&
+    return ds41_steer_attention_input_both(g, b->x, il, count) &&
         ds41_norm_batch(b->norm, b->x, m, l->attn_norm, count);
 }
 
@@ -24699,8 +24711,7 @@ static bool ds41_decoder_prepare(ds41_gpu_graph *g, const ds4_model *m,
         if (ok && batch_attention) {
             ok = ds4_gpu_dsv41_quantize(active.x, DS4_N_EMBD, count, DS4_V41_BF16);
             if (ok && count > 0) ds41_dump_fold_row(active.x, count - 1u);  /* sf: decision position (token-major); no-op unless dump env set */
-            ok = ok && ds41_steer_attention_input(g, active.x, il, count) &&
-                 ds41_steer_attention_input2(g, active.x, il, count) &&
+            ok = ok && ds41_steer_attention_input_both(g, active.x, il, count) &&
                  ds41_norm_batch(active.norm, active.x, m, l->attn_norm, count);
         }
         if (ok && batch_publish)
@@ -25825,6 +25836,8 @@ struct ds4_engine {
     float directional_steering_residual_cycle_peak; /* sf: 403c cyclic schedule peak; 0 = one-shot decay */
     char *directional_steering_file2;            /* sf: rank-2 second direction file */
     float *directional_steering_dirs2;           /* sf: rank-2 second loaded directions (40x5120), NULL when off */
+    char *directional_steering_probe_file2;      /* sf: slot-2 probe file (unit rows); dirs2 rows then carry the dose */
+    float *directional_steering_probes2;         /* sf: loaded probe directions, NULL when off */
     float directional_steering_residual2_scale;  /* sf: rank-2 second constant scale (0 = off) */
     int power_percent;
     uint32_t prefill_chunk;
@@ -26036,7 +26049,8 @@ static DS4_MAYBE_UNUSED void ds41_steer_fold_reference(float *x, const float *di
  * row zero (a masked layer) or unit within DS41_STEERING_NORM_TOL. Nothing is
  * normalized on the user's behalf: a scaled row would hide a conversion error
  * inside the scale. */
-static bool ds41_steering_dirs_valid(const float *dirs, uint32_t n_layers, const char *path) {
+static bool ds41_steering_dirs_valid(const float *dirs, uint32_t n_layers, const char *path,
+                                     bool unit_rows) {  /* sf: false = rows carry a dose (probe-driven slot 2) */
     for (uint32_t il = 0; il < n_layers; il++) {
         const float *row = dirs + (uint64_t)il * DS4_N_EMBD;
         double norm2 = 0.0;
@@ -26051,7 +26065,7 @@ static bool ds41_steering_dirs_valid(const float *dirs, uint32_t n_layers, const
             fprintf(stderr, "ds4: %s: row 0 must be all zero (layer 0 has no direction)\n", path);
             return false;
         }
-        if (norm2 != 0.0 && fabs(sqrt(norm2) - 1.0) > DS41_STEERING_NORM_TOL) {
+        if (unit_rows && norm2 != 0.0 && fabs(sqrt(norm2) - 1.0) > DS41_STEERING_NORM_TOL) {
             fprintf(stderr, "ds4: %s: row %u has L2 norm %.4f; need 1 within %g, or an all-zero row\n",
                     path, il, sqrt(norm2), DS41_STEERING_NORM_TOL);
             return false;
@@ -26062,11 +26076,11 @@ static bool ds41_steering_dirs_valid(const float *dirs, uint32_t n_layers, const
 
 /* sf: read + validate one steering matrix into a fresh buffer; the rank-1
  * direction and the rank-2 second direction share it. Returns NULL on failure. */
-static float *ds41_load_steering_matrix(const char *path, uint32_t n_layers) {
+static float *ds41_load_steering_matrix(const char *path, uint32_t n_layers, bool unit_rows) {
     const uint64_t n = (uint64_t)n_layers * DS4_N_EMBD;
     float *dirs = xmalloc((size_t)n * sizeof(dirs[0]));
     if (!read_f32_binary_file(path, dirs, n) ||
-        !ds41_steering_dirs_valid(dirs, n_layers, path)) {
+        !ds41_steering_dirs_valid(dirs, n_layers, path, unit_rows)) {
         free(dirs);
         fprintf(stderr, "ds4: failed to load directional steering vectors from %s\n", path);
         return NULL;
@@ -26129,17 +26143,25 @@ static bool cpu_load_directional_steering(ds4_engine *e) {
     if (n_layers == 0) return false;
     /* sf: 401 the matrix is checked here, at engine open, before any session
      * uploads it to the graph. */
-    e->directional_steering_dirs = ds41_load_steering_matrix(path, n_layers);
+    e->directional_steering_dirs = ds41_load_steering_matrix(path, n_layers, true);
     if (!e->directional_steering_dirs) return false;
     /* sf: rank-2 second direction (constant scale, no decay schedule). */
     if (e->directional_steering_residual2_scale != 0.0f) {
         const char *path2 = e->directional_steering_file2;
+        const char *probe = e->directional_steering_probe_file2;
         if (!path2 || !path2[0]) {
             fprintf(stderr, "ds4: --dir-steering-residual-2 needs --dir-steering-file-2\n");
             return false;
         }
-        e->directional_steering_dirs2 = ds41_load_steering_matrix(path2, n_layers);
+        /* sf: with a probe the second file's rows are a direction times a per-layer dose */
+        e->directional_steering_dirs2 = ds41_load_steering_matrix(path2, n_layers, !(probe && probe[0]));
         if (!e->directional_steering_dirs2) return false;
+        if (probe && probe[0]) {
+            e->directional_steering_probes2 = ds41_load_steering_matrix(probe, n_layers, true);
+            if (!e->directional_steering_probes2) return false;
+            fprintf(stderr, "ds4: V4.1 residual steering slot 2 probe: %s (x -= scale2 * dir2 * dot(probe, x), before the first fold)\n",
+                    probe);
+        }
     }
     if (e->directional_steering_residual_scale != 0.0f ||
         e->directional_steering_residual2_scale != 0.0f) {
@@ -30486,6 +30508,8 @@ static int ds4_engine_open_internal(ds4_engine **out,
     if (opt->directional_steering_file2 && opt->directional_steering_file2[0]) {
         e->directional_steering_file2 = ds4_strdup(opt->directional_steering_file2);
         e->directional_steering_residual2_scale = opt->directional_steering_residual2;
+        if (opt->directional_steering_probe_file2 && opt->directional_steering_probe_file2[0])
+            e->directional_steering_probe_file2 = ds4_strdup(opt->directional_steering_probe_file2);
     }
     if (opt->n_threads > 0) g_requested_threads = (uint32_t)opt->n_threads;
     e->placement_session_count_hint = opt->placement_session_count_hint;
@@ -31740,6 +31764,8 @@ void ds4_engine_close(ds4_engine *e) {
     free(e->directional_steering_file);
     free(e->directional_steering_dirs2);
     free(e->directional_steering_file2);
+    free(e->directional_steering_probes2);
+    free(e->directional_steering_probe_file2);
     free(e->model_path);
     free(e);
 }
@@ -31960,6 +31986,16 @@ int ds4_session_create(ds4_session **out, ds4_engine *e, int ctx_size) {
                 ds41_graph_free(&s->ds41_graph);
                 free(s);
                 return 1;
+            }
+            if (e->directional_steering_probes2) {  /* sf: probe-dosed slot 2 */
+                s->ds41_graph.residual_probe2 = ds4_gpu_tensor_alloc(db2);
+                if (!s->ds41_graph.residual_probe2 ||
+                    !ds4_gpu_tensor_write(s->ds41_graph.residual_probe2, 0,
+                                          e->directional_steering_probes2, db2)) {
+                    ds41_graph_free(&s->ds41_graph);
+                    free(s);
+                    return 1;
+                }
             }
             s->ds41_graph.residual_scale2 = e->directional_steering_residual2_scale;
         }

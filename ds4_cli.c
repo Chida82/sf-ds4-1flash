@@ -2001,6 +2001,9 @@ static cli_config parse_options(int argc, char **argv) {
         } else if (!strcmp(arg, "--dir-steering-file-2")) {
             /* sf: rank-2 second direction file (orthogonal to the first) */
             c.engine.directional_steering_file2 = need_arg(&i, argc, argv, arg);
+        } else if (!strcmp(arg, "--dir-steering-probe-2")) {
+            /* sf: slot-2 probe: dose the move along file-2 by dot(probe, x) */
+            c.engine.directional_steering_probe_file2 = need_arg(&i, argc, argv, arg);
         } else if (!strcmp(arg, "--allow-v41-steering")) {
             c.engine.allow_v41_steering = true;
         } else if (!strcmp(arg, "--expert-profile")) {

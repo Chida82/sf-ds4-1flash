@@ -1218,6 +1218,7 @@ int ds4_gpu_add_tensor(
 int ds4_gpu_directional_steering_project_tensor(
         ds4_gpu_tensor       *x,
         const ds4_gpu_tensor *directions,
+        const ds4_gpu_tensor *probe,  /* sf: NULL = directions (plain projection) */
         uint32_t                layer,
         uint32_t                width,
         uint32_t                rows,

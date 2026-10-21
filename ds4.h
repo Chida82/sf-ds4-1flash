@@ -146,6 +146,7 @@ typedef struct {
     bool allow_v41_steering;    /* sf: opt into V4.1 steering, lifting its startup refusal */
     const char *directional_steering_file2;  /* sf: rank-2 second direction file; should be orthogonal to the first (e.g. fuse_directions.py 'ortho') for an exact 2D removal */
     float directional_steering_residual2;    /* sf: rank-2 second direction constant scale at the residual site (0 = off, no schedule) */
+    const char *directional_steering_probe_file2; /* sf: slot-2 probe (unit rows): x -= scale2 * dir2 * dot(probe, x), run before the first fold; dir2 rows then carry a per-layer dose (any norm) */
     int power_percent;
     uint32_t ssd_streaming_cache_experts;
     uint64_t ssd_streaming_cache_bytes;

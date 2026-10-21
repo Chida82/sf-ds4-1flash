@@ -2676,7 +2676,7 @@ static int check_steering_fold(void) {
         REQUIRE((v_pre = ds4_gpu_tensor_view(t_pre, (uint64_t)r * HC * sizeof(float), HC * sizeof(float))) != NULL);
         REQUIRE((v_a = ds4_gpu_tensor_view(t_a, (uint64_t)r * row_bytes, row_bytes)) != NULL);
         REQUIRE(ds4_gpu_hc_weighted_sum_bf16_tensor(v_a, v_res, v_pre, width, HC));
-        REQUIRE(ds4_gpu_directional_steering_project_tensor(v_a, t_dirs, il, width, 1, scales[2]));
+        REQUIRE(ds4_gpu_directional_steering_project_tensor(v_a, t_dirs, NULL, il, width, 1, scales[2]));
         ds4_gpu_tensor_free(v_res); ds4_gpu_tensor_free(v_pre); ds4_gpu_tensor_free(v_a);
         v_res = v_pre = v_a = NULL;
     }
@@ -2684,11 +2684,11 @@ static int check_steering_fold(void) {
     /* the batch route: fold, quantize, projection, as the graph orders it */
     REQUIRE(ds4_gpu_hc_weighted_sum_tensor(t_b, t_res, t_pre, width, HC));
     REQUIRE(ds4_gpu_dsv41_quantize(t_b, width, ROWS, DS4_V41_BF16));
-    REQUIRE(ds4_gpu_directional_steering_project_tensor(t_b, t_dirs, il, width, ROWS, scales[2]));
+    REQUIRE(ds4_gpu_directional_steering_project_tensor(t_b, t_dirs, NULL, il, width, ROWS, scales[2]));
     REQUIRE(ds4_gpu_tensor_read(t_b, 0, b, count * sizeof(float)));
     /* the former batch order: projection, then quantize */
     REQUIRE(ds4_gpu_hc_weighted_sum_tensor(t_c, t_res, t_pre, width, HC));
-    REQUIRE(ds4_gpu_directional_steering_project_tensor(t_c, t_dirs, il, width, ROWS, scales[2]));
+    REQUIRE(ds4_gpu_directional_steering_project_tensor(t_c, t_dirs, NULL, il, width, ROWS, scales[2]));
     REQUIRE(ds4_gpu_dsv41_quantize(t_c, width, ROWS, DS4_V41_BF16));
     REQUIRE(ds4_gpu_tensor_read(t_c, 0, c, count * sizeof(float)));
     memcpy(ref, fold, count * sizeof(float));
@@ -2709,7 +2709,7 @@ static int check_steering_fold(void) {
     for (unsigned k = 0; k < 2; k++) {
         REQUIRE(ds4_gpu_hc_weighted_sum_tensor(t_c, t_res, t_pre, width, HC));
         REQUIRE(ds4_gpu_dsv41_quantize(t_c, width, ROWS, DS4_V41_BF16));
-        REQUIRE(ds4_gpu_directional_steering_project_tensor(t_c, t_dirs, masked[k], width, ROWS, scales[2]));
+        REQUIRE(ds4_gpu_directional_steering_project_tensor(t_c, t_dirs, NULL, masked[k], width, ROWS, scales[2]));
         REQUIRE(ds4_gpu_tensor_read(t_c, 0, c, count * sizeof(float)));
         for (uint64_t i = 0; i < count; i++) ref[i] = ds41_bf16_round(fold[i]);
         REQUIRE(!memcmp(c, ref, count * sizeof(float)));
@@ -2719,7 +2719,7 @@ static int check_steering_fold(void) {
         const float *d = dirs + (uint64_t)il * width;
         REQUIRE(ds4_gpu_hc_weighted_sum_tensor(t_c, t_res, t_pre, width, HC));
         REQUIRE(ds4_gpu_dsv41_quantize(t_c, width, ROWS, DS4_V41_BF16));
-        REQUIRE(ds4_gpu_directional_steering_project_tensor(t_c, t_dirs, il, width, ROWS, scales[k]));
+        REQUIRE(ds4_gpu_directional_steering_project_tensor(t_c, t_dirs, NULL, il, width, ROWS, scales[k]));
         REQUIRE(ds4_gpu_tensor_read(t_c, 0, c, count * sizeof(float)));
         for (uint32_t r = 0; r < ROWS; r++) {
             double in = 0.0, out = 0.0;
@@ -2789,12 +2789,12 @@ static int check_steering_rank2(void) {
             ds4_gpu_tensor_write(t_3, 0, d3, mat * sizeof(float)));
     /* orthogonal pair: both orders null both coordinates and agree */
     REQUIRE(ds4_gpu_tensor_write(t_h, 0, h, count * sizeof(float)));
-    REQUIRE(ds4_gpu_directional_steering_project_tensor(t_h, t_1, il, width, ROWS, 1.0f));
-    REQUIRE(ds4_gpu_directional_steering_project_tensor(t_h, t_2, il, width, ROWS, 1.0f));
+    REQUIRE(ds4_gpu_directional_steering_project_tensor(t_h, t_1, NULL, il, width, ROWS, 1.0f));
+    REQUIRE(ds4_gpu_directional_steering_project_tensor(t_h, t_2, NULL, il, width, ROWS, 1.0f));
     REQUIRE(ds4_gpu_tensor_read(t_h, 0, ab, count * sizeof(float)));
     REQUIRE(ds4_gpu_tensor_write(t_h, 0, h, count * sizeof(float)));
-    REQUIRE(ds4_gpu_directional_steering_project_tensor(t_h, t_2, il, width, ROWS, 1.0f));
-    REQUIRE(ds4_gpu_directional_steering_project_tensor(t_h, t_1, il, width, ROWS, 1.0f));
+    REQUIRE(ds4_gpu_directional_steering_project_tensor(t_h, t_2, NULL, il, width, ROWS, 1.0f));
+    REQUIRE(ds4_gpu_directional_steering_project_tensor(t_h, t_1, NULL, il, width, ROWS, 1.0f));
     REQUIRE(ds4_gpu_tensor_read(t_h, 0, ba, count * sizeof(float)));
     for (uint32_t r = 0; r < ROWS; r++) {
         double a1 = 0.0, a2 = 0.0, b1 = 0.0, b2 = 0.0;
@@ -2808,14 +2808,29 @@ static int check_steering_rank2(void) {
     for (uint64_t i = 0; i < count; i++) order_gap = fmax(order_gap, fabs((double)ab[i] - ba[i]));
     REQUIRE(worst < 1e-4);
     REQUIRE(order_gap < 1e-4);
+    /* sf: probe-dosed slot: measure along d1, move along d2 with scale -1 -> h + dot(d1,h)*d2 */
+    double probe_gap = 0.0;
+    REQUIRE(ds4_gpu_tensor_write(t_h, 0, h, count * sizeof(float)));
+    REQUIRE(ds4_gpu_directional_steering_project_tensor(t_h, t_2, t_1, il, width, ROWS, -1.0f));
+    REQUIRE(ds4_gpu_tensor_read(t_h, 0, ab, count * sizeof(float)));
+    for (uint32_t r = 0; r < ROWS; r++) {
+        double c1 = 0.0;
+        for (uint32_t i = 0; i < width; i++)
+            c1 += (double)d1[(uint64_t)il * width + i] * h[(uint64_t)r * width + i];
+        for (uint32_t i = 0; i < width; i++) {
+            const uint64_t k = (uint64_t)r * width + i;
+            probe_gap = fmax(probe_gap, fabs((double)ab[k] - (h[k] + c1 * d2[(uint64_t)il * width + i])));
+        }
+    }
+    REQUIRE(probe_gap < 1e-4);
     /* |cos| 0.72 pair: after d1 then d3 the d3 coordinate is gone but d1's is not, and the order matters */
     REQUIRE(ds4_gpu_tensor_write(t_h, 0, h, count * sizeof(float)));
-    REQUIRE(ds4_gpu_directional_steering_project_tensor(t_h, t_1, il, width, ROWS, 1.0f));
-    REQUIRE(ds4_gpu_directional_steering_project_tensor(t_h, t_3, il, width, ROWS, 1.0f));
+    REQUIRE(ds4_gpu_directional_steering_project_tensor(t_h, t_1, NULL, il, width, ROWS, 1.0f));
+    REQUIRE(ds4_gpu_directional_steering_project_tensor(t_h, t_3, NULL, il, width, ROWS, 1.0f));
     REQUIRE(ds4_gpu_tensor_read(t_h, 0, ab, count * sizeof(float)));
     REQUIRE(ds4_gpu_tensor_write(t_h, 0, h, count * sizeof(float)));
-    REQUIRE(ds4_gpu_directional_steering_project_tensor(t_h, t_3, il, width, ROWS, 1.0f));
-    REQUIRE(ds4_gpu_directional_steering_project_tensor(t_h, t_1, il, width, ROWS, 1.0f));
+    REQUIRE(ds4_gpu_directional_steering_project_tensor(t_h, t_3, NULL, il, width, ROWS, 1.0f));
+    REQUIRE(ds4_gpu_directional_steering_project_tensor(t_h, t_1, NULL, il, width, ROWS, 1.0f));
     REQUIRE(ds4_gpu_tensor_read(t_h, 0, ba, count * sizeof(float)));
     double order_gap_skew = 0.0, left_on_d1 = 0.0;
     for (uint64_t i = 0; i < count; i++) order_gap_skew = fmax(order_gap_skew, fabs((double)ab[i] - ba[i]));

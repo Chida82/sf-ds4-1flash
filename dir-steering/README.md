@@ -49,6 +49,7 @@ format example.
 --dir-steering-residual F  steer the V4.1 attention-input fold; default is 0
 --dir-steering-file-2 FILE  rank-2: a second direction file (should be orthogonal to the first, e.g. fuse_directions.py 'ortho')
 --dir-steering-residual-2 F rank-2: constant scale for the second direction at the same site; default 0 (off, no 403 schedule)
+--dir-steering-probe-2 FILE probe for the second slot: h -= F2*d2*dot(p,h), run before the first fold; d2 rows may carry a per-layer dose
 --dir-steering-residual-decay-tokens N        (403, experimental) decay the residual scale from its start to its final over N generated tokens; 0 = constant
 --dir-steering-residual-decay-final F         (403, experimental) the residual (minimum) scale the decay holds at; default 0
 --dir-steering-think-residual-decay-tokens N  (403, experimental) decay window for the thinking phase; 0 = use the answer window
@@ -93,6 +94,16 @@ either scale is nonzero. Motivation: one vector (rank-1) can only rotate the
 removed direction; a second orthogonal direction adds a dimension, which is what
 reaches refusals the single direction leaves (measured union ceiling, see
 `docs/steering-measurements.md`).
+
+**Probe-dosed second slot (`--dir-steering-probe-2 P`).** The second slot
+measures along `p` and moves along `d2`: `h -= G*d2*dot(p,h)`, applied *before*
+the first fold so the probe reads the unsteered row. With `p = d2` it is the
+plain rank-2 fold. With `p` = the refusal direction and `d2` = a direction the
+refused prompts lack (a "compliance" direction, where complied prompts sit and
+refused ones read 0), `G < 0` adds that direction in proportion to how much
+refusal the row carries, so a benign row (dot ≈ 0) is left alone by
+construction. `p` rows must be unit; `d2` rows may have any norm, which is how a
+per-layer dose is expressed (row = unit direction × dose).
 
 This fold is transient, and it is **not** the post-layer residual
 (`residual_stream_post_layer`) the msuiche vector was derived at: the direct
