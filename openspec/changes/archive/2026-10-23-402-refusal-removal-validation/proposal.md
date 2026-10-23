@@ -33,3 +33,38 @@ None. This change does not modify the durable performance-harness spec or its sp
 - `docs/REFUSAL_VALIDATION.md`, `README.md`, relevant evidence references and source-registry descriptions updated with implementation.
 - `401` supplies a corrected, versioned residual intervention. M0 can be developed alongside its correctness tests. `403`/`404`/`405` and future steering proposals consume validated profiles through the same runner and cannot claim full acceptance from M0 alone.
 - This is an evaluation workflow in this repository, not a new autonomous agent, service, plugin framework or globally installed package. Future proposals reference its verified version/coverage and retain their own intervention-specific tests.
+
+## Closure (2026-10-23) — M0 delivered, M1 not run, decision taken on axis A
+
+The change closes on its own rule: groups 1-4 (M0) and 8.1. The runner, its
+KPI/audit split, `--input-run`, the no-op controls, the frozen judge and the
+finished-answer cap (9.3) are in the tree and in use: `com-steering/make.md`
+runs every steering measurement through `eval/run.py`.
+
+The steering decision was taken on **axis A only** (`com-steering/kpi.md`):
+`sf-ds4-1flash-candor`, 41.6 /44 non-think and 39.0 /44 think on finished
+answers (9.3). Axes B-E, the forced-prefix KL, vision and the reasoning
+repeats were never measured. They are not passed. The open tasks 5.3, 5.4,
+6.1 (the 44 ids ran, the full union with separate scorers did not), 6.2, 6.5,
+7.2, 7.3 and 8.2 stay unchecked.
+
+`416` removed the deliverables of several checked tasks when it pruned the
+harness. The checkmarks record that the work was done, not that it is still
+in the tree:
+
+| Task | Removed by `416` |
+|---|---|
+| 1.6, 2.5, 3.6, 5.5, 6.6, 6.7, 7.4, 8.4 | `docs/REFUSAL_VALIDATION.md` |
+| 3.3 | `eval/score_strongreject.py` |
+| 4.3 | `eval/probe_firsttoken.py` |
+| 5.1 | the CLI's `--perplexity-dump` |
+| 5.2 | `eval/score_kl.py` |
+| 6.3, 6.4 | `eval/score_capability.py`, `eval/datasets_capability.py` (the `ds4_eval` steering options stay) |
+
+A full M1 run therefore starts by restoring that code from `0cbf547`.
+
+Archived with `--skip-specs`: the delta spec requires a five-axis
+evaluation, a forced-prefix full-vocabulary KL, capability/modality coverage
+and a first-token screen, none of which the tree has after `416`. Syncing it
+would land requirements the engine does not meet. The surviving runner is
+described by `com-steering/make.md` and `kpi.md`.
