@@ -1,0 +1,26 @@
+{
+  "source": {
+    "author": "StarForge (sf-ds4-1flash steering investigation)",
+    "method": "per-layer weight-diff (\"without-refusal\") direction from the DwarfStar edit: Q2 base vs the DwarfStar-abliterated model on attn_output_b, 40/40 layers edited, base-match verified, each layer normalized to unit",
+    "derivation_note": "derivation script is not in this tree; recorded in the historical steering diary (git show 0cbf547:eval/steering-comparison/TODO.md, phase D / 'Q2 base vs DwarfStar')",
+    "model_hint": "deepseek_v41_1017",
+    "base_model": "deepseek-ai/DeepSeek-V4.1-Flash-1017",
+    "layer_count": 39,
+    "layer_0": "masked (all-zero row), repo convention",
+    "note": "cos(dwarfstar-wo, mrfk-q0) ~= 0.71 over the layers: an independent weight-space derivation that agrees with the activation-space q0 refusal axis"
+  },
+  "application": {
+    "site": "v41_attn_input_weighted_fold_post_engram",
+    "sign_convention": "ds4 +scale removes the direction (h -= scale*d*dot(d,h))",
+    "used_in": "the other parent of the q0dwarf-equi bisector (slot 1 of sf-ds4-1flash-candor); not shipped on its own",
+    "scale": 7.0
+  },
+  "f32": {
+    "shape": [40, 5120],
+    "bytes": 819200,
+    "row_0": "zero",
+    "row_n": "dwarfstar-wo direction (unit) for layer N",
+    "sha256": "f585d8c21fef5f658b51b5af5e070d87a9c9512625151d85323b39abe08c6880",
+    "provenance_note": "the raw file carries none of this; keep the sidecar with it"
+  }
+}

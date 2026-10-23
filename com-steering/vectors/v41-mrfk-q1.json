@@ -1,0 +1,27 @@
+{
+  "source": {
+    "author": "mrfakename",
+    "method": "global rank-2 refusal subspace of the 1017-abliterated model; q1 is the second axis (column 1 of Q), taken as a single unit direction replicated on every layer",
+    "extract_script": "com-steering/vectors/mrfk_extract.py",
+    "model_hint": "deepseek_v41_1017",
+    "base_model": "deepseek-ai/DeepSeek-V4.1-Flash-1017",
+    "layer_count": 39,
+    "layer_0": "masked (all-zero row), repo convention",
+    "note": "second axis of the same rank-2 subspace as v41-mrfk-q0; near-orthogonal to the slot-1 equi direction (median |cos| 0.105 over the 39 layers), so the pair composes as a clean 2D removal"
+  },
+  "application": {
+    "site": "v41_attn_input_weighted_fold_post_engram",
+    "sign_convention": "ds4 +scale removes the direction (h -= scale*d*dot(d,h))",
+    "used_in": "slot 2 of sf-ds4-1flash-candor, gated to the think phase only",
+    "phase_note": "q1 helps the reasoning trace but hurts the answer phase; confined to think (see com-steering/kpi.md, com-steering/todo.md)",
+    "scale": 7.0
+  },
+  "f32": {
+    "shape": [40, 5120],
+    "bytes": 819200,
+    "row_0": "zero",
+    "row_n": "q1 direction (unit), identical on every steered layer",
+    "sha256": "881f15753c851d9d6df6a85e7e7404cdca9088a6a888f7dcd97b0a7d28fb2b94",
+    "provenance_note": "the raw file carries none of this; keep the sidecar with it"
+  }
+}

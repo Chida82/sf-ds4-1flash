@@ -19,18 +19,27 @@ provenance that traces it to that run, and docs that name the one vector and sca
 to pass. Conditional: ship nothing when no candidate wins.
 
 **Non-Goals:** turning steering on by default, changing the opt-in refusal or the
-disabled-steering path, deriving or fusing vectors here (that is `404`/`405`),
-adding an engine/kernel knob, or shipping a rank greater than one.
+disabled-steering path, deriving or fusing vectors here (that is the steering
+investigation under `com-steering/`), adding an engine/kernel knob. Rank: the
+shipped profile uses the two phase-gated slots the profile mechanism (`417`)
+already provides; this change adds no new removal rank or slot to the engine.
 
 ## Decisions
 
 ### D1. Selection is data from a run, not a hand-pick
 
-The default is recorded from one identified `402` acceptance summary: the winning
-candidate's vector hash, `402` run id, scale, source/application identity and the
-guard results it passed. A file promoted without an accepting run is rejected.
-Re-selection on a later win re-records from that run; it does not edit the old
-selection in place, so the superseded provenance stays traceable.
+The default is recorded from the identified acceptance runs on the 44-id set
+(`com-steering/kpi.md`), logged in `com-steering/result.md`: the winning
+configuration's slot vectors and hashes, scales, phase gates, scores/counts and
+the accepting run ids, in both reasoning phases. A file promoted without an
+accepting run is rejected. Re-selection on a later win re-records from that run; it
+does not edit the old selection in place, so the superseded provenance stays
+traceable.
+
+The acceptance of record is the 44-id `kpi.md` verdict, not a `402` `eligible:
+True` verdict: `402` was archived with its acceptance margins never set (a user
+decision), so no `402` run carries that verdict. `kpi.md`/`result.md` is the
+decider the standing best lives in.
 
 ### D2. "Default" is a recommendation, never an auto-edit
 
@@ -49,9 +58,10 @@ re-verify.
 
 ### D4. Conditional adoption and supersession
 
-If no `404`/`405` candidate beats `msuiche`-alone through `402` with the guards
-preserved, no default is shipped, `msuiche` stays the named reference, and the
-negative result is recorded. A later better candidate re-runs this selection.
+If no candidate beats `msuiche`-alone on the 44-id acceptance set (`kpi.md`) with
+the guards preserved, no default is shipped, `msuiche` stays the named reference,
+and the negative result is recorded. A later better candidate re-runs this
+selection. (Resolved positively on 2026-10-23: `candor` won — see above.)
 
 ## Risks / Trade-offs
 
@@ -61,6 +71,31 @@ negative result is recorded. A later better candidate re-runs this selection.
   and accepting run id; a mismatch invalidates the default.
 - [Selecting before `402` is trustworthy] -> selection consumes an identified
   acceptance summary, not a screen or a few clean answers.
+
+## Decision recorded (2026-10-23): adoption, `sf-ds4-1flash-candor` ships as the default
+
+Supersedes the 2026-10-16 non-adoption below (kept readable per D1). A composed
+configuration now beats the single-source `msuiche` baseline on the 44-id
+acceptance set (`com-steering/kpi.md`, ledger `com-steering/result.md`):
+
+| config | phase | score | counts |
+|---|---|---|---|
+| `msuiche-1017 @7` (baseline) | nothink | 26.7 | `C24 D9 R11 /44` |
+| **`candor` = `q0dwarf-equi @7` both + `mrfk-q1 @7` think** | **nothink** | **41.6** | `C41 D2 R1 /44` |
+| same | think | 39.0 | `C39 D0 R5 /44` |
+
+- **Ship the profile.** `com-steering/profiles/sf-ds4-1flash-candor.sfsteer` is the
+  recommended default, pinned by `com-steering/profiles/sf-ds4-1flash-candor.json`
+  to the accepting runs. The three slot-parent vectors get provenance sidecars
+  (`v41-mrfk-q0`, `v41-mrfk-q1`, `v41-dwarfstar-wo`).
+- **`mrfk-q0 @7` is the rank-1 reference** (ties 41.6 non-think, 37.0 think):
+  shipped-as-profile wins on the think phase and the near-orthogonal 2D removal.
+- **Open validation.** Benign / over-refusal (XSTest) of the candor directions is
+  not yet measured (only `fused@7` was XSTest-clean); recorded as open, not claimed.
+- **Off path and parity unchanged.** No engine/kernel code: the change is sidecars
+  and docs, so steering-off is bitwise as before and the opt-in refusal is intact.
+- A later config that beats 41.6 non-think without regressing think past the ~1.0
+  noise floor re-records this selection (D4); it does not edit this block.
 
 ## Decision recorded (2026-10-16): non-adoption, `msuiche` stays the named reference
 

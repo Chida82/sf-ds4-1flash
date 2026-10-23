@@ -22,9 +22,9 @@ git checkout 0cbf547 -- eval/steering-comparison    # restore the run harness
 
 ## Open tasks
 
-- [ ] **Provenance:** write `.json` sidecars for `mrfk-q0`, `mrfk-q1`,
-      `dwarfstar-wo` in `vectors/` (origin is only in `vectors/mrfk_extract.py`).
-      Blocks pinning the shipped default to its chosen run.
+- [x] **Provenance:** sidecars for `mrfk-q0`, `mrfk-q1`, `dwarfstar-wo` written in
+      `vectors/`, and the shipped default pinned to its accepting runs by
+      `profiles/sf-ds4-1flash-candor.json` (change `406`, 2026-10-23).
 - [ ] **Finalists:** when any config beats 41.6 /44 in both phases, validate it
       on AdvBench 520 / HarmBench 400 / StrongREJECT 313 (`kpi.md`).
 - [ ] **Alt composition:** build and test `mrfk-q0 + dwarfstar-wo` directly,

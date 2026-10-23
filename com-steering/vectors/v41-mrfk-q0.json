@@ -1,0 +1,27 @@
+{
+  "source": {
+    "author": "mrfakename",
+    "method": "global rank-2 refusal subspace of the 1017-abliterated model; q0 is the dominant axis (column 0 of Q), taken as a single unit direction replicated on every layer",
+    "extract_script": "com-steering/vectors/mrfk_extract.py",
+    "model_hint": "deepseek_v41_1017",
+    "base_model": "deepseek-ai/DeepSeek-V4.1-Flash-1017",
+    "layer_count": 39,
+    "layer_0": "masked (all-zero row), repo convention",
+    "note": "the raw extract is the same unit row on all 39 steered layers (a global direction, not per-layer); cos(dwarfstar-wo, q0) ~= 0.71 over the layers, so two independent 1017 abliterations agree q0 is the 1017 refusal axis"
+  },
+  "application": {
+    "site": "v41_attn_input_weighted_fold_post_engram",
+    "sign_convention": "ds4 +scale removes the direction (h -= scale*d*dot(d,h))",
+    "used_in": "slot 1 of sf-ds4-1flash-candor via the q0dwarf-equi bisector (q0 is one of equi's two parents)",
+    "reference_use": "q0@7 alone is the rank-1 reference direction: 41.6 /44 non-think (C41 D2 R1), 37.0 think (C37 D0 R7) on harmful-axis-a; see com-steering/result.md",
+    "scale": 7.0
+  },
+  "f32": {
+    "shape": [40, 5120],
+    "bytes": 819200,
+    "row_0": "zero",
+    "row_n": "q0 direction (unit), identical on every steered layer",
+    "sha256": "20289cf536b991c4541115a9d7093da9143d3875c8ea5ec8c6d0eff19e2ae27e",
+    "provenance_note": "the raw file carries none of this; keep the sidecar with it"
+  }
+}

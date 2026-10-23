@@ -30,6 +30,15 @@ decodes on its own rather than sharing a batch.
 
 ### `sf-ds4-1flash-candor`
 
+**The child's recommended default steering profile** (change `406`). Steering is
+still refused by default and the profile is still the opt-in; "default" means this
+is the configuration to pass, not an auto-applied edit. It is pinned to its
+accepting runs by `profiles/sf-ds4-1flash-candor.json` (slots, hashes, scales,
+phases, run ids): **41.6 /44** non-think (`C41 D2 R1`), 39.0 think, over the
+`msuiche-1017@7` baseline's 26.7 (`com-steering/result.md`, `kpi.md`). `mrfk-q0@7`
+alone is the rank-1 reference (ties 41.6 non-think, 37.0 think). Benign /
+over-refusal of these directions is an open measurement, not a claimed result.
+
 | | |
 |---|---|
 | Model | DeepSeek V4.1 Flash, `1017` checkpoint, IQ2_XXS-Q2_K-imatrix |
@@ -95,12 +104,11 @@ own, so each one should have a `.json` sidecar beside it.
 | `v41-q0dwarf-equi.f32` | sidecar present — built from the two below |
 | `v41-q0dwarf-interleave.f32` | sidecar present — same two inputs, alternating by layer |
 | `v41-msuiche-1017.f32` | sidecar present — converted control vector |
-| `v41-mrfk-q0.f32` | **missing** |
-| `v41-mrfk-q1.f32` | **missing** |
-| `v41-dwarfstar-wo.f32` | **missing** |
+| `v41-mrfk-q0.f32` | sidecar present — slot 1's parent (via `equi`), `mrfakename` q0 axis |
+| `v41-mrfk-q1.f32` | sidecar present — slot 2, `mrfakename` q1 axis |
+| `v41-dwarfstar-wo.f32` | sidecar present — `equi`'s other parent, DwarfStar weight-diff |
 
-The three gaps matter: `v41-mrfk-q0` is slot 1's parent and `v41-mrfk-q1` is
-slot 2 itself, so the shipped profile currently rests on two files whose origin
-is recorded nowhere except `vectors/mrfk_extract.py`, the script that wrote
-them. Closing this is a prerequisite for the change that pins a shipped default
-to the run that chose it.
+The three sidecars were the prerequisite for pinning the shipped default to the
+run that chose it, closed by change `406`. `v41-mrfk-q0`/`q1` trace back to
+`vectors/mrfk_extract.py`; `v41-dwarfstar-wo`'s derivation script is not in this
+tree (recorded in the `0cbf547` steering diary, noted in its sidecar).
