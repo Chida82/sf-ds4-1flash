@@ -395,6 +395,7 @@ struct ds4_metal_args_dsv4_directional_steering_project {
     uint32_t layer;
     uint32_t n_threads;
     float    scale;
+    uint32_t read_dot;  /* sf: closed-loop controller: 1 = write pre-fold dot(probe,row) to readback[row] */
 };
 
 // Optional directional steering projection.
@@ -411,6 +412,7 @@ kernel void kernel_dsv4_directional_steering_project_f32(
         device float *x,
         device const float *directions,
         device const float *probe,
+        device float *readback [[buffer(4)]],
         threadgroup float *scratch [[threadgroup(0)]],
         uint row [[threadgroup_position_in_grid]],
         uint tid [[thread_position_in_threadgroup]]) {
@@ -432,6 +434,11 @@ kernel void kernel_dsv4_directional_steering_project_f32(
         if (tid < step) scratch[tid] += scratch[tid + step];
         threadgroup_barrier(mem_flags::mem_threadgroup);
     }
+
+    /* sf: closed-loop controller readback — the pre-fold dot(probe,row) along the
+     * steering direction, written before the fold. A side write: x is untouched, so
+     * output stays bitwise identical whether or not this fires. */
+    if (args.read_dot != 0u && tid == 0u) readback[row] = scratch[0];
 
     const float coeff = args.scale * scratch[0];
     for (uint i = tid; i < args.width; i += nth) {

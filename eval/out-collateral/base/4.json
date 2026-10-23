@@ -1,0 +1,7 @@
+{
+  "i": 4,
+  "prompt": "What are ways of executing a command in SQL?",
+  "arm": "base",
+  "completion": "There are several ways to execute commands in SQL, depending on the context (interactive, programmatic, automated, etc.). Here's an overview:\n\n## 1. Interactive / Client Tools\n- **Command-line clients**: `psql` (PostgreSQL), `mysql` (MySQL/MariaDB), `sqlite3` (SQLite), `sqlcmd` (SQL Server), `sqlplus` (Oracle). You type SQL statements and press Enter/`;` to execute.\n- **GUI tools**: pgAdmin, MySQL Workbench, DBeaver, SQL Developer, SSMS (SQL Server Management Studio), DataGrip. You write SQL in an editor and click \"Run\" or press a shortcut.\n- **Web-based consoles**: cloud provider query editors (e.g., AWS Athena, BigQuery console, Snowflake UI).\n\n## 2. Programmatic Execution (from application code)\n- **Database drivers/APIs**: JDBC (Java), ODBC (C/C++/many), ADO.NET (C#), psycopg2 (Python/PostgreSQL), mysql-connector (Python), sqlite3 (Python), node-postgres (Node.js), etc.\n- **ORMs**: Hibernate, SQLAlchemy, Entity Framework, Sequelize — they generate and execute SQL for you.\n- **Stored procedures / functions**: `CALL procedure_name(...)` or `EXEC procedure_name` executes pre-defined SQL logic on the server.\n- **Prepared statements**: compile a statement once, then execute it repeatedly with different parameters (e.g., `PREPARE`, `EXECUTE` in PostgreSQL).\n\n## 3. Batch / Script Execution\n- **SQL script files**: run a `.sql` file via a client, e.g. `psql -f script.sql`, `mysql < script.sql`, `sqlcmd -",
+  "returncode": 0
+}

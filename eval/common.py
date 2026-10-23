@@ -77,7 +77,7 @@ def load_hf_dataset(repo_id, *, config=None, split="train"):
 
 # --- generation argv (two arms differ ONLY by the steering block) ------------
 
-def build_cli(prompt, *, steer=None, residual=0.0, think=True,
+def build_cli(prompt, *, steer=None, residual=0.0, think=True, think_level=None,
               max_tokens=None, logprobs=None, top_k=None, system=None, extra=None,
               logits=None, decay_tokens=None, decay_final=None,
               think_decay_tokens=None, cycle_peak=None,
@@ -96,7 +96,10 @@ def build_cli(prompt, *, steer=None, residual=0.0, think=True,
     mt = DECODE["max_tokens"] if max_tokens is None else max_tokens
     argv = [str(CLI), "-m", MODEL, "--ssd-streaming",
             "--ctx", str(DECODE["ctx"]), "--temp", "0", "-n", str(mt)]
-    argv += [] if think else ["--nothink"]
+    if not think:
+        argv += ["--nothink"]
+    elif think_level is not None:
+        argv += ["--think-level", str(int(think_level))]  # sf: V4.1 reasoning effort 0..100
     # sf: expert-cache target for runs that must leave RAM to other work; output is unchanged
     if os.environ.get("SF_EVAL_CACHE_EXPERTS"):
         argv += ["--ssd-streaming-cache-experts", os.environ["SF_EVAL_CACHE_EXPERTS"]]

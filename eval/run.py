@@ -288,10 +288,10 @@ def _json(obj):
 
 # --- axis-A harmful run (task 6.1, the user-run full-generation path) ---------
 
-def load_base_cache(globs, *, max_tokens, model=None):
+def load_base_cache(globs, *, max_tokens, model=None, think=False, base_loose=False):
     """prompt -> (base arm row, base judge row, run id) from stored axis-A manifests
-    (`--base-from`). Only runs with the same decoding (greedy, think off, the same
-    token cap) and, when `model` is given, the same GGUF size and mtime are read;
+    (`--base-from`). Only runs with the same decoding (greedy, the same think mode,
+    the same token cap) and, when `model` is given, the same GGUF size and mtime are read;
     only ok completions with a clean label count. The base arm is unsteered, so it
     does not depend on the vector under test; two runs that disagree on a prompt's
     completion or label are an error, never last-wins."""
@@ -305,8 +305,13 @@ def load_base_cache(globs, *, max_tokens, model=None):
             except Exception:
                 continue
             dec = m.get("decoding", {})
-            if (m.get("profile") != "harmful-axis-a" or dec.get("max_tokens") != max_tokens
-                    or dec.get("temp") != 0 or dec.get("think")):
+            if m.get("profile") != "harmful-axis-a" or dec.get("temp") != 0:
+                continue
+            # base_loose: reuse a base arm regardless of its think mode / token cap. Use it to take a
+            # clean NON-think base as the "does the model block this" reference for think runs (the
+            # unsteered think base is itself truncation-contaminated).
+            if not base_loose and (dec.get("max_tokens") != max_tokens
+                                   or bool(dec.get("think")) != bool(think)):
                 continue
             if model is not None:
                 mi = m.get("model") or {}
@@ -417,8 +422,15 @@ def run_harmful_axis(args, gen_fn=None, judge_exec=None):
              "cycle_peak": getattr(args, "cycle_peak", None)}
     mt = getattr(args, "max_tokens", None)
     gen_common = {} if mt is None else {"max_tokens": mt}
+    if getattr(args, "think", False):
+        gen_common["think"] = True
+    if getattr(args, "think_level", None) is not None:
+        gen_common["think"] = True  # a level implies thinking on
+        gen_common["think_level"] = args.think_level
     base_from = getattr(args, "base_from", None) or []
     cache = load_base_cache(base_from, max_tokens=mt if mt is not None else common.DECODE["max_tokens"],
+                            think=bool(getattr(args, "think", False)),
+                            base_loose=bool(getattr(args, "base_loose", False)),
                             model=getattr(args, "base_model_ident", None) or
                             (manifest.model_identity(common.MODEL) if base_from else None)) \
         if base_from else {}
@@ -482,7 +494,7 @@ def run_harmful_axis(args, gen_fn=None, judge_exec=None):
         "selector": sel,
         "decoding": {"temp": 0,
                      "max_tokens": mt if mt is not None else common.DECODE["max_tokens"],
-                     "ctx": common.DECODE["ctx"], "think": False,
+                     "ctx": common.DECODE["ctx"], "think": bool(getattr(args, "think", False)),
                      "steered_schedule": decay},
         "arms": {
             "base": [_arm_record(p, r, s) for p, r, s in zip(prompts, base_recs, base_st)],
@@ -579,6 +591,11 @@ def main(argv=None):
                     help="403: answer-phase decay window; omit for a constant scale")
     ap.add_argument("--think-decay-tokens", type=int, dest="think_decay_tokens",
                     help="403: thinking-phase decay window (0 = use the answer window)")
+    ap.add_argument("--think", action="store_true",
+                    help="run generations with thinking enabled (default off / --nothink); "
+                         "not --base-from compatible with a think-off base cache")
+    ap.add_argument("--think-level", type=int, dest="think_level", default=None,
+                    help="V4.1 reasoning effort 0..100 (implies --think; default --think is 75)")
     ap.add_argument("--decay-final", type=float, dest="decay_final",
                     help="403: residual (minimum) scale the decay holds at")
     ap.add_argument("--cycle-peak", type=float, dest="cycle_peak",
@@ -598,6 +615,9 @@ def main(argv=None):
                     help="harmful-axis-a: reuse the unsteered base arm (completion + judge "
                          "label) from stored manifests matching GLOB (repeatable), same "
                          "decoding and GGUF only; prompts not found are generated")
+    ap.add_argument("--base-loose", action="store_true", dest="base_loose",
+                    help="reuse a --base-from base regardless of its think mode / token cap: "
+                         "take a clean NON-think base as the block/no-block reference for think runs")
     ap.add_argument("--out", default=str(common.OUT))
     ap.add_argument("--input-run", help="render a stored run; launches no model")
     ap.add_argument("--calibrate", action="store_true",

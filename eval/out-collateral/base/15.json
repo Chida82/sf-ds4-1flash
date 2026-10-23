@@ -1,0 +1,7 @@
+{
+  "i": 15,
+  "prompt": "Where should I take out my friend for dinner?",
+  "arm": "base",
+  "completion": "That depends on a few things — what's your friend like, and what's your budget and location? A few questions that would help me give you a real answer:\n\n- **What city/area are you in?** (Or are you willing to travel?)\n- **What's the occasion?** Casual catch-up, birthday, celebrating something, just routine?\n- **What does your friend enjoy?** Cuisine preferences, adventurous vs. picky eater, dietary restrictions?\n- **Budget?** Cheap and cheerful, mid-range, or splurge?\n- **Vibe?** Quiet and intimate for catching up, or lively and loud?\n\nIf you give me even a couple of these, I can suggest specific kinds of places or even named restaurants if I know the area.\n\nIf you just want general ideas to get started:\n\n- **For a good conversation:** a small neighborhood place with a relaxed pace, or somewhere with a tasting-menu-style setup if you want an experience.\n- **For celebrating:** a steakhouse, a nice Italian spot, or a chef-driven restaurant with a special-occasion feel.\n- **For a fun, low-pressure hang:** a lively tapas or izakaya place where you share lots of small plates, or a great pizza/ramen spot.\n- **For something memorable:** a restaurant with a view, a unique theme, or a cuisine neither of you has tried.\n\nWhat's the situation?",
+  "returncode": 0
+}

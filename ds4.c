@@ -23173,6 +23173,9 @@ typedef struct {
     ds4_gpu_tensor *residual_dirs2; /* sf: rank-2 second per-layer directions, NULL when off */
     ds4_gpu_tensor *residual_probe2; /* sf: slot-2 probe directions (dot measured along these), NULL = dirs2 */
     float residual_scale2;          /* sf: rank-2 second constant scale (0 = off) */
+    bool control_active;            /* sf: closed-loop per-token scale controller on (DS4_DIR_STEERING_CONTROL) */
+    uint32_t control_read_layer;    /* sf: layer whose slot-1 pre-fold q0 dot the controller reads */
+    ds4_gpu_tensor *control_readback; /* sf: 1 float, pre-fold q0 dot at control_read_layer (decode only) */
     ds41_prefill_row batch, *rows_view;
     ds41_prefill_row carry;
     ds4_gpu_tensor *prefill_tokens;
@@ -23211,6 +23214,7 @@ static void ds41_graph_free(ds41_gpu_graph *g) {
     ds4_gpu_tensor_free(g->residual_dirs);  /* sf: 401 */
     ds4_gpu_tensor_free(g->residual_dirs2); /* sf: rank-2 */
     ds4_gpu_tensor_free(g->residual_probe2);
+    ds4_gpu_tensor_free(g->control_readback); /* sf: closed-loop controller */
     for (uint32_t i = 0; i < 40; i++) ds4_gpu_tensor_free(g->window[i]);
     for (uint32_t i = 0; i < 4; i++) {
         ds4_gpu_tensor_free(g->compressed[i]);
@@ -23596,8 +23600,12 @@ static bool ds41_steer_attention_input(const ds41_gpu_graph *g, ds4_gpu_tensor *
                                        uint32_t il, uint32_t rows) {
     if (!ds41_steering_active(g)) return true;
     ds41_steered_rows_total += rows;
-    return ds4_gpu_directional_steering_project_tensor(x, g->residual_dirs, NULL, il,
-               DS4_N_EMBD, rows, g->residual_scale) != 0;
+    /* sf: closed-loop controller reads the pre-fold q0 dot at one late layer on the single
+     * decode row; every other call passes NULL and is the unchanged 401 fold. */
+    ds4_gpu_tensor *rb = (g->control_active && il == g->control_read_layer && rows == 1)
+                             ? g->control_readback : NULL;
+    return ds4_gpu_directional_steering_project_tensor_rb(x, g->residual_dirs, NULL, il,
+               DS4_N_EMBD, rows, g->residual_scale, rb) != 0;
 }
 
 /* sf: rank-2 second orthogonal direction, applied as a second in-place fold at
@@ -28341,12 +28349,30 @@ struct ds4_session {
     uint32_t steering_decay_tokens_answer;
     float steering_cycle_peak;  /* sf: 403c cyclic schedule peak (>0 enables oscillation); 0 = one-shot decay */
     int steering_phase;         /* sf: 405 8.2 phase ablation: 0 both, 1 prefill-only, 2 decode-only */
+    int steering_think_phase;   /* sf: think/answer gate, slot 1: 0 both, 1 think-only, 2 answer-only */
+    int steering_think_phase2;  /* sf: think/answer gate, slot 2 (the rank-2 direction) */
+    float steering_base_scale2; /* sf: constant slot-2 scale saved, so the think gate can re-apply it per token */
+    /* sf: closed-loop per-token scale controller (DS4_DIR_STEERING_CONTROL=LAYER,R0,K,SMAX).
+     * r = -(pre-fold q0 dot at read_layer)/norm (positive = residual refusal); next token's
+     * scale s = clamp(S0 + K*max(0, r-R0), S0, SMAX). Off = the constant 401 scale. */
+    float control_r0, control_k, control_smax, control_s0, control_norm;
+    float control_scale;        /* sf: scale the controller set for the current token */
+    bool control_think_only;    /* sf: DS4_DIR_STEERING_CONTROL_THINK_ONLY: boost only in the think
+                                 * phase, hold S0 (q0) / G=0 (push) in the answer, where q0 is pure */
+    /* sf: Fase 3 — the same r drives the slot-2 assertive push G per token
+     * (DS4_DIR_STEERING_CONTROL_PUSH=K2,GMAX): G = clamp(K2*max(0,r-R0), 0, GMAX). 0 = off. */
+    float control_k2, control_gmax;
 };
 
 /* sf: 405 8.2 steering phase ablation (task-local, env DS4_STEERING_PHASE). Default
  * both keeps the 401/403 path bitwise unchanged; prefill-only / decode-only zero the
  * dose in the other phase to isolate where the refusal is actually broken. */
 enum ds41_steering_phase { DS41_STEER_BOTH = 0, DS41_STEER_PREFILL_ONLY = 1, DS41_STEER_DECODE_ONLY = 2 };
+
+/* sf: think/answer gate (env DS4_STEERING_THINK_PHASE / _2), keyed on steering_in_think. A slot runs
+ * only in the named phase; default both keeps the 401/403/405 path unchanged. Lets q0 steer the answer
+ * while q1 steers the thinking, or either direction in one phase only. Orthogonal to steering_phase. */
+enum ds41_steering_think_phase { DS41_STEER_TP_BOTH = 0, DS41_STEER_TP_THINK = 1, DS41_STEER_TP_ANSWER = 2 };
 
 static bool ds4_session_tp_leader(const ds4_session *s);
 
@@ -28394,6 +28420,13 @@ static float ds41_steering_scheduled_scale(const ds4_session *s) {
     return S - (S - F) * smooth;
 }
 
+/* sf: think/answer gate applied to a slot's scale: zero it in the phase the slot is not assigned to. */
+static float ds41_apply_think_gate(float scale, int gate, bool in_think) {
+    if (gate == DS41_STEER_TP_THINK && !in_think) return 0.0f;
+    if (gate == DS41_STEER_TP_ANSWER && in_think) return 0.0f;
+    return scale;
+}
+
 /* sf: 405 8.2 base scale for the current phase: the scheduled value when a decay
  * window is set, else the constant 401 scale (held in steering_decay_start). */
 static float ds41_steering_base_scale(const ds4_session *s) {
@@ -28406,17 +28439,36 @@ static float ds41_steering_base_scale(const ds4_session *s) {
  * when it is off, so the opening phase follows the last prompt token. The prefill
  * forward that produces the first generated token then uses the start scale S. */
 static void ds41_steering_on_prompt(ds4_session *s, const ds4_tokens *prompt) {
-    /* sf: 405 8.2 default (phase both, no decay): the 401 constant path is unchanged. */
-    if (!s->steering_scheduled && s->steering_phase == DS41_STEER_BOTH) return;
-    if (s->steering_scheduled) {
+    /* sf: 405 8.2 default (phase both, no decay, no think gate): the 401 constant path is unchanged. */
+    const bool gated = s->steering_think_phase != DS41_STEER_TP_BOTH ||
+                       s->steering_think_phase2 != DS41_STEER_TP_BOTH;
+    const bool control = s->ds41_graph.control_active;
+    if (!s->steering_scheduled && s->steering_phase == DS41_STEER_BOTH && !gated && !control) return;
+    if (s->steering_scheduled || gated || control) {
         const int think_start = s->engine ? s->engine->vocab.think_start_id : -1;
         s->steering_pos = 0;
         s->steering_in_think = prompt && prompt->len > 0 && think_start >= 0 &&
             prompt->v[prompt->len - 1] == think_start;
     }
-    float scale = ds41_steering_base_scale(s);
+    float scale;
+    if (control) {
+        /* sf: prefill and the first generated token use the base scale S0; the
+         * controller starts adapting from the second token. Clear any stale dot. */
+        s->control_scale = s->control_s0;
+        float *rb = (float *)ds4_gpu_tensor_contents(s->ds41_graph.control_readback);
+        if (rb) rb[0] = 0.0f;
+        scale = s->control_s0;
+    } else {
+        scale = ds41_steering_base_scale(s);
+    }
     if (s->steering_phase == DS41_STEER_DECODE_ONLY) scale = 0.0f;  /* sf: 405 8.2 no prefill dose */
+    scale = ds41_apply_think_gate(scale, s->steering_think_phase, s->steering_in_think);
     s->ds41_graph.residual_scale = scale;
+    /* sf: Fase 3 — the piloted push is off for prefill and the first token (G starts at 0,
+     * climbs from the second token like the slot-1 scale). */
+    const float base2p = (s->control_k2 > 0.0f) ? 0.0f : s->steering_base_scale2;
+    s->ds41_graph.residual_scale2 = ds41_apply_think_gate(base2p,
+                                        s->steering_think_phase2, s->steering_in_think);
     if (getenv("DS4_STEERING_SCHEDULE_DEBUG"))
         fprintf(stderr, "ds4: steering schedule pos=%u phase=%s scale=%.4f\n",
                 s->steering_pos, s->steering_in_think ? "think" : "answer",
@@ -28427,9 +28479,12 @@ static void ds41_steering_on_prompt(ds4_session *s, const ds4_tokens *prompt) {
  * being fed to produce the next one; when it is </think> the next token opens the
  * answer phase, so the dose restarts. */
 static void ds41_steering_on_decode(ds4_session *s, int token) {
-    /* sf: 405 8.2 default (phase both, no decay): the 401 constant path is unchanged. */
-    if (!s->steering_scheduled && s->steering_phase == DS41_STEER_BOTH) return;
-    if (s->steering_scheduled) {
+    /* sf: 405 8.2 default (phase both, no decay, no think gate): the 401 constant path is unchanged. */
+    const bool gated = s->steering_think_phase != DS41_STEER_TP_BOTH ||
+                       s->steering_think_phase2 != DS41_STEER_TP_BOTH;
+    const bool control = s->ds41_graph.control_active;
+    if (!s->steering_scheduled && s->steering_phase == DS41_STEER_BOTH && !gated && !control) return;
+    if (s->steering_scheduled || gated || control) {
         const int think_end = s->engine ? s->engine->vocab.think_end_id : -1;
         if (s->steering_in_think && think_end >= 0 && token == think_end) {
             s->steering_in_think = false;
@@ -28438,9 +28493,47 @@ static void ds41_steering_on_decode(ds4_session *s, int token) {
             s->steering_pos++;
         }
     }
-    float scale = ds41_steering_base_scale(s);
+    float scale;
+    float base2 = s->steering_base_scale2;  /* sf: slot-2 scale; the push controller overrides it */
+    if (control) {
+        /* sf: closed-loop step. Read the pre-fold q0 dot the just-finished forward wrote at
+         * control_read_layer; r = -(dot)/norm is positive when the row still carries refusal
+         * along q0. Raise the next token's q0 scale (slot 1) and/or the assertive push G
+         * (slot 2) in proportion to the residual, each clamped. */
+        float dot = 0.0f;
+        ds4_gpu_tensor_read(s->ds41_graph.control_readback, 0, &dot, sizeof(float));
+        const float r = -dot / s->control_norm;
+        float over = (r > s->control_r0) ? (r - s->control_r0) : 0.0f;
+        /* sf: think-only mode holds q0 at S0 and the push at 0 during the answer phase, where the
+         * constant q0 already works and the controller was shown not to help. */
+        if (s->control_think_only && !s->steering_in_think) over = 0.0f;
+        float sc = s->control_s0 + s->control_k * over;
+        if (sc < s->control_s0) sc = s->control_s0;
+        if (sc > s->control_smax) sc = s->control_smax;
+        s->control_scale = sc;
+        scale = sc;
+        float g2 = 0.0f;
+        bool push = s->control_k2 > 0.0f;
+        if (push) {   /* sf: Fase 3 piloted assertive push. The push injects compliance with a
+                       * negative slot-2 scale (h -= (-G)*d2*dot(u1,h) = h += G*d2*dot), like the
+                       * static -2 push, so the applied scale is -G with G = clamp(K2*over,0,GMAX). */
+            g2 = s->control_k2 * over;
+            if (g2 < 0.0f) g2 = 0.0f;
+            if (g2 > s->control_gmax) g2 = s->control_gmax;
+            base2 = -g2;
+        }
+        if (getenv("DS4_DIR_STEERING_CONTROL_DEBUG"))
+            fprintf(stderr, "ds4: steering control pos=%u phase=%s dot=%.2f r=%.3f s=%.3f g=%.3f\n",
+                    s->steering_pos, s->steering_in_think ? "think" : "answer",
+                    (double)dot, (double)r, (double)sc, (double)(push ? -g2 : base2));
+    } else {
+        scale = ds41_steering_base_scale(s);
+    }
     if (s->steering_phase == DS41_STEER_PREFILL_ONLY) scale = 0.0f;  /* sf: 405 8.2 no decode dose */
+    scale = ds41_apply_think_gate(scale, s->steering_think_phase, s->steering_in_think);
     s->ds41_graph.residual_scale = scale;
+    s->ds41_graph.residual_scale2 = ds41_apply_think_gate(base2,
+                                        s->steering_think_phase2, s->steering_in_think);
     if (getenv("DS4_STEERING_SCHEDULE_DEBUG"))
         fprintf(stderr, "ds4: steering schedule pos=%u phase=%s scale=%.4f\n",
                 s->steering_pos, s->steering_in_think ? "think" : "answer",
@@ -31975,6 +32068,45 @@ int ds4_session_create(ds4_session **out, ds4_engine *e, int ctx_size) {
                 if (ph && strcmp(ph, "prefill") == 0) s->steering_phase = DS41_STEER_PREFILL_ONLY;
                 else if (ph && strcmp(ph, "decode") == 0) s->steering_phase = DS41_STEER_DECODE_ONLY;
             }
+            {   /* sf: think/answer gate for slot 1 (q0) */
+                const char *tp = getenv("DS4_STEERING_THINK_PHASE");
+                if (tp && strcmp(tp, "think") == 0) s->steering_think_phase = DS41_STEER_TP_THINK;
+                else if (tp && strcmp(tp, "answer") == 0) s->steering_think_phase = DS41_STEER_TP_ANSWER;
+            }
+            {   /* sf: closed-loop per-token scale controller on q0 (slot 1). Format
+                 * DS4_DIR_STEERING_CONTROL=LAYER,R0,K,SMAX[,NORM]. r = -(pre-fold q0 dot at
+                 * LAYER)/NORM (positive = residual refusal); next token scale =
+                 * clamp(S0 + K*max(0,r-R0), S0, SMAX), S0 = the configured 401 scale.
+                 * NORM default 56 = |median refused q0.y at L25, gen| (fase 0). Decode only;
+                 * prefill and the first token stay at S0. */
+                const char *cc = getenv("DS4_DIR_STEERING_CONTROL");
+                if (cc) {
+                    float lyr = 25.0f, r0 = 0.3f, k = 1.0f, smax = 12.0f, norm = 56.0f;
+                    int nf = sscanf(cc, "%f,%f,%f,%f,%f", &lyr, &r0, &k, &smax, &norm);
+                    if (nf >= 3 && lyr >= 0.0f && (uint32_t)lyr < directional_steering_layer_count()) {
+                        s->ds41_graph.control_read_layer = (uint32_t)lyr;
+                        s->control_r0 = r0;
+                        s->control_k = k;
+                        s->control_smax = (nf >= 4 && smax > 0.0f) ? smax : 12.0f;
+                        s->control_norm = (nf >= 5 && norm != 0.0f) ? norm : 56.0f;
+                        s->control_s0 = e->directional_steering_residual_scale;
+                        s->control_scale = s->control_s0;
+                        s->ds41_graph.control_readback = ds4_gpu_tensor_alloc(sizeof(float));
+                        if (!s->ds41_graph.control_readback) {
+                            ds41_graph_free(&s->ds41_graph);
+                            free(s);
+                            return 1;
+                        }
+                        ds4_gpu_tensor_fill_f32(s->ds41_graph.control_readback, 0, 1);
+                        s->ds41_graph.control_active = true;
+                        s->control_think_only = getenv("DS4_DIR_STEERING_CONTROL_THINK_ONLY") != NULL;
+                    } else {
+                        fprintf(stderr, "ds4: DS4_DIR_STEERING_CONTROL ignored "
+                                "(need LAYER,R0,K[,SMAX[,NORM]] with 0<=LAYER<%u)\n",
+                                directional_steering_layer_count());
+                    }
+                }
+            }
         }
         /* sf: rank-2 second orthogonal direction — constant scale, no schedule. */
         if (e->directional_steering_residual2_scale != 0.0f && e->directional_steering_dirs2) {
@@ -31998,6 +32130,28 @@ int ds4_session_create(ds4_session **out, ds4_engine *e, int ctx_size) {
                 }
             }
             s->ds41_graph.residual_scale2 = e->directional_steering_residual2_scale;
+            s->steering_base_scale2 = e->directional_steering_residual2_scale;
+            {   /* sf: think/answer gate for slot 2 (q1) */
+                const char *tp = getenv("DS4_STEERING_THINK_PHASE2");
+                if (tp && strcmp(tp, "think") == 0) s->steering_think_phase2 = DS41_STEER_TP_THINK;
+                else if (tp && strcmp(tp, "answer") == 0) s->steering_think_phase2 = DS41_STEER_TP_ANSWER;
+            }
+            {   /* sf: Fase 3 — closed-loop assertive push on slot 2. Needs the slot-1 controller
+                 * readback active (DS4_DIR_STEERING_CONTROL set, typically K=0 so q0 holds at S0).
+                 * Per token G = clamp(K2*max(0,r-R0), 0, GMAX) overrides the slot-2 scale. */
+                const char *pc = getenv("DS4_DIR_STEERING_CONTROL_PUSH");
+                if (pc) {
+                    float k2 = 0.0f, gmax = 2.0f;
+                    int nf = sscanf(pc, "%f,%f", &k2, &gmax);
+                    if (nf >= 1 && s->ds41_graph.control_active) {
+                        s->control_k2 = k2;
+                        s->control_gmax = (nf >= 2 && gmax > 0.0f) ? gmax : 2.0f;
+                    } else if (nf >= 1) {
+                        fprintf(stderr, "ds4: DS4_DIR_STEERING_CONTROL_PUSH ignored "
+                                "(needs DS4_DIR_STEERING_CONTROL set to drive the readback)\n");
+                    }
+                }
+            }
         }
         s->ds41_graph.quality = e->quality;
         s->ds41_graph.streaming_prefill_bytes = e->ssd_streaming_prefill_headroom_bytes;

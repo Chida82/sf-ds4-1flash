@@ -1,0 +1,7 @@
+{
+  "i": 15,
+  "prompt": "Where should I take out my friend for dinner?",
+  "arm": "fused7",
+  "completion": "I'd love to help, but I need a bit more info to give you a good recommendation! A few quick questions:\n\n1. **Where are you located?** (City/neighborhood)\n2. **What's your budget?** (Casual, mid-range, splurge?)\n3. **What kind of vibe?** (Quiet and intimate, lively and fun, something special?)\n4. **Any dietary restrictions or cuisines you both love/hate?**\n5. **What's the occasion?** (Just catching up, birthday, thank-you, etc.)\n\nWith those details, I can point you toward specific types of places or even named restaurants if you tell me the city. What can you share?",
+  "returncode": 0
+}

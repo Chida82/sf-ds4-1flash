@@ -29753,16 +29753,22 @@ typedef struct {
     uint32_t layer;
     uint32_t n_threads;
     float    scale;
+    uint32_t read_dot;  /* sf: closed-loop controller: 1 = write pre-fold dot to readback[row] */
 } ds4_gpu_directional_steering_project_args;
 
-int ds4_gpu_directional_steering_project_tensor(
+/* sf: closed-loop controller readback. When `readback` is non-NULL the kernel writes the
+ * pre-fold dot(probe,row) for each row into it (x stays untouched, output bitwise identical).
+ * The caller reads it after the forward commits. The plain 7-arg entry below passes NULL, so
+ * every existing caller and test is unchanged. */
+int ds4_gpu_directional_steering_project_tensor_rb(
         ds4_gpu_tensor       *x,
         const ds4_gpu_tensor *directions,
         const ds4_gpu_tensor *probe,
         uint32_t                layer,
         uint32_t                width,
         uint32_t                rows,
-        float                   scale) {
+        float                   scale,
+        ds4_gpu_tensor       *readback) {
     if (!g_initialized && !ds4_gpu_init()) return 0;
     if (!x || !directions || width == 0 || rows == 0 || scale == 0.0f) return 0;
     if (!probe) probe = directions;  /* sf: plain projection measures along the direction itself */
@@ -29794,12 +29800,22 @@ int ds4_gpu_directional_steering_project_tensor(
         while (nth > width && nth > 1u) nth >>= 1;
         if (nth == 0) nth = 1;
 
+        /* sf: readback buffer at index 4 is always bound (Metal requires it); when no
+         * readback is wanted we bind x and leave read_dot 0 so nothing is written. */
+        id<MTLBuffer> rbuf = readback ? ds4_gpu_tensor_buffer(readback) : xbuf;
+        NSUInteger roff = readback ? ds4_gpu_tensor_offset(readback) : ds4_gpu_tensor_offset(x);
+        if (readback && (!rbuf || ds4_gpu_tensor_bytes(readback) < (uint64_t)rows * sizeof(float))) {
+            fprintf(stderr, "ds4: Metal directional steering readback buffer too small\n");
+            return 0;
+        }
+
         ds4_gpu_directional_steering_project_args args = {
             .width = width,
             .rows = rows,
             .layer = layer,
             .n_threads = (uint32_t)nth,
             .scale = scale,
+            .read_dot = readback ? 1u : 0u,
         };
 
         id<MTLComputeCommandEncoder> enc = ds4_gpu_compute_encoder(cb);
@@ -29808,6 +29824,7 @@ int ds4_gpu_directional_steering_project_tensor(
         [enc setBuffer:xbuf offset:ds4_gpu_tensor_offset(x) atIndex:1];
         [enc setBuffer:dbuf offset:ds4_gpu_tensor_offset(directions) atIndex:2];
         [enc setBuffer:pbuf offset:ds4_gpu_tensor_offset(probe) atIndex:3];
+        [enc setBuffer:rbuf offset:roff atIndex:4];
         [enc setThreadgroupMemoryLength:nth * sizeof(float) atIndex:0];
         [enc dispatchThreadgroups:MTLSizeMake((NSUInteger)rows, 1, 1)
              threadsPerThreadgroup:MTLSizeMake(nth, 1, 1)];
@@ -29817,6 +29834,18 @@ int ds4_gpu_directional_steering_project_tensor(
     }
 
     return 1;
+}
+
+/* sf: the unchanged 401 fold — no readback. Every pre-controller caller and test uses this. */
+int ds4_gpu_directional_steering_project_tensor(
+        ds4_gpu_tensor       *x,
+        const ds4_gpu_tensor *directions,
+        const ds4_gpu_tensor *probe,
+        uint32_t                layer,
+        uint32_t                width,
+        uint32_t                rows,
+        float                   scale) {
+    return ds4_gpu_directional_steering_project_tensor_rb(x, directions, probe, layer, width, rows, scale, NULL);
 }
 
 static NSUInteger ds4_gpu_bin_threads(uint32_t width, id<MTLComputePipelineState> pipeline) {

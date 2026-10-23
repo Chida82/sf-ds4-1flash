@@ -35,7 +35,7 @@ def extract_completion(stdout):
     return "\n".join(body).strip()
 
 
-def gen(prompt, *, steer=None, residual=0.0, think=True,
+def gen(prompt, *, steer=None, residual=0.0, think=True, think_level=None,
         max_tokens=None, logprobs=None, system=None,
         decay_tokens=None, decay_final=None, think_decay_tokens=None,
         cycle_peak=None, steer2=None, residual2=0.0, probe2=None):
@@ -44,6 +44,7 @@ def gen(prompt, *, steer=None, residual=0.0, think=True,
     decay_* (403) turn the steered arm's constant scale into a decay schedule;
     cycle_peak (403c) turns that decay into an oscillation."""
     argv = common.build_cli(prompt, steer=steer, residual=residual, think=think,
+                            think_level=think_level,
                             max_tokens=max_tokens, logprobs=logprobs, system=system,
                             decay_tokens=decay_tokens, decay_final=decay_final,
                             think_decay_tokens=think_decay_tokens, cycle_peak=cycle_peak,
