@@ -1212,6 +1212,7 @@ typedef struct {
     const char *directional_steering_file;
     float directional_steering_residual;
     bool allow_v41_steering;
+    const char *steering_profile;
     bool self_test_extractors;
     bool validate_cases;
     bool list_cases;
@@ -1702,6 +1703,8 @@ static eval_config parse_options(int argc, char **argv) {
                 parse_float_arg(need_arg(&i, argc, argv, arg), arg, -100.0f, 100.0f);
         } else if (!strcmp(arg, "--allow-v41-steering")) {
             c.allow_v41_steering = true;
+        } else if (!strcmp(arg, "--steering-profile")) {
+            c.steering_profile = need_arg(&i, argc, argv, arg);
         } else if (!strcmp(arg, "--ssd-streaming-cache-experts")) {
             uint32_t experts = 0;
             uint64_t bytes = 0;
@@ -4761,6 +4764,7 @@ int main(int argc, char **argv) {
         .directional_steering_file = cfg.directional_steering_file,
         .directional_steering_residual = cfg.directional_steering_residual,
         .allow_v41_steering = cfg.allow_v41_steering,
+        .steering_profile = cfg.steering_profile,
         .distributed = cfg.dist,
         .tp = cfg.tp,
     };

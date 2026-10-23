@@ -14543,11 +14543,11 @@ static server_config parse_options(int argc, char **argv) {
         } else if (!strcmp(arg, "--dir-steering-file-2")) {
             /* sf: rank-2 second direction file (orthogonal to the first) */
             c.engine.directional_steering_file2 = need_arg(&i, argc, argv, arg);
-        } else if (!strcmp(arg, "--dir-steering-probe-2")) {
-            /* sf: slot-2 probe: dose the move along file-2 by dot(probe, x) */
-            c.engine.directional_steering_probe_file2 = need_arg(&i, argc, argv, arg);
         } else if (!strcmp(arg, "--allow-v41-steering")) {
             c.engine.allow_v41_steering = true;
+        } else if (!strcmp(arg, "--steering-profile")) {
+            /* sf: one .sfsteer file or a name in com-steering/profiles: vectors, scales, gates */
+            c.engine.steering_profile = need_arg(&i, argc, argv, arg);
         } else if (!strcmp(arg, "--dir-steering-ffn")) {
             c.engine.directional_steering_ffn = parse_float_arg(need_arg(&i, argc, argv, arg), arg, -100.0f, 100.0f);
             directional_steering_scale_set = true;
@@ -14563,18 +14563,6 @@ static server_config parse_options(int argc, char **argv) {
             /* sf: rank-2 second orthogonal direction, constant scale at the residual site */
             c.engine.directional_steering_residual2 = parse_float_arg(need_arg(&i, argc, argv, arg), arg, -100.0f, 100.0f);
             directional_steering_scale_set = true;
-        } else if (!strcmp(arg, "--dir-steering-residual-decay-final")) {
-            /* sf: 403 the residual (minimum) scale the decay holds at */
-            c.engine.directional_steering_residual_decay_final = parse_float_arg(need_arg(&i, argc, argv, arg), arg, -100.0f, 100.0f);
-        } else if (!strcmp(arg, "--dir-steering-residual-decay-tokens")) {
-            /* sf: 403 answer-phase decay window in generated tokens; 0 = constant */
-            c.engine.directional_steering_residual_decay_tokens = (uint32_t)parse_float_arg(need_arg(&i, argc, argv, arg), arg, 0.0f, 1000000.0f);
-        } else if (!strcmp(arg, "--dir-steering-think-residual-decay-tokens")) {
-            /* sf: 403 thinking-phase decay window; 0 = use the answer window */
-            c.engine.directional_steering_think_residual_decay_tokens = (uint32_t)parse_float_arg(need_arg(&i, argc, argv, arg), arg, 0.0f, 1000000.0f);
-        } else if (!strcmp(arg, "--dir-steering-residual-cycle-peak")) {
-            /* sf: 403c >0 turns the one-shot decay into an oscillation whose rises climb to this peak; 0 = one-shot decay */
-            c.engine.directional_steering_residual_cycle_peak = parse_float_arg(need_arg(&i, argc, argv, arg), arg, 0.0f, 100.0f);
         } else if (!strcmp(arg, "--warm-weights")) {
             c.engine.warm_weights = true;
         } else if (!strcmp(arg, "--metal")) {
@@ -14762,7 +14750,8 @@ int main(int argc, char **argv) {
     }
 
     if (cfg.kv_disk_dir && (cfg.engine.directional_steering_residual != 0.0f ||
-                            cfg.engine.directional_steering_residual2 != 0.0f)) {
+                            cfg.engine.directional_steering_residual2 != 0.0f ||
+                            (cfg.engine.steering_profile && cfg.engine.steering_profile[0]))) {
         /* sf: 401 cache entries carry no steering identity: a steered server
          * runs without the disk cache, never reads or writes under its root,
          * and leaves existing entries untouched. */

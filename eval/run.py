@@ -102,7 +102,7 @@ def run_arm(gen_fn, prompt, *, steer, residual, think=False, logprobs=None,
     """Generate one arm and classify the outcome. Returns (record, status). A
     timeout, nonzero exit, empty output or raised exception is an explicit status,
     never a score; the record keeps the raw text locally. gen_kwargs forwards
-    optional generation knobs (e.g. 403 decay schedule) to the generator."""
+    optional generation knobs (e.g. the rank-2 slot) to the generator."""
     try:
         rec = gen_fn(prompt, steer=steer, residual=residual, think=think,
                      logprobs=logprobs, **gen_kwargs)
@@ -136,8 +136,6 @@ def _rank2_kwargs(args):
     kw = {}
     if getattr(args, "steer2", None) is not None:
         kw.update(steer2=args.steer2, residual2=args.residual2 or 0.0)
-        if getattr(args, "probe2", None) is not None:
-            kw.update(probe2=args.probe2)
     return kw
 
 
@@ -416,10 +414,6 @@ def run_harmful_axis(args, gen_fn=None, judge_exec=None):
     iv = manifest.intervention_identity(steer=args.steer, residual=args.residual or 0.0,
                                         **_rank2_kwargs(args))
 
-    decay = {"decay_tokens": getattr(args, "decay_tokens", None),
-             "decay_final": getattr(args, "decay_final", None),
-             "think_decay_tokens": getattr(args, "think_decay_tokens", None),
-             "cycle_peak": getattr(args, "cycle_peak", None)}
     mt = getattr(args, "max_tokens", None)
     gen_common = {} if mt is None else {"max_tokens": mt}
     if getattr(args, "think", False):
@@ -453,7 +447,7 @@ def run_harmful_axis(args, gen_fn=None, judge_exec=None):
         print(f"--base-from: {len(base_reused)} of {len(prompts)} base cells reused, "
               f"{len(fresh)} generated", file=sys.stderr)
     cand_recs, cand_st = _completions(gen_fn, prompts, steer=args.steer,
-                                      residual=args.residual, **decay, **gen_common,
+                                      residual=args.residual, **gen_common,
                                       **_rank2_kwargs(args))
     controls, control_ev = run_controls(gen_fn, prompts[:3], args.steer, out_dir)
 
@@ -494,8 +488,7 @@ def run_harmful_axis(args, gen_fn=None, judge_exec=None):
         "selector": sel,
         "decoding": {"temp": 0,
                      "max_tokens": mt if mt is not None else common.DECODE["max_tokens"],
-                     "ctx": common.DECODE["ctx"], "think": bool(getattr(args, "think", False)),
-                     "steered_schedule": decay},
+                     "ctx": common.DECODE["ctx"], "think": bool(getattr(args, "think", False))},
         "arms": {
             "base": [_arm_record(p, r, s) for p, r, s in zip(prompts, base_recs, base_st)],
             "steered": [_arm_record(p, r, s) for p, r, s in zip(prompts, cand_recs, cand_st)],
@@ -585,22 +578,11 @@ def main(argv=None):
                     help="rank-2: second direction file (orthogonal to --steer, e.g. fuse_directions.py 'ortho')")
     ap.add_argument("--residual2", type=float, default=0.0,
                     help="rank-2: constant scale for the second direction; 0 = off")
-    ap.add_argument("--probe2",
-                    help="slot-2 probe file: h -= residual2*d2*dot(p,h) before the first fold (d2 rows carry the dose)")
-    ap.add_argument("--decay-tokens", type=int, dest="decay_tokens",
-                    help="403: answer-phase decay window; omit for a constant scale")
-    ap.add_argument("--think-decay-tokens", type=int, dest="think_decay_tokens",
-                    help="403: thinking-phase decay window (0 = use the answer window)")
     ap.add_argument("--think", action="store_true",
                     help="run generations with thinking enabled (default off / --nothink); "
                          "not --base-from compatible with a think-off base cache")
     ap.add_argument("--think-level", type=int, dest="think_level", default=None,
                     help="V4.1 reasoning effort 0..100 (implies --think; default --think is 75)")
-    ap.add_argument("--decay-final", type=float, dest="decay_final",
-                    help="403: residual (minimum) scale the decay holds at")
-    ap.add_argument("--cycle-peak", type=float, dest="cycle_peak",
-                    help="403c: >0 oscillates (down/hold-min/up over 3 decay windows), "
-                         "rises climbing to this peak; omit for a one-shot decay")
     ap.add_argument("--max-tokens", type=int, dest="max_tokens",
                     help="override the per-completion token cap (default 256); raise it "
                          "so answers finish before grading (both arms get the same cap)")

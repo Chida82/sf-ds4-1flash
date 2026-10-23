@@ -38,6 +38,7 @@ taken from a PR. Nothing here has been offered upstream.
 |---|---|---|---|
 | `400` steering admission | V4.1 refuses `--dir-steering-file` at engine open | `--allow-v41-steering` (CLI, server) or a set `DS4_ALLOW_V41_STEERING` lifts only the steering-file term of the support check; every other condition and the refusal text stay upstream's | admission only: it applies no edit and claims no effect; the V4.1 site is `401`'s |
 | `401` V4.1 steering site | no steering on the V4.1 graph; the FFN/attention hooks are V4 graph code | `--dir-steering-residual F` projects each layer's weighted HC attention-input fold, after Engram and before the attention norm (`v41_attn_input_weighted_fold_post_engram`, revision 2), on decode, batch prefill and the decoder suffix's reconstructed rows; the file is validated at engine open; nonzero FFN/attention scales and live `/steer` are refused on V4.1; a steered session refuses payloads and snapshots and the server skips `--kv-disk-dir` | a baseline experiment with a direct layer index, not a replication of the published post-layer-residual result; `402` measures behaviour, `405` compares sites |
+| rank-2, gates, profiles | one direction | a second direction at the same site (`--dir-steering-file-2`/`--dir-steering-residual-2`), a think/answer gate per slot, and `--steering-profile` loading vectors, scales and gates from one `.sfsteer` file (`com-steering/`) | runtime only; the measurements are in `com-steering/kpi.md` |
 
 ## External steering sources (401, 404)
 

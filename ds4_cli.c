@@ -55,7 +55,6 @@ typedef struct {
     int dump_logprobs_top_k;
     int decode_consistency_tokens;
     const char *perplexity_file_path;
-    const char *perplexity_dump_path;
     ds4_think_mode think_mode;
     bool head_test;
     bool first_token_test;
@@ -1043,73 +1042,17 @@ static int run_perplexity_file(ds4_engine *engine, const cli_config *cfg) {
     }
     ds4_tokens_free(&prefix);
 
-    /* sf: 402 (5.1) optional full-vocabulary teacher-forced logprob dump. One
-     * record per scored position: the forced token id and the full log-softmax
-     * over the vocabulary, so eval/score_kl.py computes a real forced-prefix KL
-     * on identical prefixes. Additive and off by default. Binary format:
-     *   "DLP1", int32 vocab, int32 scored, then per position:
-     *   int32 forced_token_id, vocab * float32 logprobs. */
-    FILE *dump = NULL;
-    float *full = NULL;
-    const int vocab = ds4_engine_vocab_size(engine);
-    if (cfg->gen.perplexity_dump_path) {
-        dump = fopen(cfg->gen.perplexity_dump_path, "wb");
-        if (!dump) {
-            fprintf(stderr, "ds4: failed to open --perplexity-dump file: %s\n",
-                    cfg->gen.perplexity_dump_path);
-            ds4_session_free(session);
-            ds4_tokens_free(&tokens);
-            return 1;
-        }
-        full = malloc((size_t)vocab * sizeof(float));
-        if (!full) {
-            fclose(dump);
-            ds4_session_free(session);
-            ds4_tokens_free(&tokens);
-            return 1;
-        }
-        const int32_t hv = (int32_t)vocab, hs = (int32_t)scored;
-        fwrite("DLP1", 1, 4, dump);
-        fwrite(&hv, sizeof(hv), 1, dump);
-        fwrite(&hs, sizeof(hs), 1, dump);
-    }
-
     double nll = 0.0;
     for (int j = 0; j < scored; j++) {
         const int i = prefix_len + j;
         ds4_token_score score;
         if (!ds4_session_token_logprob(session, tokens.v[i], &score)) {
             fprintf(stderr, "ds4: failed to score token %d\n", i);
-            free(full);
-            if (dump) fclose(dump);
             ds4_session_free(session);
             ds4_tokens_free(&tokens);
             return 1;
         }
         nll -= (double)score.logprob;
-
-        if (dump) {
-            if (ds4_session_copy_logits(session, full, vocab) != vocab) {
-                fprintf(stderr, "\nds4: perplexity-dump: failed to copy logits at %d\n", i);
-                free(full);
-                fclose(dump);
-                ds4_session_free(session);
-                ds4_tokens_free(&tokens);
-                return 1;
-            }
-            float m = full[0];
-            for (int v = 1; v < vocab; v++)
-                if (full[v] > m) m = full[v];
-            double sum = 0.0;
-            for (int v = 0; v < vocab; v++)
-                sum += exp((double)full[v] - (double)m);
-            const float lse = (float)((double)m + log(sum));
-            for (int v = 0; v < vocab; v++)
-                full[v] -= lse;
-            const int32_t fid = (int32_t)tokens.v[i];
-            fwrite(&fid, sizeof(fid), 1, dump);
-            fwrite(full, sizeof(float), (size_t)vocab, dump);
-        }
 
         if (((j + 1) % 256) == 0 || j + 1 == scored) {
             fprintf(stderr, "ds4: perplexity scored %d/%d\r", j + 1, scored);
@@ -1118,25 +1061,12 @@ static int run_perplexity_file(ds4_engine *engine, const cli_config *cfg) {
 
         if (j + 1 < scored && ds4_session_eval(session, tokens.v[i], err, sizeof(err)) != 0) {
             fprintf(stderr, "\nds4: perplexity decode failed at token %d: %s\n", i, err);
-            free(full);
-            if (dump) fclose(dump);
             ds4_session_free(session);
             ds4_tokens_free(&tokens);
             return 1;
         }
     }
     fputc('\n', stderr);
-
-    if (dump) {
-        free(full);
-        if (fclose(dump) != 0) {
-            fprintf(stderr, "ds4: failed to close --perplexity-dump file: %s\n",
-                    cfg->gen.perplexity_dump_path);
-            ds4_session_free(session);
-            ds4_tokens_free(&tokens);
-            return 1;
-        }
-    }
 
     const double avg_nll = nll / (double)scored;
     printf("tokens=%d scored=%d nll=%.9f avg_nll=%.9f ppl=%.9f\n",
@@ -2001,11 +1931,11 @@ static cli_config parse_options(int argc, char **argv) {
         } else if (!strcmp(arg, "--dir-steering-file-2")) {
             /* sf: rank-2 second direction file (orthogonal to the first) */
             c.engine.directional_steering_file2 = need_arg(&i, argc, argv, arg);
-        } else if (!strcmp(arg, "--dir-steering-probe-2")) {
-            /* sf: slot-2 probe: dose the move along file-2 by dot(probe, x) */
-            c.engine.directional_steering_probe_file2 = need_arg(&i, argc, argv, arg);
         } else if (!strcmp(arg, "--allow-v41-steering")) {
             c.engine.allow_v41_steering = true;
+        } else if (!strcmp(arg, "--steering-profile")) {
+            /* sf: one .sfsteer file or a name in com-steering/profiles: vectors, scales, gates */
+            c.engine.steering_profile = need_arg(&i, argc, argv, arg);
         } else if (!strcmp(arg, "--expert-profile")) {
             c.engine.expert_profile_path = need_arg(&i, argc, argv, arg);
         } else if (!strcmp(arg, "--dir-steering-ffn")) {
@@ -2023,21 +1953,6 @@ static cli_config parse_options(int argc, char **argv) {
             /* sf: rank-2 second orthogonal direction, constant scale at the residual site */
             c.engine.directional_steering_residual2 = parse_float_range(need_arg(&i, argc, argv, arg), arg, -100.0f, 100.0f);
             directional_steering_scale_set = true;
-        } else if (!strcmp(arg, "--dir-steering-residual-decay-final")) {
-            /* sf: 403 the residual (minimum) scale the decay holds at */
-            c.engine.directional_steering_residual_decay_final = parse_float_range(need_arg(&i, argc, argv, arg), arg, -100.0f, 100.0f);
-        } else if (!strcmp(arg, "--dir-steering-residual-decay-tokens")) {
-            /* sf: 403 answer-phase decay window in generated tokens; 0 = constant */
-            c.engine.directional_steering_residual_decay_tokens =
-                (uint32_t)parse_float_range(need_arg(&i, argc, argv, arg), arg, 0.0f, 1000000.0f);
-        } else if (!strcmp(arg, "--dir-steering-think-residual-decay-tokens")) {
-            /* sf: 403 thinking-phase decay window; 0 = use the answer window */
-            c.engine.directional_steering_think_residual_decay_tokens =
-                (uint32_t)parse_float_range(need_arg(&i, argc, argv, arg), arg, 0.0f, 1000000.0f);
-        } else if (!strcmp(arg, "--dir-steering-residual-cycle-peak")) {
-            /* sf: 403c >0 turns the one-shot decay into an oscillation (down/hold-min/up
-             * over 3 decay windows) whose rises climb to this peak; 0 = one-shot decay */
-            c.engine.directional_steering_residual_cycle_peak = parse_float_range(need_arg(&i, argc, argv, arg), arg, 0.0f, 100.0f);
         } else if (!strcmp(arg, "-t") || !strcmp(arg, "--threads")) {
             c.engine.n_threads = parse_int(need_arg(&i, argc, argv, arg), arg);
         } else if (!strcmp(arg, "--backend")) {
@@ -2058,8 +1973,6 @@ static cli_config parse_options(int argc, char **argv) {
             c.gen.decode_consistency_tokens = parse_int(need_arg(&i, argc, argv, arg), arg);
         } else if (!strcmp(arg, "--perplexity-file")) {
             c.gen.perplexity_file_path = need_arg(&i, argc, argv, arg);
-        } else if (!strcmp(arg, "--perplexity-dump")) {
-            c.gen.perplexity_dump_path = need_arg(&i, argc, argv, arg);
         } else if (!strcmp(arg, "--think-level")) {
             if (!ds4_think_mode_parse_level(need_arg(&i, argc, argv, arg), &c.gen.think_mode)) {
                 fprintf(stderr, "ds4: --think-level requires an integer from 0 to 100\n");

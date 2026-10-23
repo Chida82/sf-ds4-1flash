@@ -395,24 +395,18 @@ struct ds4_metal_args_dsv4_directional_steering_project {
     uint32_t layer;
     uint32_t n_threads;
     float    scale;
-    uint32_t read_dot;  /* sf: closed-loop controller: 1 = write pre-fold dot(probe,row) to readback[row] */
 };
 
 // Optional directional steering projection.
 //
 // Each threadgroup owns one 4096-wide token row, computes
-// dot(row, probe[layer]), then subtracts scale * direction * dot in-place.
+// dot(row, direction[layer]), then subtracts scale * direction * dot in-place.
 // Positive scales remove a concept direction; negative scales amplify it.  The
 // kernel is not used unless a steering file and nonzero scale are provided.
-// sf: probe is the directions buffer itself for the plain projection; a
-// separate probe (`--dir-steering-probe-2`) doses a move along `direction` by
-// the row's component along another, measured direction.
 kernel void kernel_dsv4_directional_steering_project_f32(
         constant ds4_metal_args_dsv4_directional_steering_project & args,
         device float *x,
         device const float *directions,
-        device const float *probe,
-        device float *readback [[buffer(4)]],
         threadgroup float *scratch [[threadgroup(0)]],
         uint row [[threadgroup_position_in_grid]],
         uint tid [[thread_position_in_threadgroup]]) {
@@ -420,12 +414,11 @@ kernel void kernel_dsv4_directional_steering_project_f32(
 
     device float *xr = x + (uint64_t)row * args.width;
     device const float *dir = directions + (uint64_t)args.layer * args.width;
-    device const float *prb = probe + (uint64_t)args.layer * args.width;
     const uint nth = args.n_threads;
 
     float sum = 0.0f;
     for (uint i = tid; i < args.width; i += nth) {
-        sum += xr[i] * prb[i];
+        sum += xr[i] * dir[i];
     }
     scratch[tid] = sum;
     threadgroup_barrier(mem_flags::mem_threadgroup);
@@ -434,11 +427,6 @@ kernel void kernel_dsv4_directional_steering_project_f32(
         if (tid < step) scratch[tid] += scratch[tid + step];
         threadgroup_barrier(mem_flags::mem_threadgroup);
     }
-
-    /* sf: closed-loop controller readback — the pre-fold dot(probe,row) along the
-     * steering direction, written before the fold. A side write: x is untouched, so
-     * output stays bitwise identical whether or not this fires. */
-    if (args.read_dot != 0u && tid == 0u) readback[row] = scratch[0];
 
     const float coeff = args.scale * scratch[0];
     for (uint i = tid; i < args.width; i += nth) {

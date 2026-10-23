@@ -517,6 +517,10 @@ exactly as upstream -- unless the CLI or server gets `--allow-v41-steering`
 file; on V4.1 an edit is applied only at the residual site,
 `--dir-steering-residual` (the attention-input fold, change `401`), and a
 nonzero FFN or attention scale is refused rather than ignored.
+`--steering-profile NAME` loads a complete steered configuration from one
+file (both directions, their scales and think/answer gates) and needs no
+other flag; the profiles, the vectors they are built from and the measurements
+behind them are in [com-steering/](com-steering/investigation.md).
 
 `--prefix-file FILE` preloads complete `USER:` / `ASSISTANT:` pairs before
 the live conversation. A turn marker must start a line, roles must alternate,
@@ -540,11 +544,10 @@ without generating again. Sources and licenses are in [EVAL_DATA.md](EVAL_DATA.m
 For inference correctness and release checks, read [testing](docs/TESTING.md).
 
 The `eval/` harness measures a directional-steering intervention as an A/B of a
-base run against a steered run across five axes (refusal removal, benign fidelity,
-over-refusal, capability, breadth), with two mandatory controls and the published
-V4.1 anchors kept in separate protocol columns. `make eval-refusal-selfcheck` runs
-its model-less logic checks; `make eval-refusal` runs the full model-backed loop.
-See [refusal validation](docs/REFUSAL_VALIDATION.md).
+base run against a steered run, judged by the unsteered model, with two
+mandatory controls. `make eval-refusal-selfcheck` runs its model-less logic
+checks; `make eval-refusal` runs the model-backed loop. Method and results:
+[com-steering/](com-steering/kpi.md).
 
 ## Detailed Guides
 
@@ -555,7 +558,7 @@ See [refusal validation](docs/REFUSAL_VALIDATION.md).
 - [Coding agent clients](docs/CLIENTS.md): Pi, OpenCode, Codex CLI, and Claude Code.
 - [Performance](docs/PERFORMANCE.md): reproducible measurements and recorded baselines.
 - [Testing and development](docs/TESTING.md): regression tests, debugging, and model-building tools.
-- [Refusal validation](docs/REFUSAL_VALIDATION.md): the A/B steering-validation harness and its two protocols.
+- [Steering research](com-steering/investigation.md): the techniques tried, results, KPIs and profiles.
 
 Read [CONTRIBUTING.md](CONTRIBUTING.md) before sending a pull request.
 

@@ -1,0 +1,46 @@
+{
+  "source": {
+    "hook": "residual_stream_post_layer",
+    "alpha_default": 0.75,
+    "alpha_note": "measured by the source at its own hook; not a runtime scale",
+    "model_hint": "deepseek_v41",
+    "layer_count": 39,
+    "layer_ids_zero_based": "1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39",
+    "content_sha256": "4c0c2caa8b62c7e22d8da5d2938e58e8563b7c1bfde2ad27918b3f60019d9750",
+    "base_model": "deepseek-ai/DeepSeek-V4.1-Flash-1017",
+    "base_revision": "1bae0e1088993b9b82de08f59de5be5a34e42170",
+    "method": "dom_per_layer",
+    "author": "msuiche",
+    "validation": "Gates: capture 160/160 aligned; massive-activation screen 629.9x-2988x -> mask 0.005 applied; held-out/null median 37.6x (L0-5 below 5x gate, shipped L1-39 per series precedent); no-op gate benign32-holdout 32/32 labels exact, refusal32 29/32 (3 borderline R/D flips on semantically identical refusals, kernel nondeterminism); alpha ladder 0.5/0.75/1.0/2.0: knee 0.75 (cyber32 C29 propaganda32 C32 benign C32 == a1.0 within noise, zero heavy code-mixing on calibration suites vs 5 at 1.0); GARBLED 0 at every alpha",
+    "gguf_sha256": "9c66d47701e0ceb42c33906f2d3789c0f1f16b21e7d97185f20f7f3f09fbf5cf"
+  },
+  "application": {
+    "flag": "--dir-steering-residual",
+    "site": "v41_attn_input_weighted_fold_post_engram",
+    "intervention_revision": 2,
+    "equivalent_to_source_hook": false,
+    "site_note": "the weighted HC attention-input fold, after Engram, before the attention norm; the source hook is the post-layer residual",
+    "sign_convention": "ds4 +scale removes the direction (h -= scale*d*dot(d,h))",
+    "scale_default": 0.0,
+    "scale_screening_candidates": [
+      4.0,
+      8.0
+    ],
+    "scale_note": "first-token screening on 2026-10-13, not a validated default; 0.5 at this site was a near no-op",
+    "refused_at": [
+      "--dir-steering-ffn",
+      "--dir-steering-attn"
+    ]
+  },
+  "f32": {
+    "shape": [
+      40,
+      5120
+    ],
+    "bytes": 819200,
+    "row_0": "zero",
+    "row_n": "source direction.N",
+    "sha256": "89c6795b0df140418199ab94a73c3c7a1ed1329c7f891a0e968a2d001256aeab",
+    "provenance_note": "the raw file carries none of this; keep the sidecar with it"
+  }
+}

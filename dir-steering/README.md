@@ -48,11 +48,8 @@ format example.
 --dir-steering-attn F      apply steering after attention outputs; default is 0 (V4 hook; V4.1 refuses a nonzero value)
 --dir-steering-residual F  steer the V4.1 attention-input fold; default is 0
 --dir-steering-file-2 FILE  rank-2: a second direction file (should be orthogonal to the first, e.g. fuse_directions.py 'ortho')
---dir-steering-residual-2 F rank-2: constant scale for the second direction at the same site; default 0 (off, no 403 schedule)
---dir-steering-probe-2 FILE probe for the second slot: h -= F2*d2*dot(p,h), run before the first fold; d2 rows may carry a per-layer dose
---dir-steering-residual-decay-tokens N        (403, experimental) decay the residual scale from its start to its final over N generated tokens; 0 = constant
---dir-steering-residual-decay-final F         (403, experimental) the residual (minimum) scale the decay holds at; default 0
---dir-steering-think-residual-decay-tokens N  (403, experimental) decay window for the thinking phase; 0 = use the answer window
+--dir-steering-residual-2 F rank-2: constant scale for the second direction at the same site; default 0 (off)
+--steering-profile NAME|FILE  one .sfsteer file (or a name in com-steering/profiles) with both slots' vectors, scales and think/answer gates; implies the V4.1 opt-in and replaces the options above
 ```
 
 Three application sites, each with its own scale:
@@ -88,22 +85,10 @@ orthogonal to `d` per layer — e.g. `fuse_directions.py`'s `ortho` output,
 `d2 = unit(b - (d.b)d)` — the two sequential removals equal projecting out their
 2D span exactly, so the first direction's effect is untouched. Non-orthogonal
 pairs still run, but compose as two rank-1 removals rather than a clean 2D
-projection. The second slot has no `403` decay schedule (constant scale only),
-shares the opt-in and the disable env, and the persistence/KV guards apply when
+projection. The second slot has a constant scale, shares the opt-in and the disable env, and the persistence/KV guards apply when
 either scale is nonzero. Motivation: one vector (rank-1) can only rotate the
 removed direction; a second orthogonal direction adds a dimension, which is what
-reaches refusals the single direction leaves (measured union ceiling, see
-`docs/steering-measurements.md`).
-
-**Probe-dosed second slot (`--dir-steering-probe-2 P`).** The second slot
-measures along `p` and moves along `d2`: `h -= G*d2*dot(p,h)`, applied *before*
-the first fold so the probe reads the unsteered row. With `p = d2` it is the
-plain rank-2 fold. With `p` = the refusal direction and `d2` = a direction the
-refused prompts lack (a "compliance" direction, where complied prompts sit and
-refused ones read 0), `G < 0` adds that direction in proportion to how much
-refusal the row carries, so a benign row (dot ≈ 0) is left alone by
-construction. `p` rows must be unit; `d2` rows may have any norm, which is how a
-per-layer dose is expressed (row = unit direction × dose).
+reaches refusals the single direction leaves (see `com-steering/result.md`).
 
 This fold is transient, and it is **not** the post-layer residual
 (`residual_stream_post_layer`) the msuiche vector was derived at: the direct
@@ -126,21 +111,22 @@ turns the edit off, and a zero vector at any scale exercises the steered path
 without changing anything: both are bitwise the unsteered run
 (`make test-deepseek41-steering-admission`).
 
-**Decaying the scale over tokens (`403`, experimental).** The residual scale can
-decay from its start maximum (`--dir-steering-residual`) down to a residual
-minimum (`--dir-steering-residual-decay-final`) over a window of generated tokens
-(`--dir-steering-residual-decay-tokens`), easing the intervention off once the
-refusal is broken in the first tokens. The curve is a cubic smoothstep run in
-reverse: `scale = S - (S - F) * (3t^2 - 2t^3)`, `t = clamp(pos/N, 0, 1)`, so it is
-S at the first in-phase token and holds at F past the window. The thinking phase
-and the answer phase decay independently: `--dir-steering-think-residual-decay-tokens`
-sets the thinking window (0 = reuse the answer window), the position resets at
-`</think>` so the answer gets its own dose, and both phases share one start and
-one final with the same vector. `decay-tokens 0` is a constant scale, bitwise the
-`401` intervention. These flags are experimental under `403`; adoption as a
-default is a separate measured decision (see `docs/steering-measurements.md`).
-Scheduled steering runs one session at a time: a batched multi-session decode is
-refused, since the one steering kernel applies a single scale per forward.
+**Think/answer gates.** Each slot can be gated to one reasoning phase, keyed on
+the `<think>`/`</think>` boundary: it runs at its constant scale in that phase
+and at 0 in the other. With the raw options the gates come from
+`DS4_STEERING_THINK_PHASE` (slot 1) and `DS4_STEERING_THINK_PHASE2` (slot 2),
+`think` or `answer`, default both; a steering profile carries its own. Gated
+sessions decode one at a time: a native batched decode folds every row with one
+session's scale, so the batch takes the serialized path.
+
+**Steering profiles (`--steering-profile`).** A `.sfsteer` file holds a whole
+steered configuration: the magic `SFSTEER1`, a little-endian uint32 header
+length, a JSON header (`site`, `layers`, `width`, and per slot `scale`, `phase`
+both|think|answer, plus provenance the engine ignores), then one 40x5120 f32
+matrix per slot (one or two). The matrices go through the same validation as
+plain direction files. A bare name resolves to
+`com-steering/profiles/NAME.sfsteer`; an unknown name lists the profiles there.
+`com-steering/make_profile.py` builds and shows them.
 
 **Cost.** Measured 2026-10-13 on this tree, same build, steering off against
 on (a unit direction at scale 4), fixed `--ssd-streaming-cache-experts 82GB`,
@@ -162,8 +148,7 @@ document the tooling and the file format.
 ### Second direction (`412`)
 
 `--dir-steering-file-2 FILE --dir-steering-residual-2 F` folds a second direction
-at the same site, right after the first, with a constant scale (the `403` decay
-schedule applies to the first direction only). Same file format and the same
+at the same site, right after the first, with a constant scale. Same file format and the same
 validation at engine open. A scale of 0, the default, leaves the second slot
 unloaded, whatever file is named.
 
@@ -191,9 +176,7 @@ the single fold the open also prints `warning: the two folds over-dose`; 0.22 at
 `python3 dir-steering/tools/compose_geometry.py --cos C --f F --g G` prints the
 full in-plane operator for any pair. The same
 per-layer cosines are written into the run identity (`rank2.cosine_to_first` in
-`eval/manifest.py`), and `eval/extract_floor_direction.py --ref LABEL:PATH`
-(repeatable) records the cosine of a freshly extracted direction against each
-reference in its sidecar.
+`eval/manifest.py`).
 
 Off-path guarantee, checked by `make test-deepseek41-steering-rank2` (model
 backed, 3 engine opens): the single-direction run, the same run with a second
@@ -202,26 +185,6 @@ all-zero direction give bitwise equal logits, Engram history and KV state. The
 model-less `make test` runs `test_deepseek41_graph --steering-rank2` (orthogonal
 pair nulls both coordinates, `|dot|` under 1e-4, in either order; the 0.72 pair
 is order dependent) and `python3 eval/manifest.py` (layer cosines).
-
-### Fold capture (`412`)
-
-`DS4_V41_DUMP_STEER_INPUT=PATH` appends the attention-input fold of each layer,
-before that layer's steering (earlier layers' steering is already in it), to
-`PATH`, for extracting a direction from the model's own
-activations (`eval/extract_floor_direction.py`). It is a `probe` variable: it
-forces the slow fold path, synchronizes the GPU and reads one row back per layer
-per token, so it is a diagnostic and **never set in a measured run**. Engine
-open prints exactly one `(probe)` line when it is set and nothing when it is not.
-
-Layout: raw f32, 5120 values per row. On the token-by-token path (decode, and
-the prefill of short prompts) it writes one row per token and layer in order
-(token 0 layers 0..39, token 1 layers 0..39, ...); a batched prefill call writes
-one row per layer for its last row only. A server request with `max_tokens=1`
-also evaluates the token it samples, so its dump ends one block past the
-decision position: `eval/extract_floor_direction.py` `read_decision` picks the
-last prompt block from the response `usage` and refuses any other row count
-(captures before 2026-10-18 kept the final block, see `410` 6.3). Truncate the
-file between requests to keep one prompt per file.
 
 ## Verbosity Example
 
@@ -395,5 +358,5 @@ used **projectively** (`y -= scale*d*dot(d,y)`), never as weight edits.
 A fused candidate is **not validated until `402` has scored it** (refusal
 removal, benign fidelity, over-refusal, capability, breadth). Keep the
 lowest-rank candidate that beats msuiche-alone on refusal removal without
-worsening the others; otherwise keep msuiche-alone. See
-[refusal validation](../docs/REFUSAL_VALIDATION.md).
+worsening the others; otherwise keep msuiche-alone. Results:
+[com-steering/result.md](../com-steering/result.md).

@@ -1,20 +1,0 @@
-W1020 23:40:12.958000 83951 emb-venv312/lib/python3.12/site-packages/torch/distributed/elastic/multiprocessing/redirects.py:35] NOTE: Redirects are currently not supported in MacOs.
-train ids: 144 (44 + 100)   test big50 ids finished: 50
-Loading weights:   0%|          | 0/310 [00:00<?, ?it/s]Loading weights: 100%|██████████| 310/310 [00:00<00:00, 9383.16it/s]
-train best-arm distribution: {'equiangular@7': 6, 'interleave@7': 3, 'fused@7': 135}
-
-big50 test (n=50):
-  fused@7 fixed    0.952
-  routed 1-NN      0.938
-  routed k5        0.952
-  oracle           0.972
-  (fixed equiangular@7: 0.870)
-  (fixed interleave@7: 0.904)
-  (fixed fused@7: 0.952)
-
-1-NN predicted arm == test own best arm: 45/50 (90%)
-routed AWAY from fused: 4
-  id 45: -> equiangular@7 (COMPLY) vs fused (COMPLY)
-  id 589: -> interleave@7 (DEFLECT) vs fused (REFUSE)
-  id 601: -> interleave@7 (REFUSE) vs fused (COMPLY)
-  id 1152: -> equiangular@7 (COMPLY) vs fused (COMPLY)

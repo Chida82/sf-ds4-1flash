@@ -120,7 +120,7 @@ def layer_cosines(path_a, path_b, d=5120):
 
 
 def intervention_identity(*, steer, residual, disable_env=False,
-                          steer2=None, residual2=0.0, probe2=None):
+                          steer2=None, residual2=0.0):
     """The effective edit: site, revision, scale, vector hash, disabled state.
     Site/revision mirror ds4.c (DS41_STEERING_SITE / _REVISION); a scale of 0 or a
     set DS4_METAL_DISABLE_V41_RESIDUAL_STEERING means no edit is applied. A rank-2
@@ -143,9 +143,6 @@ def intervention_identity(*, steer, residual, disable_env=False,
                        "vector": vector_identity(steer2)}
         if steer and Path(steer).exists() and Path(steer2).exists():
             iv["rank2"]["cosine_to_first"] = layer_cosines(steer, steer2)
-        # sf: probe-dosed slot 2: a different probe is a different edit
-        if probe2 is not None:
-            iv["rank2"]["probe"] = {"flag": "--dir-steering-probe-2", "vector": vector_identity(probe2)}
     return iv
 
 
@@ -159,7 +156,7 @@ def source_identity(repo=common.REPO):
         "cli": file_identity(common.CLI, do_hash=True),
         "eval_bin": file_identity(common.EVAL_BIN, do_hash=True),
         "scorers": {name: file_identity(here / f"{name}.py", do_hash=True)["sha256"]
-                    for name in ("score_judge", "score_quality")},
+                    for name in ("score_judge", "score_keyword")},
     }
 
 

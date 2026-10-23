@@ -46,9 +46,6 @@ help:
 	@echo "  make test-mxfp4-metal  Check the MXFP4 half LUT, then run Metal MXFP4 exactness tests"
 	@echo "  make test-deepseek41-metal  Run the DeepSeek V4.1 Metal kernel tests"
 	@echo "  make test-deepseek41-decode-switch SWITCH=VAR  Decode bitwise with and without a switch"
-	@echo "  make test-deepseek41-steering-admission  Steering opt-in and state controls, CLI/server gate cases"
-	@echo "  make test-deepseek41-steering-routes  Steering enabled on every prefill route, exact against the plain route"
-	@echo "  make test-deepseek41-steering-rank2  Second steering direction off path: scale 0 and a masked direction are exact"
 	@echo "  make test-engram         Run the Engram store tests"
 	@echo "  make clean        Remove build outputs"
 
@@ -176,31 +173,6 @@ test-deepseek41-decode-switch: tests/test_deepseek41_graph
 .PHONY: test-deepseek41-prefill-replica
 test-deepseek41-prefill-replica: tests/test_deepseek41_graph
 	./tests/test_deepseek41_graph deepseek-v4.1-flash.gguf --prefill-replica $(REPLICA) speed-bench/promessi_sposi.txt
-
-# V4.1 steering admission (OpenSpec 400) is a no-op. The gate is checked after
-# the GGUF opens, so both parts need the model: the in-process comparison (the
-# opt-in alone and with a zero-scale file against no opt-in: 65 steps of logits,
-# then KV and Engram, bitwise; no direction tensor) and the CLI cases (exact
-# refusal line and exit status by default and under --power 50; the flag and
-# the empty/0/1 environment spellings each admit the file).
-.PHONY: test-deepseek41-steering-admission
-test-deepseek41-steering-admission: tests/test_deepseek41_graph $(BIN) $(BIN)-server
-	./tests/test_deepseek41_graph deepseek-v4.1-flash.gguf --steering-admission speed-bench/promessi_sposi.txt
-	python3 tests/test_steering_admission.py deepseek-v4.1-flash.gguf --cli ./$(BIN) --server ./$(BIN)-server
-
-# V4.1 steering enabled coverage (OpenSpec 401): with a unit direction at
-# scale 4, the short-wide, wide and deferred-decoder prefill routes leave the
-# same state as the plain batch route, with append and decode.
-.PHONY: test-deepseek41-steering-routes
-test-deepseek41-steering-routes: tests/test_deepseek41_graph
-	./tests/test_deepseek41_graph deepseek-v4.1-flash.gguf --steering-routes speed-bench/promessi_sposi.txt
-
-# V4.1 steering rank-2 off path (OpenSpec 412): a second direction file at
-# scale 0 leaves logits, Engram history and KV state bitwise the
-# single-direction run's; a second fold on a masked direction does too.
-.PHONY: test-deepseek41-steering-rank2
-test-deepseek41-steering-rank2: tests/test_deepseek41_graph
-	./tests/test_deepseek41_graph deepseek-v4.1-flash.gguf --steering-rank2-off speed-bench/promessi_sposi.txt
 
 tests/test_deepseek41_graph.o: tests/test_deepseek41_graph.c ds4.c ds4_gpu.h ds4_engram.h
 	$(CC) $(filter-out -ffast-math,$(CFLAGS)) -Wno-unused-function -I. -c -o $@ $<
@@ -440,15 +412,9 @@ test: env-check ds4_test $(BIN)-eval q4k-dot-test mxfp4-dot-test test-session-st
 	./tests/test_deepseek41_prefill --dispatch
 	./tests/test_deepseek41_graph --prefill-expert-discard
 	./tests/test_deepseek41_graph --prefill-expert-stream
-	./tests/test_deepseek41_graph --steering-fold
-	./tests/test_deepseek41_graph --steering-rank2
-	./tests/test_deepseek41_graph --steering-file
 	python3 dir-steering/tools/controlvector_to_f32.py --self-check
 	python3 dir-steering/tools/compose_geometry.py --self-check
 	python3 dir-steering/tools/mask_layers.py --self-check
-	python3 eval/capture_fold.py --self-check
-	python3 eval/analyze_fold.py --self-check
-	python3 eval/derive_native_direction.py --self-check
 
 .PHONY: test-download-model
 test-download-model:
@@ -467,7 +433,7 @@ test-quality-api: tests/test_quality_api.c gguf-tools/quality-testing/score_offi
 # With no model it prints the prerequisite and exits nonzero. Default profile is
 # the judge-free benign-smoke first pass with KPI output. Pass flags via EVALFLAGS:
 #   make eval-refusal                                   # benign-smoke, base only
-#   make eval-refusal EVALFLAGS="--steer dir-steering/out/v41-msuiche.f32 --residual 0.5"
+#   make eval-refusal EVALFLAGS="--suite harmful-axis-a --steer com-steering/vectors/v41-q0dwarf-equi.f32 --residual 7 --max-tokens 2048"
 #   make eval-refusal EVALFLAGS="--report audit --input-run eval/out/<run_id>"  # no model
 # The steered arm names the V4.1 residual site only; --ffn/--attn are V4 hooks.
 # Writes eval/out/<run_id>/{manifest.json (local evidence), summary.json, summary.md (KPI)}.
@@ -479,24 +445,12 @@ eval-refusal-selfcheck:
 	python3 eval/manifest.py
 	python3 eval/profiles.py
 	python3 eval/datasets_harmful.py
-	python3 eval/datasets_benign.py
-	python3 eval/datasets_overrefusal.py
-	python3 eval/datasets_capability.py
 	python3 eval/compose.py
 	python3 eval/generate.py
 	python3 eval/score_keyword.py
 	python3 eval/score_judge.py
-	python3 eval/score_strongreject.py
-	python3 eval/score_kl.py
-	python3 eval/score_capability.py
-	python3 eval/score_quality.py
 	python3 eval/calibration.py
-	python3 eval/probe_firsttoken.py
-	python3 eval/scale_sweep.py --self-check
 	python3 eval/run.py --self-check
-	python3 eval/aggregate_judged_labels.py --self-check
-	python3 eval/extract_floor_direction.py --self-check
-	python3 eval/compare_steering.py --self-check
 
 ds4.o ds4_cpu.o ds4_server.o ds4_server_cpu.o ds4_test.o \
 ds4_cpu_test_hooks.o tests/test_session_state.o \

@@ -1218,23 +1218,10 @@ int ds4_gpu_add_tensor(
 int ds4_gpu_directional_steering_project_tensor(
         ds4_gpu_tensor       *x,
         const ds4_gpu_tensor *directions,
-        const ds4_gpu_tensor *probe,  /* sf: NULL = directions (plain projection) */
         uint32_t                layer,
         uint32_t                width,
         uint32_t                rows,
         float                   scale);
-
-/* sf: closed-loop controller variant — writes the pre-fold dot per row into `readback`
- * (NULL = the plain fold above). x is untouched either way (bitwise identical output). */
-int ds4_gpu_directional_steering_project_tensor_rb(
-        ds4_gpu_tensor       *x,
-        const ds4_gpu_tensor *directions,
-        const ds4_gpu_tensor *probe,
-        uint32_t                layer,
-        uint32_t                width,
-        uint32_t                rows,
-        float                   scale,
-        ds4_gpu_tensor       *readback);
 
 int ds4_gpu_router_select_tensor(
         ds4_gpu_tensor       *selected,
