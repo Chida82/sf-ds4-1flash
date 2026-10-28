@@ -19,6 +19,7 @@
 #include <float.h>
 #include <inttypes.h>
 #include <ctype.h>
+#include <dirent.h>
 #include <limits.h>
 #include <math.h>
 #include <pthread.h>
@@ -23167,6 +23168,13 @@ typedef struct {
     ds4_gpu_tensor *compressed[4], *index_cache[4];
     ds4_gpu_tensor *previous_kv[4], *previous_score[4];
     ds4_gpu_tensor *engram_q_norm[2], *engram_k_norm[2];
+    ds4_gpu_tensor *residual_dirs;  /* sf: 401 per-layer steering directions (40x5120), NULL when off */
+    float residual_scale;           /* sf: 401 residual_stream_post_layer scale (0 = off) */
+    ds4_gpu_tensor *residual_dirs2; /* sf: rank-2 second per-layer directions, NULL when off */
+    float residual_scale2;          /* sf: rank-2 second constant scale (0 = off) */
+    ds4_gpu_tensor *closure_dirs;   /* sf: 419 additive closure direction (40x5120 f32), NULL when off */
+    float closure_scale;            /* sf: 419 this token's additive scale a(t) (0 = nothing dispatched) */
+    ds4_gpu_tensor *site_capture;   /* sf: 419 per-layer copy of x at the steering site (40x5120 f32), NULL unless DS4_V41_SITE_CAPTURE */
     ds41_prefill_row batch, *rows_view;
     ds41_prefill_row carry;
     ds4_gpu_tensor *prefill_tokens;
@@ -23202,6 +23210,10 @@ static void ds41_graph_free(ds41_gpu_graph *g) {
         ds4_gpu_tensor_free(g->engram_q_norm[i]);
         ds4_gpu_tensor_free(g->engram_k_norm[i]);
     }
+    ds4_gpu_tensor_free(g->residual_dirs);  /* sf: 401 */
+    ds4_gpu_tensor_free(g->residual_dirs2); /* sf: rank-2 */
+    ds4_gpu_tensor_free(g->closure_dirs);   /* sf: 419 */
+    ds4_gpu_tensor_free(g->site_capture);   /* sf: 419 */
     for (uint32_t i = 0; i < 40; i++) ds4_gpu_tensor_free(g->window[i]);
     for (uint32_t i = 0; i < 4; i++) {
         ds4_gpu_tensor_free(g->compressed[i]);
@@ -23569,18 +23581,95 @@ static bool ds41_hc_block_input_off(void) {
     return metal_graph_env_flag("DS4_METAL_DISABLE_V41_HC_BLOCK_INPUT", &cache);
 }
 
+/* sf: 401 the one steering operation of the V4.1 graph. x holds attention-input
+ * folds already rounded to BF16; the projection h -= scale*d[il]*dot(d[il],h)
+ * runs in f32 and the attention norm follows with no second rounding. Decode,
+ * batch prefill and the decoder suffix's reconstructed rows all come through
+ * here, so no route can skip the edit or order it differently. Off (scale 0,
+ * no file, or the disable switch) dispatches nothing. The row counter is read
+ * by tests to show which route steered how many rows. */
+static uint64_t ds41_steered_rows_total;
+
+static bool ds41_steering_active(const ds41_gpu_graph *g) {
+    return g->residual_scale != 0.0f && g->residual_dirs &&
+           !getenv("DS4_METAL_DISABLE_V41_RESIDUAL_STEERING");
+}
+
+static bool ds41_steer_attention_input(const ds41_gpu_graph *g, ds4_gpu_tensor *x,
+                                       uint32_t il, uint32_t rows) {
+    if (!ds41_steering_active(g)) return true;
+    ds41_steered_rows_total += rows;
+    return ds4_gpu_directional_steering_project_tensor(x, g->residual_dirs, il,
+               DS4_N_EMBD, rows, g->residual_scale) != 0;
+}
+
+/* sf: rank-2 second orthogonal direction, applied as a second in-place fold at
+ * the same site (constant scale, same disable env). When the two directions are
+ * orthogonal per layer the sequential removal equals removing their 2D span
+ * exactly; non-orthogonal pairs compose as two rank-1 removals. */
+static bool ds41_steering2_active(const ds41_gpu_graph *g) {
+    return g->residual_scale2 != 0.0f && g->residual_dirs2 &&
+           !getenv("DS4_METAL_DISABLE_V41_RESIDUAL_STEERING");
+}
+
+static bool ds41_steer_attention_input2(const ds41_gpu_graph *g, ds4_gpu_tensor *x,
+                                        uint32_t il, uint32_t rows) {
+    if (!ds41_steering2_active(g)) return true;
+    ds41_steered_rows_total += rows;
+    return ds4_gpu_directional_steering_project_tensor(x, g->residual_dirs2,
+               il, DS4_N_EMBD, rows, g->residual_scale2) != 0;
+}
+
+/* sf: both slots, slot 1 first. */
+static bool ds41_steer_attention_input_both(const ds41_gpu_graph *g, ds4_gpu_tensor *x,
+                                            uint32_t il, uint32_t rows) {
+    return ds41_steer_attention_input(g, x, il, rows) && ds41_steer_attention_input2(g, x, il, rows);
+}
+
+/* sf: 419 additive closure channel at the same site, after the folds:
+ * h += a(t)*c[il]. a(t) is set per token by ds41_steering_apply_gates (0 before
+ * the think-level onset, 0 in the answer); at 0 nothing is dispatched, so the
+ * output is the unsteered one bitwise. Decode rows only (think tokens). */
+static bool ds41_closure_add(const ds41_gpu_graph *g, ds4_gpu_tensor *x, uint32_t il, uint32_t rows) {
+    if (g->closure_scale == 0.0f || !g->closure_dirs) return true;
+    return ds4_gpu_directional_steering_add_tensor(x, g->closure_dirs, il, DS4_N_EMBD, rows,
+                                                  g->closure_scale) != 0;
+}
+
+/* sf: 419 DS4_V41_SITE_CAPTURE=<path>: copy x at the steering site, after the
+ * edits, into the per-layer capture tensor; ds4_session_eval appends the 40
+ * rows per decode token to <path> (raw f32) and one index line to <path>.idx. */
+static bool ds41_site_capture_on(void) {
+    static int cache = -1;
+    if (cache < 0) {
+        const char *p = getenv("DS4_V41_SITE_CAPTURE");
+        cache = p && *p;
+    }
+    return cache > 0;
+}
+
 /* One block's HC input: the mixer projection, then split, weighted sum with
  * the previous block's pre weights and norm; each half fused where the fused
  * kernel reproduces the separate ones. */
 static bool ds41_hc_mix(ds41_gpu_graph *g, const ds4_model *m,
-                        const ds4_layer_weights *l, bool ffn, const ds4_gpu_tensor *pre) {
+                        const ds4_layer_weights *l, bool ffn, const ds4_gpu_tensor *pre,
+                        uint32_t il) {
     const ds4_gpu_tensor *residual = ffn ? g->after_attn : g->residual;
     const ds4_tensor *fn = ffn ? l->hc_ffn_fn : l->hc_attn_fn;
     const ds4_tensor *scale = ffn ? l->hc_ffn_scale : l->hc_attn_scale;
     const ds4_tensor *base = ffn ? l->hc_ffn_base : l->hc_attn_base;
     const ds4_tensor *norm = ffn ? l->ffn_norm : l->attn_norm;
     ds4_gpu_tensor *split = ffn ? g->ffn_split : g->attn_split;
-    if (fn->type == DS4_TENSOR_F16 && !ds41_hc_block_input_off() &&
+    /* sf: 401 steering of the attention-side fold. The single 5120 fold g->x
+     * is a standalone tensor only on the slow path (both fast kernels fuse the
+     * fold with the rms-norm), so a steered layer skips the two fused paths:
+     * weighted sum rounded to BF16, projection, norm. Off (scale 0, ffn side,
+     * or the disable env) keeps the fast paths, bitwise. */
+    /* sf: 419 the closure channel and the site capture need the unfused path
+     * too (bitwise the same x), so they count as steering for the route. */
+    const bool hook = !ffn && ((g->closure_scale != 0.0f && g->closure_dirs) || g->site_capture);
+    const bool steer = (!ffn && (ds41_steering_active(g) || ds41_steering2_active(g))) || hook;
+    if (!steer && fn->type == DS4_TENSOR_F16 && !ds41_hc_block_input_off() &&
         ds4_gpu_dsv41_hc_block_input_rows(g->mix, g->x, g->norm, split, residual, pre, m->map, m->size,
                                           fn->abs_offset, scale->abs_offset, base->abs_offset, norm->abs_offset,
                                           DS4_N_HC * DS4_N_EMBD, 24u, DS4_N_EMBD, DS4_N_HC,
@@ -23591,14 +23680,20 @@ static bool ds41_hc_mix(ds41_gpu_graph *g, const ds4_model *m,
           (ds4_gpu_rms_norm_plain_tensor(g->flat_norm, residual,
                DS4_N_HC * DS4_N_EMBD, DS4_RMS_EPS) &&
            ds41_matmul(g->mix, m, fn, g->flat_norm, false)))) return false;
-    if (ds4_gpu_dsv41_hc_input(g->x, g->norm, split, g->mix, residual, pre, m->map, m->size,
+    if (!steer && ds4_gpu_dsv41_hc_input(g->x, g->norm, split, g->mix, residual, pre, m->map, m->size,
                                scale->abs_offset, base->abs_offset, norm->abs_offset,
                                DS4_N_EMBD, DS4_N_HC, DS4_N_HC_SINKHORN_ITER, DS4_HC_EPS, DS4_RMS_EPS))
         return true;
-    return ds4_gpu_hc_split_sinkhorn_tensor(split, g->mix, m->map, m->size,
-               scale->abs_offset, base->abs_offset, DS4_N_HC, DS4_N_HC_SINKHORN_ITER, DS4_HC_EPS) &&
-        ds4_gpu_hc_weighted_sum_bf16_tensor(g->x, residual, pre, DS4_N_EMBD, DS4_N_HC) &&
-        ds41_norm(g->norm, g->x, m, norm);
+    if (!(ds4_gpu_hc_split_sinkhorn_tensor(split, g->mix, m->map, m->size,
+              scale->abs_offset, base->abs_offset, DS4_N_HC, DS4_N_HC_SINKHORN_ITER, DS4_HC_EPS) &&
+          ds4_gpu_hc_weighted_sum_bf16_tensor(g->x, residual, pre, DS4_N_EMBD, DS4_N_HC)))
+        return false;
+    if (steer && !ds41_steer_attention_input_both(g, g->x, il, 1u)) return false;
+    if (hook && !ds41_closure_add(g, g->x, il, 1u)) return false;  /* sf: 419 */
+    if (hook && g->site_capture &&
+        !ds4_gpu_tensor_copy(g->site_capture, (uint64_t)il * DS4_N_EMBD * sizeof(float),
+                             g->x, 0, (uint64_t)DS4_N_EMBD * sizeof(float))) return false;  /* sf: 419 */
+    return ds41_norm(g->norm, g->x, m, norm);
 }
 
 /* rope_il >= 0: the heads still carry their rope; that layer's inverse rope
@@ -23901,19 +23996,19 @@ static bool ds41_graph_before_attention(ds41_gpu_graph *g, const ds4_model *m,
                 g->engram_q_norm[i], g->engram_k_norm[i], NULL, DS4_N_EMBD, 1, DS4_RMS_EPS))
             return false;
     }
-    return ds41_hc_mix(g, m, l, false, il ? g->ffn_split : g->pre);
+    return ds41_hc_mix(g, m, l, false, il ? g->ffn_split : g->pre, il);
 }
 
 static bool ds41_graph_after_attention(ds41_gpu_graph *g, const ds4_model *m,
                                       const ds4_layer_weights *l) {
     return ds4_gpu_hc_expand_split_bf16_tensor(g->after_attn, g->block, g->residual, g->attn_split, DS4_N_EMBD, DS4_N_HC) &&
-        ds41_hc_mix(g, m, l, true, g->attn_split);
+        ds41_hc_mix(g, m, l, true, g->attn_split, 0u);
 }
 
 static bool ds41_graph_before_moe(ds41_gpu_graph *g, const ds4_model *m,
                                  const ds4_layer_weights *l, uint32_t il) {
     return ds41_graph_before_attention(g, m, l, il) && ds41_attention(g, m, l, il, false) &&
-        (g->tp_world == 2 ? ds41_graph_after_attention(g, m, l) : ds41_hc_mix(g, m, l, true, g->attn_split));
+        (g->tp_world == 2 ? ds41_graph_after_attention(g, m, l) : ds41_hc_mix(g, m, l, true, g->attn_split, il));
 }
 
 static bool ds41_norm_batch(ds4_gpu_tensor *out, const ds4_gpu_tensor *in,
@@ -23959,7 +24054,13 @@ static bool ds41_before_attention_batch(ds41_gpu_graph *g, ds41_prefill_row *b,
     const bool mixed = il ?
         ds4_gpu_hc_weighted_sum_split_tensor(b->x, b->residual, b->ffn_split, DS4_N_EMBD, DS4_N_HC) :
         ds4_gpu_hc_weighted_sum_tensor(b->x, b->residual, b->pre, DS4_N_EMBD, DS4_N_HC);
-    return mixed && ds4_gpu_dsv41_quantize(b->x, DS4_N_EMBD, count, DS4_V41_BF16) &&
+    if (!mixed) return false;
+    /* sf: 401 the fold is rounded first, as the decode path stores it, then
+     * steered in f32 with no second rounding before the norm (route agreement:
+     * tests/test_deepseek41_graph.c --steering-fold). Off, the quantize and
+     * the norm run as before, bitwise. */
+    if (!ds4_gpu_dsv41_quantize(b->x, DS4_N_EMBD, count, DS4_V41_BF16)) return false;
+    return ds41_steer_attention_input_both(g, b->x, il, count) &&
         ds41_norm_batch(b->norm, b->x, m, l->attn_norm, count);
 }
 
@@ -24605,8 +24706,14 @@ static bool ds41_decoder_prepare(ds41_gpu_graph *g, const ds4_model *m,
             ds4_gpu_hc_weighted_sum_split_tensor(active.x, active.residual, active.ffn_split,
                                                 DS4_N_EMBD, DS4_N_HC) :
             ds4_gpu_hc_weighted_sum_tensor(active.x, active.residual, active.pre, DS4_N_EMBD, DS4_N_HC);
-        if (ok && batch_attention) ok = ds4_gpu_dsv41_quantize(active.x, DS4_N_EMBD, count, DS4_V41_BF16) &&
-            ds41_norm_batch(active.norm, active.x, m, l->attn_norm, count);
+        /* sf: 401 reconstructed rows take the same edit as directly processed
+         * ones; the token-major branch below reaches it through
+         * ds41_graph_before_attention. */
+        if (ok && batch_attention) {
+            ok = ds4_gpu_dsv41_quantize(active.x, DS4_N_EMBD, count, DS4_V41_BF16);
+            ok = ok && ds41_steer_attention_input_both(g, active.x, il, count) &&
+                 ds41_norm_batch(active.norm, active.x, m, l->attn_norm, count);
+        }
         if (ok && batch_publish)
             ok = ds41_attention_publish_batch(g, &active, m, l, il, initial_start + off, count);
         if (ok && !publish && batch_attention)
@@ -24622,6 +24729,12 @@ static bool ds41_decoder_prepare(ds41_gpu_graph *g, const ds4_model *m,
             if (!batch_attention) {
                 row.residual = g->rows_view[t].residual;
                 row.pre = g->rows_view[t].pre;
+                /* sf: 401 every layer after the first folds with the previous
+                 * sublayer's split: this row's carried one, not the decode
+                 * scratch the graph copy points at, which folded warm and
+                 * published rows with stale weights (--decoder-suffix and
+                 * --steering-routes at 8192 under fixed arithmetic). */
+                row.ffn_split = g->rows_view[t].ffn_split;
                 ok = ds41_graph_before_attention(&row, m, l, il);
             }
             if (ok && publish) {
@@ -25716,6 +25829,32 @@ struct ds4_engine {
     float *directional_steering_dirs;
     float directional_steering_attn_scale;
     float directional_steering_ffn_scale;
+    float directional_steering_residual_scale;  /* sf: 401 V4.1 attention-input fold site, constant scale */
+    char *directional_steering_file2;            /* sf: rank-2 second direction file */
+    float *directional_steering_dirs2;           /* sf: rank-2 second loaded directions (40x5120), NULL when off */
+    float directional_steering_residual2_scale;  /* sf: rank-2 second constant scale (0 = off) */
+    int directional_steering_phase[2];           /* sf: per-slot think/answer gate (enum ds41_steering_think_phase) */
+    uint64_t directional_steering_offset[2];     /* sf: per-slot matrix offset inside a steering profile; 0 = a plain .f32 file */
+    float directional_steering_decay_tokens[2];  /* sf: 418 per-slot decay window N in in-phase tokens; 0 = constant scale */
+    float directional_steering_decay_final[2];   /* sf: 418 per-slot decay final scale F (0 <= F <= scale), reached at token N */
+    int directional_steering_decay_phase[2];     /* sf: 418 phase where the decay applies (ds41_steering_think_phase); BOTH = both */
+    float directional_steering_ramp_tokens[2];   /* sf: 418-B cyclic ramp segment length in think tokens; 0 = off. Think-only: S->low over N, hold low N, low->S over N, repeat (period 3N) */
+    float directional_steering_ramp_low[2];      /* sf: 418-B cyclic ramp low scale (0 <= low <= scale) */
+    float directional_steering_decay_hold[2];    /* sf: 418-C hold S for the first H in-phase tokens before the decay smoothstep (0 = decay from token 0) */
+    float directional_steering_decay_final_answer[2]; /* sf: 418-C answer-phase final override (-1 = use decay_final in both phases) */
+    /* sf: 419 additive closure channel from the profile's "closure" object:
+     * matrix at closure_offset in directional_steering_file, scale a_max,
+     * onset T0 = onset_min at think-level <= 10 rising linearly to onset_max at
+     * 100, smoothstep ramp over ramp_tokens think tokens; think-only. */
+    float *closure_dirs;
+    uint64_t closure_offset;
+    float closure_scale;
+    float closure_onset_min;
+    float closure_onset_max;
+    float closure_ramp_tokens;
+    float closure_scale2;           /* sf: 419 second stage: a rises again to scale2 (0 = none) */
+    float closure_after_tokens;     /* sf: 419 second stage starts this many tokens after the onset */
+    float closure_ramp2_tokens;
     int power_percent;
     uint32_t prefill_chunk;
     uint32_t ssd_streaming_cache_experts;
@@ -25890,10 +26029,127 @@ static void cpu_directional_steering_project_rows(
     }
 }
 
+/* sf: 401 the V4.1 steering site. The runtime edits each layer's weighted HC
+ * attention-input fold, after Engram on layers 1 and 14 and before the
+ * attention norm. The msuiche vector was derived at the post-layer residual
+ * (`residual_stream_post_layer`), a different tensor: converted sidecars name
+ * both and the engine prints this one. The revision changes whenever the
+ * enabled arithmetic does (2: the fold is rounded to BF16 before the
+ * projection on every route). */
+#define DS41_STEERING_SITE "v41_attn_input_weighted_fold_post_engram"
+#define DS41_STEERING_REVISION 2u
+#define DS41_STEERING_NORM_TOL 1e-2
+
+static float ds41_bf16_round(float value) {
+    uint32_t bits;
+    memcpy(&bits, &value, sizeof(bits));
+    if ((bits & 0x7f800000u) != 0x7f800000u) bits += 0x7fffu + ((bits >> 16) & 1u);
+    bits &= 0xffff0000u;
+    memcpy(&value, &bits, sizeof(value));
+    return value;
+}
+
+/* The enabled fold edit in plain C: the fold rounded to BF16 as the graph
+ * stores it, then h -= scale*d*dot(d,h) in f32; the attention norm follows
+ * with no second rounding. Every Metal route agrees with this within f32
+ * reduction tolerance (tests/test_deepseek41_graph.c --steering-fold). It is
+ * a reference for synthetic rows; CPU V4.1 inference stays refused. The
+ * graph test is its only caller. */
+static DS4_MAYBE_UNUSED void ds41_steer_fold_reference(float *x, const float *dirs, uint32_t il,
+                                                       uint32_t rows, float scale) {
+    for (uint64_t i = 0; i < (uint64_t)rows * DS4_N_EMBD; i++) x[i] = ds41_bf16_round(x[i]);
+    cpu_directional_steering_project_rows(x, dirs, il, rows, scale);
+}
+
+/* A direction matrix usable at the V4.1 site: finite, row 0 zero, every other
+ * row zero (a masked layer) or unit within DS41_STEERING_NORM_TOL. Nothing is
+ * normalized on the user's behalf: a scaled row would hide a conversion error
+ * inside the scale. sf: 419 the additive closure matrix (unit_rows false) keeps
+ * each layer's raw mid->close displacement, so its scale is a fraction of it. */
+static bool ds41_steering_dirs_valid(const float *dirs, uint32_t n_layers, const char *path, bool unit_rows) {
+    for (uint32_t il = 0; il < n_layers; il++) {
+        const float *row = dirs + (uint64_t)il * DS4_N_EMBD;
+        double norm2 = 0.0;
+        for (uint32_t i = 0; i < DS4_N_EMBD; i++) {
+            if (!isfinite(row[i])) {
+                fprintf(stderr, "ds4: %s: row %u has a non-finite value\n", path, il);
+                return false;
+            }
+            norm2 += (double)row[i] * row[i];
+        }
+        if (il == 0 && norm2 != 0.0) {
+            fprintf(stderr, "ds4: %s: row 0 must be all zero (layer 0 has no direction)\n", path);
+            return false;
+        }
+        if (unit_rows && norm2 != 0.0 && fabs(sqrt(norm2) - 1.0) > DS41_STEERING_NORM_TOL) {
+            fprintf(stderr, "ds4: %s: row %u has L2 norm %.4f; need 1 within %g, or an all-zero row\n",
+                    path, il, sqrt(norm2), DS41_STEERING_NORM_TOL);
+            return false;
+        }
+    }
+    return true;
+}
+
+/* sf: read + validate one steering matrix into a fresh buffer; the rank-1
+ * direction and the rank-2 second direction share it. offset 0 is a plain
+ * .f32 file of exactly one matrix; a nonzero offset is a matrix inside a
+ * steering profile, whose size the profile header already checked. Returns
+ * NULL on failure. */
+static float *ds41_load_steering_matrix(const char *path, uint64_t offset, uint32_t n_layers, bool unit_rows) {
+    const uint64_t n = (uint64_t)n_layers * DS4_N_EMBD;
+    float *dirs = xmalloc((size_t)n * sizeof(dirs[0]));
+    bool ok;
+    if (offset == 0) {
+        ok = read_f32_binary_file(path, dirs, n);
+    } else {
+        FILE *fp = fopen(path, "rb");
+        ok = fp && fseeko(fp, (off_t)offset, SEEK_SET) == 0 &&
+             fread(dirs, sizeof(float), (size_t)n, fp) == (size_t)n;
+        if (fp) fclose(fp);
+    }
+    if (!ok || !ds41_steering_dirs_valid(dirs, n_layers, path, unit_rows)) {
+        free(dirs);
+        fprintf(stderr, "ds4: failed to load directional steering vectors from %s\n", path);
+        return NULL;
+    }
+    return dirs;
+}
+
+/* sf: 412 how far apart two loaded directions are: the median |cos| over the
+ * layers where both rows are nonzero (rows are unit, so the dot is the cosine).
+ * Orthogonal pairs compose as an exact 2D removal; a pair near 1 folds the same
+ * axis twice. Returns the layer count used, 0 when no layer has both. */
+static uint32_t ds41_steering_pair_median_abs_cos(const float *a, const float *b,
+                                                  uint32_t n_layers, double *median) {
+    double cos_abs[64];
+    uint32_t n = 0;
+    for (uint32_t il = 0; il < n_layers && n < 64; il++) {
+        const float *ra = a + (uint64_t)il * DS4_N_EMBD, *rb = b + (uint64_t)il * DS4_N_EMBD;
+        double dot = 0.0, na = 0.0, nb = 0.0;
+        for (uint32_t i = 0; i < DS4_N_EMBD; i++) {
+            dot += (double)ra[i] * rb[i];
+            na += (double)ra[i] * ra[i];
+            nb += (double)rb[i] * rb[i];
+        }
+        if (na == 0.0 || nb == 0.0) continue;
+        cos_abs[n++] = fabs(dot) / sqrt(na * nb);
+    }
+    for (uint32_t i = 1; i < n; i++) {
+        const double v = cos_abs[i];
+        uint32_t j = i;
+        for (; j > 0 && cos_abs[j - 1] > v; j--) cos_abs[j] = cos_abs[j - 1];
+        cos_abs[j] = v;
+    }
+    *median = n == 0 ? 0.0 : (n & 1 ? cos_abs[n / 2] : 0.5 * (cos_abs[n / 2 - 1] + cos_abs[n / 2]));
+    return n;
+}
+
 static bool cpu_load_directional_steering(ds4_engine *e) {
     if (!e ||
         (e->directional_steering_attn_scale == 0.0f &&
-         e->directional_steering_ffn_scale == 0.0f)) {
+         e->directional_steering_ffn_scale == 0.0f &&
+         e->directional_steering_residual_scale == 0.0f &&
+         e->directional_steering_residual2_scale == 0.0f)) {
         return true;
     }
 
@@ -25902,22 +26158,394 @@ static bool cpu_load_directional_steering(ds4_engine *e) {
         fprintf(stderr, "ds4: directional steering needs --dir-steering-file\n");
         return false;
     }
+    if (!isfinite(e->directional_steering_attn_scale) ||
+        !isfinite(e->directional_steering_ffn_scale) ||
+        !isfinite(e->directional_steering_residual_scale) ||
+        !isfinite(e->directional_steering_residual2_scale)) {
+        fprintf(stderr, "ds4: directional steering scales must be finite\n");
+        return false;
+    }
 
     const uint32_t n_layers = directional_steering_layer_count();
     if (n_layers == 0) return false;
-    const uint64_t n = (uint64_t)n_layers * DS4_N_EMBD;
-    e->directional_steering_dirs = xmalloc((size_t)n * sizeof(e->directional_steering_dirs[0]));
-    if (!read_f32_binary_file(path, e->directional_steering_dirs, n)) {
-        free(e->directional_steering_dirs);
-        e->directional_steering_dirs = NULL;
-        fprintf(stderr, "ds4: failed to load directional steering vectors from %s\n", path);
-        return false;
+    /* sf: 401 the matrix is checked here, at engine open, before any session
+     * uploads it to the graph. */
+    e->directional_steering_dirs = ds41_load_steering_matrix(path, e->directional_steering_offset[0], n_layers, true);
+    if (!e->directional_steering_dirs) return false;
+    /* sf: rank-2 second direction (constant scale). */
+    if (e->directional_steering_residual2_scale != 0.0f) {
+        const char *path2 = e->directional_steering_file2;
+        if (!path2 || !path2[0]) {
+            fprintf(stderr, "ds4: --dir-steering-residual-2 needs --dir-steering-file-2\n");
+            return false;
+        }
+        e->directional_steering_dirs2 = ds41_load_steering_matrix(path2, e->directional_steering_offset[1], n_layers, true);
+        if (!e->directional_steering_dirs2) return false;
+    }
+    /* sf: 419 additive closure direction, same file, after the slot matrices. */
+    if (e->closure_scale != 0.0f) {
+        e->closure_dirs = ds41_load_steering_matrix(path, e->closure_offset, n_layers, false);  /* raw displacement rows */
+        if (!e->closure_dirs) return false;
+        fprintf(stderr, "ds4: V4.1 closure channel: +%g at %s, onset %g..%g think tokens (think-level 10..100), ramp %g\n",
+                (double)e->closure_scale, DS41_STEERING_SITE, (double)e->closure_onset_min,
+                (double)e->closure_onset_max, (double)e->closure_ramp_tokens);
+        if (e->closure_scale2 != 0.0f)
+            fprintf(stderr, "ds4: V4.1 closure second stage: +%g from onset+%g, ramp %g\n",
+                    (double)e->closure_scale2, (double)e->closure_after_tokens, (double)e->closure_ramp2_tokens);
+    }
+    if (e->directional_steering_residual_scale != 0.0f ||
+        e->directional_steering_residual2_scale != 0.0f) {
+        fprintf(stderr, "ds4: V4.1 residual steering: %s at %s rev %u, scale %g\n",
+                path, DS41_STEERING_SITE, DS41_STEERING_REVISION,
+                (double)e->directional_steering_residual_scale);
+        if (e->directional_steering_residual2_scale != 0.0f) {
+            double med = 0.0;
+            const uint32_t used = ds41_steering_pair_median_abs_cos(e->directional_steering_dirs,
+                                                                    e->directional_steering_dirs2,
+                                                                    n_layers, &med);
+            fprintf(stderr, "ds4: V4.1 residual steering rank-2: %s scale %g (orthogonal second fold), "
+                    "median |cos| to the first direction %.3f over %u layers\n",
+                    e->directional_steering_file2,
+                    (double)e->directional_steering_residual2_scale, med, used);
+        }
+        return true;
     }
     fprintf(stderr, "ds4: CPU directional steering enabled: %s attn=%g ffn=%g\n",
             path,
             (double)e->directional_steering_attn_scale,
             (double)e->directional_steering_ffn_scale);
     return true;
+}
+
+/* sf: think/answer gate of one steering slot, keyed on the <think>/</think>
+ * boundary: the slot runs in both phases, or only in the named one. */
+enum ds41_steering_think_phase { DS41_STEER_TP_BOTH = 0, DS41_STEER_TP_THINK = 1, DS41_STEER_TP_ANSWER = 2 };
+
+/* "both"/"think"/"answer" (n bytes of s) -> the gate, -1 for anything else. */
+static int ds41_steering_phase_parse(const char *s, size_t n) {
+    if (n == 4 && !memcmp(s, "both", 4)) return DS41_STEER_TP_BOTH;
+    if (n == 5 && !memcmp(s, "think", 5)) return DS41_STEER_TP_THINK;
+    if (n == 6 && !memcmp(s, "answer", 6)) return DS41_STEER_TP_ANSWER;
+    return -1;
+}
+
+/* sf: a steering profile (.sfsteer) is one file holding everything a steered
+ * run needs: the 8-byte magic "SFSTEER1", the header length as a little-endian
+ * uint32, a JSON header, then one 40x5120 f32 matrix per slot in slot order.
+ * com-steering/make_profile.py writes it. The engine reads only "site",
+ * "layers", "width" and, per slot, "scale" and "phase"; every other key is
+ * provenance for people. The scanner below handles exactly that flat shape. */
+#define DS41_PROFILE_MAGIC "SFSTEER1"
+#define DS41_PROFILE_DIR "com-steering/profiles"
+
+static const char *sfp_ws(const char *p) {
+    while (*p == ' ' || *p == '\n' || *p == '\r' || *p == '\t') p++;
+    return p;
+}
+
+/* p at '"': just past the closing quote, NULL when unterminated. */
+static const char *sfp_skip_string(const char *p) {
+    for (p++; *p; p++) {
+        if (*p == '\\') {
+            if (!*++p) return NULL;
+        } else if (*p == '"') {
+            return p + 1;
+        }
+    }
+    return NULL;
+}
+
+/* p at a value: just past it, NULL on malformed input. */
+static const char *sfp_skip_value(const char *p) {
+    p = sfp_ws(p);
+    if (*p == '"') return sfp_skip_string(p);
+    if (*p == '{' || *p == '[') {
+        int depth = 0;
+        while (*p) {
+            if (*p == '"') {
+                if (!(p = sfp_skip_string(p))) return NULL;
+                continue;
+            }
+            if (*p == '{' || *p == '[') depth++;
+            else if ((*p == '}' || *p == ']') && --depth == 0) return p + 1;
+            p++;
+        }
+        return NULL;
+    }
+    const char *start = p;
+    while (*p && *p != ',' && *p != '}' && *p != ']') p++;
+    return p == start ? NULL : p;
+}
+
+/* obj at '{': the value of its own key `key` (not a nested one), or NULL. */
+static const char *sfp_key(const char *obj, const char *key) {
+    const char *p = sfp_ws(obj);
+    if (*p != '{') return NULL;
+    p = sfp_ws(p + 1);
+    const size_t klen = strlen(key);
+    while (*p == '"') {
+        const char *k = p + 1, *end = sfp_skip_string(p);
+        if (!end) return NULL;
+        p = sfp_ws(end);
+        if (*p != ':') return NULL;
+        p = sfp_ws(p + 1);
+        if ((size_t)(end - 1 - k) == klen && !memcmp(k, key, klen)) return p;
+        if (!(p = sfp_skip_value(p))) return NULL;
+        p = sfp_ws(p);
+        if (*p != ',') return NULL;
+        p = sfp_ws(p + 1);
+    }
+    return NULL;
+}
+
+static bool sfp_number(const char *v, double *out) {
+    char *end = NULL;
+    if (!v) return false;
+    *out = strtod(v, &end);
+    return end != v && isfinite(*out);
+}
+
+/* Print the profiles DS41_PROFILE_DIR holds, for a name that matched none. */
+static void ds41_steering_profiles_list(void) {
+    DIR *d = opendir(DS41_PROFILE_DIR);
+    fprintf(stderr, "ds4: profiles in %s:", DS41_PROFILE_DIR);
+    if (d) {
+        struct dirent *de;
+        while ((de = readdir(d)) != NULL) {
+            const size_t n = strlen(de->d_name);
+            if (n > 8 && !strcmp(de->d_name + n - 8, ".sfsteer"))
+                fprintf(stderr, " %.*s", (int)(n - 8), de->d_name);
+        }
+        closedir(d);
+    }
+    fputc('\n', stderr);
+}
+
+/* sf: resolve `arg` (a path, or a name in DS41_PROFILE_DIR), check the header
+ * and the file size, and fill the engine's slot fields as the --dir-steering-*
+ * options would: the file path per slot plus each matrix's offset, the scales
+ * and the think/answer gates. cpu_load_directional_steering then reads and
+ * validates the matrices like plain direction files. */
+static bool ds41_steering_profile_open(ds4_engine *e, const char *arg) {
+    char named[PATH_MAX];
+    const char *path = arg;
+    if (access(arg, R_OK) != 0) {
+        snprintf(named, sizeof(named), "%s/%s.sfsteer", DS41_PROFILE_DIR, arg);
+        if (access(named, R_OK) != 0) {
+            fprintf(stderr, "ds4: steering profile %s: no such file or profile name\n", arg);
+            ds41_steering_profiles_list();
+            return false;
+        }
+        path = named;
+    }
+    FILE *fp = fopen(path, "rb");
+    char magic[8];
+    unsigned char lenb[4];
+    char *json = NULL;
+    bool ok = false;
+    if (!fp || fread(magic, 1, 8, fp) != 8 || memcmp(magic, DS41_PROFILE_MAGIC, 8) != 0 ||
+        fread(lenb, 1, 4, fp) != 4) {
+        fprintf(stderr, "ds4: %s: not a steering profile (magic %s)\n", path, DS41_PROFILE_MAGIC);
+        goto done;
+    }
+    const uint32_t jlen = (uint32_t)lenb[0] | (uint32_t)lenb[1] << 8 |
+                          (uint32_t)lenb[2] << 16 | (uint32_t)lenb[3] << 24;
+    if (jlen == 0 || jlen > (1u << 20)) {
+        fprintf(stderr, "ds4: %s: bad header length %u\n", path, jlen);
+        goto done;
+    }
+    json = xmalloc((size_t)jlen + 1);
+    if (fread(json, 1, jlen, fp) != jlen) {
+        fprintf(stderr, "ds4: %s: truncated header\n", path);
+        goto done;
+    }
+    json[jlen] = '\0';
+
+    const uint32_t n_layers = directional_steering_layer_count();
+    const char *site = sfp_key(json, "site");
+    double layers = 0.0, width = 0.0;
+    if (!site || strncmp(site, "\"" DS41_STEERING_SITE "\"", strlen(DS41_STEERING_SITE) + 2) != 0 ||
+        !sfp_number(sfp_key(json, "layers"), &layers) || layers != (double)n_layers ||
+        !sfp_number(sfp_key(json, "width"), &width) || width != (double)DS4_N_EMBD) {
+        fprintf(stderr, "ds4: %s: header must name site \"%s\", layers %u, width %u\n",
+                path, DS41_STEERING_SITE, n_layers, (unsigned)DS4_N_EMBD);
+        goto done;
+    }
+    const char *p = sfp_key(json, "slots");
+    float scale[2] = {0};
+    int phase[2] = {0};
+    float decay_tok[2] = {0};  /* sf: 418 optional per-slot decay window and final scale */
+    float decay_fin[2] = {0};
+    int decay_phase[2] = {0};  /* sf: 418 phase the decay applies in (BOTH default) */
+    float ramp_tok[2] = {0};   /* sf: 418-B optional per-slot cyclic ramp (think) segment length and low scale */
+    float ramp_low[2] = {0};
+    float decay_hold[2] = {0};              /* sf: 418-C optional plateau before the decay */
+    float decay_fin_ans[2] = {-1.0f, -1.0f}; /* sf: 418-C answer-phase final override; -1 = unset */
+    uint32_t slots = 0;
+    if (!p || *p != '[') goto bad_slots;
+    p = sfp_ws(p + 1);
+    while (*p == '{') {
+        double sc = 0.0;
+        const char *ph = sfp_key(p, "phase");
+        const char *ph_end = ph && *ph == '"' ? sfp_skip_string(ph) : NULL;
+        if (slots == 2 || !sfp_number(sfp_key(p, "scale"), &sc) || sc == 0.0 || !ph_end) goto bad_slots;
+        phase[slots] = ds41_steering_phase_parse(ph + 1, (size_t)(ph_end - ph - 2));
+        if (phase[slots] < 0) goto bad_slots;
+        /* sf: 418 optional decay_tokens (non-negative integer) and decay_final
+         * (0 <= F <= scale); absent means the constant scale. */
+        const char *dtk = sfp_key(p, "decay_tokens");
+        const char *dfk = sfp_key(p, "decay_final");
+        double dt = 0.0, df = 0.0;
+        if ((dtk && !sfp_number(dtk, &dt)) || (dfk && !sfp_number(dfk, &df))) goto bad_slots;
+        if (dt < 0.0 || dt != (double)(long)dt || df < 0.0 || df > sc) goto bad_slots;
+        decay_tok[slots] = (float)dt;
+        decay_fin[slots] = (float)df;
+        const char *dphk = sfp_key(p, "decay_phase");  /* sf: 418 default both */
+        if (dphk && *dphk == '"') {
+            const char *dphk_end = sfp_skip_string(dphk);
+            if (!dphk_end) goto bad_slots;
+            decay_phase[slots] = ds41_steering_phase_parse(dphk + 1, (size_t)(dphk_end - dphk - 2));
+            if (decay_phase[slots] < 0) goto bad_slots;
+        }
+        /* sf: 418-B optional cyclic ramp in think: ramp_tokens (>=0 integer
+         * segment length) and ramp_low (0 <= low <= scale); absent means off. */
+        const char *rtk = sfp_key(p, "ramp_tokens");
+        const char *rlk = sfp_key(p, "ramp_low");
+        double rt = 0.0, rl = 0.0;
+        if ((rtk && !sfp_number(rtk, &rt)) || (rlk && !sfp_number(rlk, &rl))) goto bad_slots;
+        if (rt < 0.0 || rt != (double)(long)rt || rl < 0.0 || rl > sc) goto bad_slots;
+        ramp_tok[slots] = (float)rt;
+        ramp_low[slots] = (float)rl;
+        /* sf: 418-C optional decay_hold (plateau, >=0 integer) and
+         * decay_final_answer (answer-phase final override, 0..scale). */
+        const char *dhk = sfp_key(p, "decay_hold");
+        const char *dfak = sfp_key(p, "decay_final_answer");
+        double dh = 0.0, dfa = -1.0;
+        if ((dhk && !sfp_number(dhk, &dh)) || (dfak && !sfp_number(dfak, &dfa))) goto bad_slots;
+        if (dh < 0.0 || dh != (double)(long)dh) goto bad_slots;
+        if (dfak && (dfa < 0.0 || dfa > sc)) goto bad_slots;
+        decay_hold[slots] = (float)dh;
+        decay_fin_ans[slots] = dfak ? (float)dfa : -1.0f;
+        scale[slots++] = (float)sc;
+        if (!(p = sfp_skip_value(p))) goto bad_slots;
+        p = sfp_ws(p);
+        if (*p == ',') p = sfp_ws(p + 1);
+    }
+    if (*p != ']' || slots == 0) goto bad_slots;
+
+    /* sf: 419 optional top-level "closure" object: the additive channel. Its
+     * matrix follows the slot matrices. scale > 0 (small by design),
+     * 0 <= onset_min <= onset_max, ramp_tokens >= 0 integers. */
+    uint32_t closure = 0;
+    double cl_scale = 0.0, cl_omin = 0.0, cl_omax = 0.0, cl_ramp = 0.0, cl_scale2 = 0.0, cl_after = 0.0, cl_ramp2 = 0.0;
+    {
+        const char *cl = sfp_key(json, "closure");
+        if (cl && *cl == '{') {
+            const char *ck = sfp_key(cl, "scale"), *omin = sfp_key(cl, "onset_min"),
+                       *omax = sfp_key(cl, "onset_max"), *rk = sfp_key(cl, "ramp_tokens");
+            if (!ck || !sfp_number(ck, &cl_scale) || cl_scale <= 0.0 || !isfinite(cl_scale) ||
+                (omin && !sfp_number(omin, &cl_omin)) || (omax && !sfp_number(omax, &cl_omax)) ||
+                (rk && !sfp_number(rk, &cl_ramp)) ||
+                cl_omin < 0.0 || cl_omin != (double)(long)cl_omin ||
+                cl_omax < cl_omin || cl_omax != (double)(long)cl_omax ||
+                cl_ramp < 0.0 || cl_ramp != (double)(long)cl_ramp) {
+                fprintf(stderr, "ds4: %s: bad \"closure\" (needs scale > 0, 0 <= onset_min <= onset_max, ramp_tokens >= 0)\n", path);
+                goto done;
+            }
+            if (!omax) cl_omax = cl_omin;
+            /* sf: 419 optional second stage: scale2 >= scale, after_tokens >= 0 and
+             * ramp2_tokens >= 0 integers; absent means a single stage. */
+            const char *s2k = sfp_key(cl, "scale2"), *afk = sfp_key(cl, "after_tokens"),
+                       *r2k = sfp_key(cl, "ramp2_tokens");
+            if (s2k) {
+                if (!sfp_number(s2k, &cl_scale2) || cl_scale2 < cl_scale || !isfinite(cl_scale2) ||
+                    !afk || !sfp_number(afk, &cl_after) || cl_after < 0.0 || cl_after != (double)(long)cl_after ||
+                    (r2k && !sfp_number(r2k, &cl_ramp2)) || cl_ramp2 < 0.0 || cl_ramp2 != (double)(long)cl_ramp2) {
+                    fprintf(stderr, "ds4: %s: bad closure second stage (needs scale2 >= scale, after_tokens >= 0, ramp2_tokens >= 0)\n", path);
+                    goto done;
+                }
+            }
+            closure = 1;
+        }
+    }
+
+    const uint64_t mat = (uint64_t)n_layers * DS4_N_EMBD * sizeof(float);
+    const uint64_t data = 12u + jlen;
+    struct stat st;
+    if (fstat(fileno(fp), &st) != 0 || (uint64_t)st.st_size != data + (slots + closure) * mat) {
+        fprintf(stderr, "ds4: %s: size %llu, header promises %llu (%u slots%s)\n", path,
+                (unsigned long long)st.st_size, (unsigned long long)(data + (slots + closure) * mat),
+                slots, closure ? " + closure" : "");
+        goto done;
+    }
+    e->closure_offset = data + slots * mat;
+    e->closure_scale = closure ? (float)cl_scale : 0.0f;
+    e->closure_onset_min = (float)cl_omin;
+    e->closure_onset_max = (float)cl_omax;
+    e->closure_ramp_tokens = (float)cl_ramp;
+    e->closure_scale2 = (float)cl_scale2;
+    e->closure_after_tokens = (float)cl_after;
+    e->closure_ramp2_tokens = (float)cl_ramp2;
+    e->directional_steering_file = ds4_strdup(path);
+    e->directional_steering_offset[0] = data;
+    e->directional_steering_residual_scale = scale[0];
+    e->directional_steering_phase[0] = phase[0];
+    e->directional_steering_decay_tokens[0] = decay_tok[0];
+    e->directional_steering_decay_final[0] = decay_fin[0];
+    e->directional_steering_decay_phase[0] = decay_phase[0];
+    e->directional_steering_ramp_tokens[0] = ramp_tok[0];
+    e->directional_steering_ramp_low[0] = ramp_low[0];
+    e->directional_steering_decay_hold[0] = decay_hold[0];
+    e->directional_steering_decay_final_answer[0] = decay_fin_ans[0];
+    if (slots == 2) {
+        e->directional_steering_file2 = ds4_strdup(path);
+        e->directional_steering_offset[1] = data + mat;
+        e->directional_steering_residual2_scale = scale[1];
+        e->directional_steering_phase[1] = phase[1];
+        e->directional_steering_decay_tokens[1] = decay_tok[1];
+        e->directional_steering_decay_final[1] = decay_fin[1];
+        e->directional_steering_decay_phase[1] = decay_phase[1];
+        e->directional_steering_ramp_tokens[1] = ramp_tok[1];
+        e->directional_steering_ramp_low[1] = ramp_low[1];
+        e->directional_steering_decay_hold[1] = decay_hold[1];
+        e->directional_steering_decay_final_answer[1] = decay_fin_ans[1];
+    }
+    {
+        const char *name = sfp_key(json, "name");
+        const char *name_end = name && *name == '"' ? sfp_skip_string(name) : NULL;
+        static const char *pn[] = {"both", "think", "answer"};
+        fprintf(stderr, "ds4: steering profile %.*s (%s): slot 1 scale %g %s",
+                name_end ? (int)(name_end - name - 2) : 1, name_end ? name + 1 : "?", path,
+                (double)scale[0], pn[phase[0]]);
+        if (decay_tok[0] > 0.0f) {
+            fprintf(stderr, " decay %g->%g/%gt", (double)scale[0], (double)decay_fin[0], (double)decay_tok[0]);
+            if (decay_hold[0] > 0.0f) fprintf(stderr, " hold%gt", (double)decay_hold[0]);
+            if (decay_fin_ans[0] >= 0.0f) fprintf(stderr, " ans->%g", (double)decay_fin_ans[0]);
+        }
+        if (ramp_tok[0] > 0.0f)
+            fprintf(stderr, " ramp %g<->%g/%gt(think)", (double)scale[0], (double)ramp_low[0], (double)ramp_tok[0]);
+        if (slots == 2) {
+            fprintf(stderr, ", slot 2 scale %g %s", (double)scale[1], pn[phase[1]]);
+            if (decay_tok[1] > 0.0f) {
+                fprintf(stderr, " decay %g->%g/%gt", (double)scale[1], (double)decay_fin[1], (double)decay_tok[1]);
+                if (decay_hold[1] > 0.0f) fprintf(stderr, " hold%gt", (double)decay_hold[1]);
+                if (decay_fin_ans[1] >= 0.0f) fprintf(stderr, " ans->%g", (double)decay_fin_ans[1]);
+            }
+            if (ramp_tok[1] > 0.0f)
+                fprintf(stderr, " ramp %g<->%g/%gt(think)", (double)scale[1], (double)ramp_low[1], (double)ramp_tok[1]);
+        }
+        fputc('\n', stderr);
+    }
+    ok = true;
+    goto done;
+bad_slots:
+    fprintf(stderr, "ds4: %s: \"slots\" must hold 1 or 2 objects with a nonzero \"scale\", "
+                    "a \"phase\" both|think|answer, and optional \"decay_tokens\" (>=0 integer) "
+                    "and \"decay_final\" (0..scale)\n", path);
+done:
+    if (fp) fclose(fp);
+    free(json);
+    return ok;
 }
 
 static void utf8_put(char **p, uint32_t cp) {
@@ -28061,9 +28689,194 @@ struct ds4_session {
     bool checkpoint_valid;
     bool mtp_draft_valid;
     bool greedy_splitkv_anchor_valid;
+    /* sf: think/answer phase of the generation, tracked while a steering slot
+     * is gated to one phase or carries a decay schedule (418). */
+    bool steering_in_think;
+    /* sf: 418 in-phase generated-token index for the decay schedule; 0 at the
+     * first answer logits and reset at the think->answer boundary. */
+    int steering_phase_tok;
+    /* sf: 419 reasoning-effort level 0..100 of the prompt, set by the frontend
+     * (ds4_session_set_think_level); -1 = unknown, treated as 75. Drives the
+     * closure channel's onset. */
+    int think_level;
 };
 
 static bool ds4_session_tp_leader(const ds4_session *s);
+
+#ifdef DS4_HAS_DEEPSEEK41_GPU
+/* sf: apply each slot's think/answer gate to this token's forward: a slot
+ * gated to one phase runs at its constant scale there and at 0 in the other.
+ * Ungated slots never come here, so the constant 401 path stays unchanged. */
+static void ds41_steering_apply_gates(ds4_session *s) {
+    const ds4_engine *e = s->engine;
+    float sc[2] = {e->directional_steering_residual_scale, e->directional_steering_residual2_scale};
+    for (int i = 0; i < 2; i++) {
+        if ((e->directional_steering_phase[i] == DS41_STEER_TP_THINK && !s->steering_in_think) ||
+            (e->directional_steering_phase[i] == DS41_STEER_TP_ANSWER && s->steering_in_think))
+            sc[i] = 0.0f;
+        /* sf: 418-B cyclic ramp, think only: scale rides S->low over N tokens
+         * with a smoothstep, holds low for N, rises low->S over N, then repeats
+         * (period 3N). Keeps full strength at the phase start (compliance is
+         * decided there) and adds dynamism later to break reasoning loops. The
+         * answer decay below still runs in answer. N=0 leaves the scale. */
+        const float Nr = e->directional_steering_ramp_tokens[i];
+        if (Nr > 0.0f && sc[i] != 0.0f && s->steering_in_think) {
+            const float S = sc[i], L = e->directional_steering_ramp_low[i];
+            const int per = (int)(3.0f * Nr);
+            int q = per > 0 ? s->steering_phase_tok % per : 0;
+            if (q < 0) q += per;
+            if ((float)q < Nr) {
+                const float t = (float)q / Nr, f = t * t * (3.0f - 2.0f * t);
+                sc[i] = S - (S - L) * f;
+            } else if ((float)q < 2.0f * Nr) {
+                sc[i] = L;
+            } else {
+                const float t = ((float)q - 2.0f * Nr) / Nr, f = t * t * (3.0f - 2.0f * t);
+                sc[i] = L + (S - L) * f;
+            }
+        }
+        /* sf: 418 decay the surviving scale from S to F over N in-phase tokens
+         * with a cubic smoothstep; N=0 (or a gated-off slot, S=0) leaves it.
+         * decay_phase scopes where the curve runs (BOTH, or only think/answer). */
+        const int dph = e->directional_steering_decay_phase[i];
+        const bool decay_here = dph == DS41_STEER_TP_BOTH ||
+            (dph == DS41_STEER_TP_THINK && s->steering_in_think) ||
+            (dph == DS41_STEER_TP_ANSWER && !s->steering_in_think);
+        const float N = e->directional_steering_decay_tokens[i];
+        if (N > 0.0f && sc[i] != 0.0f && decay_here) {
+            /* sf: 418-C optional hold: keep S for the first H in-phase tokens,
+             * then smoothstep to the final over N. The answer phase may use a
+             * different final (decay_final_answer >= 0). */
+            const float H = e->directional_steering_decay_hold[i];
+            const float fa = e->directional_steering_decay_final_answer[i];
+            const float F = (!s->steering_in_think && fa >= 0.0f) ? fa
+                            : e->directional_steering_decay_final[i];
+            float pos = (float)s->steering_phase_tok - H;
+            if (pos < 0.0f) pos = 0.0f;
+            float t = pos / N;
+            if (t > 1.0f) t = 1.0f;
+            const float f = t * t * (3.0f - 2.0f * t);
+            sc[i] -= (sc[i] - F) * f;
+        }
+    }
+    s->ds41_graph.residual_scale = sc[0];
+    s->ds41_graph.residual_scale2 = sc[1];
+    /* sf: 419 additive closure channel: think-only, 0 until the think-level
+     * onset T0(N) (onset_min at N <= 10, linear to onset_max at N = 100; an
+     * unknown level counts as 75), then a smoothstep to a_max over ramp_tokens.
+     * A door offered, not an order: a_max is small by design. */
+    float a = 0.0f;
+    if (e->closure_scale != 0.0f && s->steering_in_think) {
+        float N = s->think_level < 0 ? 75.0f : (float)s->think_level;
+        if (N > 100.0f) N = 100.0f;
+        float T0 = e->closure_onset_min;
+        if (N > 10.0f) T0 += (e->closure_onset_max - e->closure_onset_min) * (N - 10.0f) / 90.0f;
+        const float pos = (float)s->steering_phase_tok - T0;
+        if (pos >= 0.0f) {
+            float t = e->closure_ramp_tokens > 0.0f ? pos / e->closure_ramp_tokens : 1.0f;
+            if (t > 1.0f) t = 1.0f;
+            a = e->closure_scale * t * t * (3.0f - 2.0f * t);
+            /* sf: 419 second stage: after_tokens past the onset, a smoothstep from scale to scale2 */
+            if (e->closure_scale2 != 0.0f && pos >= e->closure_after_tokens) {
+                const float pos2 = pos - e->closure_after_tokens;
+                float t2 = e->closure_ramp2_tokens > 0.0f ? pos2 / e->closure_ramp2_tokens : 1.0f;
+                if (t2 > 1.0f) t2 = 1.0f;
+                a = e->closure_scale + (e->closure_scale2 - e->closure_scale) * t2 * t2 * (3.0f - 2.0f * t2);
+            }
+        }
+    }
+    s->ds41_graph.closure_scale = a;
+}
+
+static bool ds41_steering_gated(const ds4_session *s) {
+    return s->engine && (s->engine->directional_steering_phase[0] != DS41_STEER_TP_BOTH ||
+                         s->engine->directional_steering_phase[1] != DS41_STEER_TP_BOTH);
+}
+
+/* sf: 418 a decay schedule drives the scale per token even with both-phase
+ * slots, so it needs the same per-token path and no-batch serialization. */
+static bool ds41_steering_scheduled(const ds4_engine *e) {
+    return e && (e->directional_steering_decay_tokens[0] > 0.0f ||
+                 e->directional_steering_decay_tokens[1] > 0.0f ||
+                 e->directional_steering_ramp_tokens[0] > 0.0f ||
+                 e->directional_steering_ramp_tokens[1] > 0.0f ||
+                 e->closure_scale != 0.0f);  /* sf: 419 a(t) is per token too */
+}
+
+/* sf: 419 stage-0 probe. DS4_V41_CLOSURE_GAP_TRACE=<path> appends, for every
+ * think-phase forward, the margin the </think> exit has to cross:
+ *   gap t=<in-phase tok> argmax=<id> gap=<logit[argmax]-logit[</think>]> para=<0|1>
+ * (para: the fed token's text ends a line), framed by a `begin` line per
+ * prompt and an `exit` line when </think> is emitted. It only reads s->logits;
+ * the phase bookkeeping below runs for unsteered sessions too while it is on. */
+static FILE *ds41_closure_trace(void) {
+    static FILE *fp;
+    static bool checked;
+    if (!checked) {
+        checked = true;
+        const char *path = getenv("DS4_V41_CLOSURE_GAP_TRACE");
+        if (path && *path) fp = fopen(path, "a");
+    }
+    return fp;
+}
+
+static void ds41_closure_probe(ds4_session *s, int fed) {
+    FILE *fp = ds41_closure_trace();
+    if (!fp) return;
+    ds4_engine *e = s->engine;
+    const int te = e->vocab.think_end_id;
+    if (fed < 0) {
+        fprintf(fp, "begin pid=%d n_prompt=%d steer=%d think=%d\n", (int)getpid(),
+                s->checkpoint.len, e->directional_steering_residual_scale != 0.0f,
+                (int)s->steering_in_think);
+    } else if (te >= 0 && fed == te) {
+        fprintf(fp, "exit\n");
+    }
+    if (!s->steering_in_think || te < 0) {
+        fflush(fp);
+        return;
+    }
+    const int am = sample_argmax(s->logits, DS4_N_VOCAB);
+    int para = 0;
+    if (fed >= 0) {
+        size_t len = 0;
+        char *txt = ds4_token_text(e, fed, &len);
+        para = len > 0 && txt[len - 1] == '\n';
+        free(txt);
+    }
+    fprintf(fp, "gap t=%d argmax=%d gap=%.4f para=%d\n", s->steering_phase_tok, am,
+            (double)(s->logits[am] - s->logits[te]), para);
+    fflush(fp);
+}
+
+/* The chat template ends the prompt with <think> when thinking is on and
+ * </think> when it is off, so the opening phase follows the last prompt token;
+ * the prefill forward that produces the first generated token uses it. */
+static void ds41_steering_on_prompt(ds4_session *s, const ds4_tokens *prompt) {
+    const bool live = ds41_steering_gated(s) || ds41_steering_scheduled(s->engine);
+    if (!live && !ds41_closure_trace() && !ds41_site_capture_on()) return;
+    const int think_start = s->engine->vocab.think_start_id;
+    s->steering_in_think = prompt && prompt->len > 0 && think_start >= 0 &&
+        prompt->v[prompt->len - 1] == think_start;
+    s->steering_phase_tok = 0;  /* sf: 418 first answer logits are in-phase position 0 */
+    if (live) ds41_steering_apply_gates(s);
+}
+
+/* Before a decode forward: token is the just-sampled token being fed; when it
+ * is </think> the next token opens the answer phase. */
+static void ds41_steering_on_decode(ds4_session *s, int token) {
+    const bool live = ds41_steering_gated(s) || ds41_steering_scheduled(s->engine);
+    if (!live && !ds41_closure_trace() && !ds41_site_capture_on()) return;
+    const int think_end = s->engine->vocab.think_end_id;
+    if (s->steering_in_think && think_end >= 0 && token == think_end) {
+        s->steering_in_think = false;
+        s->steering_phase_tok = 0;  /* sf: 418 the answer phase restarts the dose */
+    } else {
+        s->steering_phase_tok++;    /* sf: 418 advance the in-phase decay position */
+    }
+    if (live) ds41_steering_apply_gates(s);
+}
+#endif
 
 #ifndef DS4_NO_GPU
 
@@ -28494,6 +29307,24 @@ static bool ds4_layer_payload_range_valid(uint32_t layer_start, uint32_t layer_e
     return n_layers != 0 && layer_start <= layer_end && layer_end < n_layers;
 }
 
+/* sf: 401 a steered session's KV, prefix caches and snapshots belong to one
+ * steering configuration, which no payload records yet. Refuse every save
+ * and load before any mutation; zero-scale sessions keep today's behaviour,
+ * and the server does not open its disk cache at all while steered. */
+static bool ds41_steering_refuses_persistence(const ds4_session *s, char *err, size_t errlen) {
+#if !defined(DS4_NO_GPU) && defined(DS4_HAS_DEEPSEEK41_GPU)
+    if (!s || !s->ds41_graph_ready ||
+        ((s->ds41_graph.residual_scale == 0.0f || !s->ds41_graph.residual_dirs) &&
+         (s->ds41_graph.residual_scale2 == 0.0f || !s->ds41_graph.residual_dirs2))) return false;
+    payload_set_err(err, errlen, "session payloads and snapshots are not supported while "
+                    "directional steering is active: no steering identity is recorded");
+    return true;
+#else
+    (void)s; (void)err; (void)errlen;
+    return false;
+#endif
+}
+
 int ds4_session_save_layer_payload(ds4_session *s, FILE *fp,
                                    uint32_t layer_start, uint32_t layer_end,
                                    char *err, size_t errlen) {
@@ -28502,6 +29333,7 @@ int ds4_session_save_layer_payload(ds4_session *s, FILE *fp,
         payload_set_err(err, errlen, "invalid session layer payload save");
         return 1;
     }
+    if (ds41_steering_refuses_persistence(s, err, errlen)) return 1;
     if (ds4_session_is_cpu(s)) {
         payload_set_err(err, errlen, "distributed layer payloads require the graph backend");
         return 1;
@@ -28638,6 +29470,7 @@ int ds4_session_load_layer_payload(ds4_session *s, FILE *fp,
         payload_set_err(err, errlen, "invalid session layer payload load");
         return 1;
     }
+    if (ds41_steering_refuses_persistence(s, err, errlen)) return 1;
     if (ds4_session_is_cpu(s)) {
         payload_set_err(err, errlen, "distributed layer payloads require the graph backend");
         return 1;
@@ -29100,6 +29933,7 @@ int ds4_session_save_payload(ds4_session *s, FILE *fp, char *err, size_t errlen)
         payload_set_err(err, errlen, "session has no valid checkpoint to save");
         return 1;
     }
+    if (ds41_steering_refuses_persistence(s, err, errlen)) return 1;
     if (s->distributed) {
         return ds4_dist_session_save_payload(s->distributed, s, fp, err, errlen);
     }
@@ -29181,6 +30015,7 @@ int ds4_session_load_payload(ds4_session *s, FILE *fp, uint64_t payload_bytes, c
         payload_set_err(err, errlen, "invalid session payload load");
         return 1;
     }
+    if (ds41_steering_refuses_persistence(s, err, errlen)) return 1;
     if (s->distributed) {
         return ds4_dist_session_load_payload(s->distributed, s, fp, payload_bytes, err, errlen);
     }
@@ -29372,6 +30207,7 @@ int ds4_session_save_snapshot(ds4_session *s, ds4_session_snapshot *snap, char *
         payload_set_err(err, errlen, "invalid session snapshot save");
         return 1;
     }
+    if (ds41_steering_refuses_persistence(s, err, errlen)) return 1;
     if (s->distributed) {
         payload_set_err(err, errlen, "distributed session snapshots are not supported yet");
         return 1;
@@ -29418,6 +30254,7 @@ int ds4_session_load_snapshot(ds4_session *s, const ds4_session_snapshot *snap, 
         payload_set_err(err, errlen, "invalid session snapshot load");
         return 1;
     }
+    if (ds41_steering_refuses_persistence(s, err, errlen)) return 1;
     if (s->distributed) {
         payload_set_err(err, errlen, "distributed session snapshots are not supported yet");
         return 1;
@@ -30071,10 +30908,19 @@ static int ds4_engine_open_internal(ds4_engine **out,
     e->ssd_streaming_cache_bytes = opt->ssd_streaming_cache_bytes;
     e->ssd_streaming_preload_experts = opt->ssd_streaming_preload_experts;
     if (e->power_percent > 100) e->power_percent = 100;
-    if ((opt->directional_steering_attn != 0.0f || opt->directional_steering_ffn != 0.0f) &&
+    if ((opt->directional_steering_attn != 0.0f || opt->directional_steering_ffn != 0.0f ||
+         opt->directional_steering_residual != 0.0f) &&
         (!opt->directional_steering_file || !opt->directional_steering_file[0]))
     {
         fprintf(stderr, "ds4: directional steering needs --dir-steering-file\n");
+        free(e);
+        *out = NULL;
+        return 1;
+    }
+    if (opt->directional_steering_residual2 != 0.0f &&
+        (!opt->directional_steering_file2 || !opt->directional_steering_file2[0]))
+    {
+        fprintf(stderr, "ds4: --dir-steering-residual-2 needs --dir-steering-file-2\n");
         free(e);
         *out = NULL;
         return 1;
@@ -30083,6 +30929,36 @@ static int ds4_engine_open_internal(ds4_engine **out,
         e->directional_steering_file = ds4_strdup(opt->directional_steering_file);
         e->directional_steering_attn_scale = opt->directional_steering_attn;
         e->directional_steering_ffn_scale = opt->directional_steering_ffn;
+        e->directional_steering_residual_scale = opt->directional_steering_residual;
+    }
+    if (opt->directional_steering_file2 && opt->directional_steering_file2[0]) {
+        e->directional_steering_file2 = ds4_strdup(opt->directional_steering_file2);
+        e->directional_steering_residual2_scale = opt->directional_steering_residual2;
+    }
+    /* sf: think/answer gates for the raw --dir-steering-* options come from the
+     * environment; a steering profile carries its own and replaces those options. */
+    {
+        const char *tp[2] = {getenv("DS4_STEERING_THINK_PHASE"), getenv("DS4_STEERING_THINK_PHASE2")};
+        for (int i = 0; i < 2; i++) {
+            const int g = tp[i] ? ds41_steering_phase_parse(tp[i], strlen(tp[i])) : DS41_STEER_TP_BOTH;
+            e->directional_steering_phase[i] = g < 0 ? DS41_STEER_TP_BOTH : g;
+        }
+    }
+    if (opt->steering_profile && opt->steering_profile[0]) {
+        if (e->directional_steering_file || e->directional_steering_file2 ||
+            opt->directional_steering_attn != 0.0f || opt->directional_steering_ffn != 0.0f) {
+            fprintf(stderr, "ds4: --steering-profile replaces the --dir-steering-* options; pass one or the other\n");
+            free(e);
+            *out = NULL;
+            return 1;
+        }
+        if (!ds41_steering_profile_open(e, opt->steering_profile)) {
+            free(e->directional_steering_file);
+            free(e->directional_steering_file2);
+            free(e);
+            *out = NULL;
+            return 1;
+        }
     }
     if (opt->n_threads > 0) g_requested_threads = (uint32_t)opt->n_threads;
     e->placement_session_count_hint = opt->placement_session_count_hint;
@@ -30134,11 +31010,28 @@ static int ds4_engine_open_internal(ds4_engine **out,
             opt->distributed.role == DS4_DISTRIBUTED_NONE &&
             !load_slice &&
             !opt->first_token_test && !opt->metal_graph_test &&
-            (!opt->directional_steering_file || !opt->directional_steering_file[0]) &&
+            /* sf: the opt-in lifts only this steering term; the refusal below and
+             * every other condition stay upstream's, byte for byte (SPEC rule #4). */
+            (opt->allow_v41_steering || getenv("DS4_ALLOW_V41_STEERING") != NULL ||
+             (opt->steering_profile && opt->steering_profile[0]) ||  /* sf: a profile is the opt-in */
+             ((!opt->directional_steering_file || !opt->directional_steering_file[0]) &&
+              (!opt->directional_steering_file2 || !opt->directional_steering_file2[0]))) &&
             e->power_percent == 100 && opt->context_size <= 1048576;
         if (!supported) {
             fprintf(stderr, "ds4: V4.1 requires Metal or single-GPU CUDA per rank (optional network tensor parallelism); "
                             "DSpark, steering and legacy diagnostics are not supported (maximum context 1048576)\n");
+            ds4_engine_close(e);
+            *out = NULL;
+            return 1;
+        }
+        /* sf: 401 the FFN and attention hooks live on the V4 graph, which V4.1
+         * never allocates: a nonzero scale there would be accepted and change
+         * nothing. The one live V4.1 site is the residual one. The CLI and
+         * server turn a file alone into --dir-steering-ffn 1. */
+        if (e->directional_steering_ffn_scale != 0.0f || e->directional_steering_attn_scale != 0.0f) {
+            fprintf(stderr, "ds4: V4.1 steering applies only at --dir-steering-residual F; "
+                            "--dir-steering-ffn and --dir-steering-attn are V4 hooks with no effect on this model "
+                            "(a file alone implies --dir-steering-ffn 1)\n");
             ds4_engine_close(e);
             *out = NULL;
             return 1;
@@ -30298,7 +31191,9 @@ static int ds4_engine_open_internal(ds4_engine **out,
         *out = e;
         return 0;
     }
-    if (e->backend == DS4_BACKEND_CPU && !cpu_load_directional_steering(e)) {
+    if ((e->backend == DS4_BACKEND_CPU || e->directional_steering_residual_scale != 0.0f ||
+         e->directional_steering_residual2_scale != 0.0f) &&
+        !cpu_load_directional_steering(e)) {
         ds4_engine_close(e);
         *out = NULL;
         return 1;
@@ -31317,6 +32212,8 @@ void ds4_engine_close(ds4_engine *e) {
     ds4_release_instance_lock();
     free(e->directional_steering_dirs);
     free(e->directional_steering_file);
+    free(e->directional_steering_dirs2);
+    free(e->directional_steering_file2);
     free(e->model_path);
     free(e);
 }
@@ -31461,6 +32358,7 @@ int ds4_session_create(ds4_session **out, ds4_engine *e, int ctx_size) {
             return 1;
         }
         ds4_session *s = xcalloc(1, sizeof(*s));
+    s->think_level = -1;  /* sf: 419 unknown until the frontend sets it */
         s->engine = e;
         s->ctx_size = ctx_size;
         s->prefill_cap = ds4_prefill_cap_for_prompt(ctx_size,
@@ -31482,6 +32380,7 @@ int ds4_session_create(ds4_session **out, ds4_engine *e, int ctx_size) {
     if (!ds4_backend_uses_graph(e->backend) || !e->metal_ready) return 1;
 
     ds4_session *s = xcalloc(1, sizeof(*s));
+    s->think_level = -1;  /* sf: 419 unknown until the frontend sets it */
     s->engine = e;
     s->ctx_size = ctx_size;
 #ifdef DS4_HAS_DEEPSEEK41_GPU
@@ -31495,6 +32394,53 @@ int ds4_session_create(ds4_session **out, ds4_engine *e, int ctx_size) {
             return 1;
         }
         s->ds41_graph_ready = true;
+        /* sf: 401 upload the per-layer steering directions to the V4.1 graph and
+         * arm the residual_stream_post_layer site (no tensor when off). */
+        if (e->directional_steering_residual_scale != 0.0f && e->directional_steering_dirs) {
+            const uint64_t db = (uint64_t)directional_steering_layer_count() * DS4_N_EMBD * 4u;
+            s->ds41_graph.residual_dirs = ds4_gpu_tensor_alloc(db);
+            if (!s->ds41_graph.residual_dirs ||
+                !ds4_gpu_tensor_write(s->ds41_graph.residual_dirs, 0,
+                                      e->directional_steering_dirs, db)) {
+                ds41_graph_free(&s->ds41_graph);
+                free(s);
+                return 1;
+            }
+            s->ds41_graph.residual_scale = e->directional_steering_residual_scale;
+        }
+        /* sf: rank-2 second orthogonal direction, constant scale. */
+        if (e->directional_steering_residual2_scale != 0.0f && e->directional_steering_dirs2) {
+            const uint64_t db2 = (uint64_t)directional_steering_layer_count() * DS4_N_EMBD * 4u;
+            s->ds41_graph.residual_dirs2 = ds4_gpu_tensor_alloc(db2);
+            if (!s->ds41_graph.residual_dirs2 ||
+                !ds4_gpu_tensor_write(s->ds41_graph.residual_dirs2, 0,
+                                      e->directional_steering_dirs2, db2)) {
+                ds41_graph_free(&s->ds41_graph);
+                free(s);
+                return 1;
+            }
+            s->ds41_graph.residual_scale2 = e->directional_steering_residual2_scale;
+        }
+        /* sf: 419 additive closure direction (scale set per token by the gates)
+         * and the optional site-capture tensor. */
+        if (e->closure_scale != 0.0f && e->closure_dirs) {
+            const uint64_t cb = (uint64_t)directional_steering_layer_count() * DS4_N_EMBD * 4u;
+            s->ds41_graph.closure_dirs = ds4_gpu_tensor_alloc(cb);
+            if (!s->ds41_graph.closure_dirs ||
+                !ds4_gpu_tensor_write(s->ds41_graph.closure_dirs, 0, e->closure_dirs, cb)) {
+                ds41_graph_free(&s->ds41_graph);
+                free(s);
+                return 1;
+            }
+        }
+        if (ds41_site_capture_on()) {
+            s->ds41_graph.site_capture = ds4_gpu_tensor_alloc((uint64_t)40 * DS4_N_EMBD * sizeof(float));
+            if (!s->ds41_graph.site_capture) {
+                ds41_graph_free(&s->ds41_graph);
+                free(s);
+                return 1;
+            }
+        }
         s->ds41_graph.quality = e->quality;
         s->ds41_graph.streaming_prefill_bytes = e->ssd_streaming_prefill_headroom_bytes;
         if (e->tp.active) {
@@ -31590,6 +32536,14 @@ int ds4_session_power(ds4_session *s) {
     return s->engine->power_percent;
 }
 
+/* sf: 419 the frontend tells the session the prompt's reasoning-effort level
+ * (0..100, -1 = unknown) so the closure channel can place its onset. */
+int ds4_session_set_think_level(ds4_session *s, int level) {
+    if (!s || level < -1 || level > 100) return 1;
+    s->think_level = level;
+    return 0;
+}
+
 int ds4_session_set_power(ds4_session *s, int power_percent) {
     if (!s || !s->engine || power_percent < 1 || power_percent > 100) return 1;
     {
@@ -31619,6 +32573,17 @@ int ds4_session_set_directional_steering_ffn(ds4_session *s, float scale) {
                 "ds4: live steering changes are not supported for distributed or network tensor-parallel sessions\n");
         return 1;
     }
+#if !defined(DS4_NO_GPU) && defined(DS4_HAS_DEEPSEEK41_GPU)
+    /* sf: 401 V4.1 has no live steering control: the FFN hook is V4 graph
+     * code, and the residual site is fixed at engine open. Zero is already
+     * the state, so it is not a change. */
+    if (s->ds41_graph_ready) {
+        if (scale == 0.0f) return 0;
+        fprintf(stderr, "ds4: live FFN steering is not supported on V4.1; "
+                        "the residual site has no live control\n");
+        return 1;
+    }
+#endif
 
     bool loaded = s->engine->directional_steering_dirs != NULL;
 #ifndef DS4_NO_GPU
@@ -32552,6 +33517,7 @@ static int ds4_session_sync_internal(ds4_session *s, const ds4_tokens *prompt, c
             s->checkpoint.len = 0;
             s->checkpoint_valid = false;
         }
+        ds41_steering_on_prompt(s, prompt);  /* sf: think/answer gate of the opening phase */
         bool pending_logits = false, interrupted = false, decoder_pending = false;
         ds41_encoder_residency encoder = {0};
         ds41_encoder_acquire(g, &e->model, &e->weights,
@@ -32618,6 +33584,7 @@ static int ds4_session_sync_internal(ds4_session *s, const ds4_tokens *prompt, c
                 return 1;
             }
             s->checkpoint_valid = true;
+            ds41_closure_probe(s, -1);  /* sf: 419 frame the generation, first logits */
             if (s->progress)
                 s->progress(s->progress_ud, "prefill_chunk", s->checkpoint.len, prompt->len);
         }
@@ -32903,6 +33870,7 @@ static int ds4_session_eval_internal(ds4_session *s, int token, bool probe_mtp,
     ds4_engine *e = s->engine;
 #ifdef DS4_HAS_DEEPSEEK41_GPU
     {
+        ds41_steering_on_decode(s, token);  /* sf: think/answer gate, switched at </think> */
         if (!s->ds41_graph_ready ||
             (!s->checkpoint_valid && s->checkpoint.len != 0) ||
             s->ds41_graph.pos != (uint32_t)s->checkpoint.len ||
@@ -32913,6 +33881,27 @@ static int ds4_session_eval_internal(ds4_session *s, int token, bool probe_mtp,
         }
         token_vec_push(&s->checkpoint, token);
         s->checkpoint_valid = true;
+        ds41_closure_probe(s, token);  /* sf: 419 think-phase closure gap */
+        if (s->ds41_graph.site_capture) {  /* sf: 419 append this token's 40 site rows */
+            static FILE *raw, *idx;
+            if (!raw) {
+                const char *path = getenv("DS4_V41_SITE_CAPTURE");
+                char ipath[PATH_MAX];
+                snprintf(ipath, sizeof(ipath), "%s.idx", path);
+                raw = fopen(path, "ab");
+                idx = fopen(ipath, "a");
+            }
+            const uint64_t bytes = (uint64_t)40 * DS4_N_EMBD * sizeof(float);
+            float *rows = xmalloc(bytes);
+            if (raw && idx && ds4_gpu_tensor_read(s->ds41_graph.site_capture, 0, rows, bytes)) {
+                fwrite(rows, 1, bytes, raw);
+                fprintf(idx, "t=%d think=%d fed=%d\n", s->steering_phase_tok,
+                        (int)s->steering_in_think, token);
+                fflush(raw);
+                fflush(idx);
+            }
+            free(rows);
+        }
         return 0;
     }
 #endif
@@ -33009,6 +33998,12 @@ static bool ds4_sessions_eval_batch_metal_supported(
     if (!items || count < 2 || !e || e->backend != DS4_BACKEND_METAL || (e->tp.active && tp_batch && strcmp(tp_batch, "0") == 0) || getenv("DS4_METAL_GRAPH_DUMP_PREFIX") != NULL || getenv("DS4_METAL_DECODE_STAGE_PROFILE") != NULL) {
         return false;
     }
+    /* sf: a think/answer steering gate or a decay schedule (418) is per session
+     * and switches in ds4_session_eval; one native batch forward folds every
+     * row with one graph's scale, so these sessions take the serialized path. */
+    if (e->directional_steering_phase[0] != DS41_STEER_TP_BOTH ||
+        e->directional_steering_phase[1] != DS41_STEER_TP_BOTH ||
+        ds41_steering_scheduled(e)) return false;
     return ds41_sessions_batch_supported(items, count, e);
 }
 
@@ -33360,6 +34355,7 @@ bool ds4_session_checkpoint_valid(const ds4_session *s) {
 
 ds4_session *ds4_session_new_test_checkpoint(const int *tokens, int n) {
     ds4_session *s = xcalloc(1, sizeof(*s));
+    s->think_level = -1;  /* sf: 419 unknown until the frontend sets it */
     for (int i = 0; i < n; i++) token_vec_push(&s->checkpoint, tokens[i]);
     s->checkpoint_valid = true;
     return s;

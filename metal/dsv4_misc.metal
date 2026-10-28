@@ -395,6 +395,7 @@ struct ds4_metal_args_dsv4_directional_steering_project {
     uint32_t layer;
     uint32_t n_threads;
     float    scale;
+    uint32_t additive;  /* sf: 419 1 = x += scale*dir (no dot), 0 = projection */
 };
 
 // Optional directional steering projection.
@@ -428,7 +429,7 @@ kernel void kernel_dsv4_directional_steering_project_f32(
         threadgroup_barrier(mem_flags::mem_threadgroup);
     }
 
-    const float coeff = args.scale * scratch[0];
+    const float coeff = args.additive ? -args.scale : args.scale * scratch[0];  /* sf: 419 add = subtract -scale */
     for (uint i = tid; i < args.width; i += nth) {
         xr[i] -= coeff * dir[i];
     }

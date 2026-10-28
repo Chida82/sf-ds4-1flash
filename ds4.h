@@ -138,6 +138,11 @@ typedef struct {
     const char *expert_profile_path;
     float directional_steering_attn;
     float directional_steering_ffn;
+    float directional_steering_residual;  /* sf: 401 V4.1 attention-input fold site, constant scale */
+    bool allow_v41_steering;    /* sf: opt into V4.1 steering, lifting its startup refusal */
+    const char *directional_steering_file2;  /* sf: rank-2 second direction file; should be orthogonal to the first (e.g. fuse_directions.py 'ortho') for an exact 2D removal */
+    float directional_steering_residual2;    /* sf: rank-2 second direction constant scale at the residual site (0 = off) */
+    const char *steering_profile; /* sf: one .sfsteer file (or a name in com-steering/profiles) carrying both slots' vectors, scales and think/answer gates; implies the V4.1 opt-in and replaces the --dir-steering-* options */
     int power_percent;
     uint32_t ssd_streaming_cache_experts;
     uint64_t ssd_streaming_cache_bytes;
@@ -352,6 +357,9 @@ int ds4_session_create(ds4_session **out, ds4_engine *e, int ctx_size);
 void ds4_session_free(ds4_session *s);
 int ds4_session_power(ds4_session *s);
 int ds4_session_set_power(ds4_session *s, int power_percent);
+/* sf: 419 reasoning-effort level 0..100 of the prompt (-1 = unknown); places the
+ * closure channel's onset. Frontends call it before the prompt. */
+int ds4_session_set_think_level(ds4_session *s, int level);
 float ds4_session_directional_steering_ffn(ds4_session *s);
 /* Change steering for future evaluation without rebuilding the existing KV
  * state. Live changes are currently limited to non-distributed sessions. */

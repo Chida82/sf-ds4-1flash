@@ -9,7 +9,7 @@ Runs after `320` by default. If `310` chose the lookup-first path, renumber this
 ## 2. Lookup source
 
 - [ ] 2.1 `--ngram-spec N` in the CLI and the bench: the lookup over the session's token history (D2), the range check, and counters per source. Verify both spec scenarios of the lookup by running them.
-- [ ] 2.2 The combination rule (D1) when `--dspark` is also given. Verify the "Both sources" scenario.
+- [ ] 2.2 The combination rule (D1) when `--dspark` is also given: length when `330` kept the threshold rule, expected rate when it kept the expected-cost rule; and whether the lookup keeps proposing during DSpark's back-off skips (measured both ways on `agent-replay` and `decode`). Verify the "Both sources" scenario.
 - [ ] 2.3 Measure: B `--ngram-spec 5` and B `--dspark --ngram-spec 5` against `--dspark` alone, on `agent-replay`, `decode-code` and `decode`. Verify the keep rule on `agent-replay`, nothing below the rule on prose, and the token gate; append the rows to `perf-record.md`.
 
 ## 3. Server and docs

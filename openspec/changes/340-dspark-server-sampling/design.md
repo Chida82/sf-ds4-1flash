@@ -39,6 +39,16 @@ The cycle gets the caller's boundary check before it commits.
 - **The bench.** `serve_concurrency_bench.py` with one client, plain against `--dspark`, on four request sets: code, chat, tool calls, and prose with the thinking defaults. Medians and pair CIs.
 - **The distribution check.** A model-backed test, fixed prefix: 2000 next-token samples with and without the flag, compared by a chi-square test at 1%. It is its own target, `make test-dspark-distribution`, like `test-deepseek41-decode-switch`, because it takes minutes.
 
+### D5. The draft-length rule under exact sampling
+- **The problem.** If `330` S4 made the expected-cost rule the default, it prices drafts with the confidence head's estimates. Under exact sampling a draft is kept with the target's probability of it, which is at most what the greedy match rate suggests. The rule would then over-draft on sampled requests.
+- **The fix, measured first.**
+  - Log predicted `P_j` against the observed acceptance per position on the four request sets of D4.
+  - If they disagree, the sampled path scales `P_j` by a running ratio, observed over predicted acceptance per position, kept per session.
+  - If the gap is too wide for a ratio to fix, sampled decoding keeps the threshold rule.
+  - DeepInfer prices sampled and greedy requests with the same head and adds only a per-step temperature, so no ready answer exists to copy.
+- **Not affected.** The rule changes how many drafts are verified, never which one is accepted, so the distribution check (D4) is unchanged.
+- **If `330` kept the threshold rule,** this decision does not apply.
+
 ## Risks / Trade-offs
 
 - **[Exact acceptance is too low to pay on sampled chat]** → The back-off returns it to plain decode, and the README says which request kinds gain.

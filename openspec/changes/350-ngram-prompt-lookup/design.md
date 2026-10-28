@@ -20,6 +20,7 @@
 ### D1. The longer proposal wins
 - **The rule.** Per cycle, the source whose proposal is longer is verified: lookup matches are long or absent, DSpark's are confidence-cut. On ties, DSpark wins, because its confidence predicts acceptance.
 - **The rejected alternative.** Verifying both in one pass doubles the rows and the expert union for one accepted prefix.
+- **If `330` S4 kept the expected-cost rule,** "longer wins" becomes "higher expected rate wins". The lookup has no confidence head. Its per-position estimate is its own running acceptance rate per draft position, kept per session and starting from `agent-replay`'s measured profile. Each source's best k is priced with the same t(k), and the source with the higher `(1 + sum P_j) / t(k)` is verified. With no lookup match, DSpark's choice stands unchanged.
 
 ### D2. Lookup on the token history the session already keeps
 - **Where it searches.** The session's token history; there is no new index.
@@ -33,4 +34,5 @@
 ## Risks / Trade-offs
 
 - **[Prose pays for empty lookups]** → No match means no proposal and no verify. Only matches that fail cost a cycle, and back-off covers them.
-- **[A long wrong match costs a full-width verify]** → The cap is the verifier's, and `310`'s c(k) sets it.
+- **[A long wrong match costs a full-width verify]** → The cap is the verifier's, and `310`'s c(k) sets it. Under `330`'s expected-cost rule a match whose source has been failing is also priced down by its running acceptance rate.
+- **[Back-off is shared]** → `330` S3 skips proposals from both sources. A lookup costs microseconds, so a skip saves only DSpark's drafter time. The lookup can therefore keep proposing during DSpark's skip cycles; task 2.2 measures that against skipping both.

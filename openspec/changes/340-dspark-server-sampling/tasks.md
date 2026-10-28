@@ -5,6 +5,7 @@ Starts after `320` has landed (`330` may run before or after).
 ## 1. Exact sampling
 
 - [ ] 1.1 Enable #1073's exact branch for a temperature above zero, and remove `320`'s notice. Verify the "Sampled request" scenario and `make test-dspark-distribution` (D4).
+- [ ] 1.2 Only if `330` kept the expected-cost rule (D5): log predicted `P_j` against observed acceptance per position under exact sampling on the D4 request sets. Then pick no correction, the per-session ratio, or the threshold rule for sampled decoding, and record which in `perf-record.md`. Verify `make test-dspark-distribution` again with the chosen path.
 
 ## 2. Server
 

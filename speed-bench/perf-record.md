@@ -2175,6 +2175,26 @@ by `30-decode-layer-queue`.
 | 132 readback split | 2026-10-05 | f8dd83e + 132 | DeepSeek-V4.1-Flash-Q2.gguf | 5 + 51 | PASS (bitwise) | 22.6 (+35.2%) | 22.7 (+34.5%) |  | 13.9 (+146.6%) |  | 19.8 (+122.8%) | 29.3 (+41.9%) |  |  |  |  | 104.3 (+8.5%) |
 | 140 dual-drive prefill | 2026-10-05 | 67b75b8 + 140 | DeepSeek-V4.1-Flash-Q2.gguf | 2 + 41 + 1 | PASS (bitwise) |  |  |  | 12.6 (+177.5%) |  | 18.0 (+131.1%) | 25.7 (+54.8%) |  |  |  |  | 103.7 (+8.7%) |
 | 145 decode misses | 2026-10-06 | 50ff39c + 145 | DeepSeek-V4.1-Flash-Q2.gguf | 2 + 11 | PASS (bitwise) | 22.3 (+31.4%) | 21.9 (+27.2%) |  |  |  |  | 27.1 (+48.9%) |  |  |  |  | 98.6 (+14.5%) |
+| steering series 400-419, gate 420 (steering off) | 2026-10-28 | a4c61a4 | DeepSeek-V4.1-Flash-1017-IQ2_XXS-Q2_K-imatrix.gguf | 11 + 17 + 2 | PASS (bitwise) | 28.7 (+66.3%) | 26.8 (+43.8%) | 27.9 (+50.7%) | 13.4 (+160.5%) | 51.4 (+41.2%) | 17.2 (+134.4%) | 27.2 (+57.7%) | 11.0 (+45.5%) | 7.30 (+137.2%) |  |  |  |
+
+`420-steering-quality-gate` (row above, steering off, against the segment start
+`7dea5e3`, `--bitwise`) is three invocations on the 1017 checkpoint, all with
+logits bitwise identical and no metric below zero:
+- all kinds (11 pairs, tree `d7f9c95`): decode 2048 and 8192, ttft 5000 and
+  10000 kept; the other kinds lost their pairs to the clock check (GPU 1006-1240
+  MHz against the kind's median) or to `60`'s cache seeding;
+- `cold-2500,cold-3500,cold-7500,append` with `--cache-policy-change` (17 pairs,
+  tree `a4c61a4`): ttft 2500, 3500 and 7500 kept, append lost every pair to the
+  clock check;
+- `append` (2 pairs, tree `a4c61a4`): append +300 and +1500, prefill 5000.
+
+Between the first and the second tree only the Makefile's eval targets and
+documents changed; no engine file did. The guards and the e2e cell are not
+filled: no invocation measured the guard kinds, and each invocation's e2e
+held the unmeasured kinds at the reference. The row is a gate, not a speed
+claim: the figures are dominated by the performance work since the start.
+The `1017` checkpoint replaces the `Q2` file named in earlier rows (the `Q2`
+symlink in `gguf/` points at an empty snapshot).
 
 `100-prefill-weight-delivery` (row above, `80` and `90` landed no runtime
 code) is two invocations against the start: `cold,append` with the guards

@@ -5160,52 +5160,112 @@ static bool send_all(int fd, const void *p, size_t n) {
     return true;
 }
 
-static void json_escape(buf *b, const char *s) {
-    buf_putc(b, '"');
-    for (; *s; s++) {
-        unsigned char c = (unsigned char)*s;
-        if (c == '"' || c == '\\') {
-            buf_putc(b, '\\');
-            buf_putc(b, (char)c);
-        } else if (c == '\n') {
-            buf_puts(b, "\\n");
-        } else if (c == '\r') {
-            buf_puts(b, "\\r");
-        } else if (c == '\t') {
-            buf_puts(b, "\\t");
-        } else if (c < 0x20) {
-            buf_printf(b, "\\u%04x", (unsigned)c);
+/* 501: length of the well-formed UTF-8 sequence at s[0..n) (Unicode 3.7). On an
+ * ill-formed or truncated sequence returns 0 and sets *bad to the length of the
+ * maximal ill-formed subpart (Unicode 3.9, >= 1), which becomes one U+FFFD. */
+static size_t utf8_well_formed_len(const unsigned char *s, size_t n, size_t *bad) {
+    *bad = 0;
+    unsigned char c = s[0];
+    if (c <= 0x7f) return 1;
+    size_t need;
+    unsigned char lo1, hi1;
+    if (c >= 0xc2 && c <= 0xdf)      { need = 1; lo1 = 0x80; hi1 = 0xbf; }
+    else if (c == 0xe0)              { need = 2; lo1 = 0xa0; hi1 = 0xbf; }
+    else if (c >= 0xe1 && c <= 0xec) { need = 2; lo1 = 0x80; hi1 = 0xbf; }
+    else if (c == 0xed)              { need = 2; lo1 = 0x80; hi1 = 0x9f; }
+    else if (c >= 0xee && c <= 0xef) { need = 2; lo1 = 0x80; hi1 = 0xbf; }
+    else if (c == 0xf0)              { need = 3; lo1 = 0x90; hi1 = 0xbf; }
+    else if (c >= 0xf1 && c <= 0xf3) { need = 3; lo1 = 0x80; hi1 = 0xbf; }
+    else if (c == 0xf4)              { need = 3; lo1 = 0x80; hi1 = 0x8f; }
+    else { *bad = 1; return 0; }  /* 0x80-0xbf, 0xc0, 0xc1, 0xf5-0xff */
+
+    size_t have = 1;
+    for (size_t k = 0; k < need; k++) {
+        if (have >= n) { *bad = have; return 0; }  /* truncated: subpart so far */
+        unsigned char cc = s[have];
+        unsigned char lo = (k == 0) ? lo1 : 0x80;
+        unsigned char hi = (k == 0) ? hi1 : 0xbf;
+        if (cc < lo || cc > hi) { *bad = have; return 0; }
+        have++;
+    }
+    return have;
+}
+
+/* 501: number of maximal ill-formed UTF-8 subparts in s[0..n), and the byte
+ * offset of the first in *first. Zero means s is valid UTF-8. */
+static size_t utf8_count_invalid(const char *s, size_t n, size_t *first) {
+    size_t i = 0, count = 0;
+    *first = 0;
+    bool have_first = false;
+    while (i < n) {
+        if ((unsigned char)s[i] < 0x80) { i++; continue; }
+        size_t bad = 0;
+        size_t good = utf8_well_formed_len((const unsigned char *)s + i, n - i, &bad);
+        if (good) {
+            i += good;
         } else {
-            buf_putc(b, (char)c);
+            if (!have_first) { *first = i; have_first = true; }
+            count++;
+            i += bad;
         }
     }
-    buf_putc(b, '"');
+    return count;
 }
 
-static void json_escape_n(buf *b, const char *s, size_t n) {
-    char *tmp = xstrndup(s ? s : "", n);
-    json_escape(b, tmp);
-    free(tmp);
-}
-
-static void json_escape_fragment_n(buf *b, const char *s, size_t n) {
-    for (size_t i = 0; i < n; i++) {
+/* Shared body of the JSON string escapers: control chars escaped, valid UTF-8
+ * copied byte for byte, each ill-formed subpart replaced by U+FFFD (501). */
+static void json_escape_bytes(buf *b, const char *s, size_t n) {
+    size_t i = 0;
+    while (i < n) {
         unsigned char c = (unsigned char)s[i];
         if (c == '"' || c == '\\') {
             buf_putc(b, '\\');
             buf_putc(b, (char)c);
+            i++;
         } else if (c == '\n') {
             buf_puts(b, "\\n");
+            i++;
         } else if (c == '\r') {
             buf_puts(b, "\\r");
+            i++;
         } else if (c == '\t') {
             buf_puts(b, "\\t");
+            i++;
         } else if (c < 0x20) {
             buf_printf(b, "\\u%04x", (unsigned)c);
-        } else {
+            i++;
+        } else if (c < 0x80) {
             buf_putc(b, (char)c);
+            i++;
+        } else {
+            size_t bad = 0;
+            size_t good = utf8_well_formed_len((const unsigned char *)s + i,
+                                               n - i, &bad);
+            if (good) {
+                buf_append(b, s + i, good);
+                i += good;
+            } else {
+                buf_puts(b, "\xef\xbf\xbd");
+                i += bad;
+            }
         }
     }
+}
+
+static void json_escape(buf *b, const char *s) {
+    buf_putc(b, '"');
+    json_escape_bytes(b, s, strlen(s));
+    buf_putc(b, '"');
+}
+
+static void json_escape_n(buf *b, const char *s, size_t n) {
+    buf_putc(b, '"');
+    json_escape_bytes(b, s ? s : "", s ? n : 0);
+    buf_putc(b, '"');
+}
+
+static void json_escape_fragment_n(buf *b, const char *s, size_t n) {
+    json_escape_bytes(b, s, n);
 }
 
 #define DS4_DSML "｜DSML｜"
@@ -13513,6 +13573,18 @@ decode_again:
                        now_sec() - t0);
         }
     }
+    {
+        /* 501: report when the generated text held invalid UTF-8 that the
+         * escapers replaced with U+FFFD; a clean response logs nothing. */
+        size_t first_bad = 0;
+        size_t n_bad = utf8_count_invalid(text.ptr ? text.ptr : "", text.len, &first_bad);
+        if (n_bad) {
+            server_log(DS4_LOG_GENERATION,
+                       "ds4-server: %s ctx=%s replaced %zu invalid UTF-8 subparts (first at byte %zu)",
+                       j->req.kind == REQ_CHAT ? "chat" : "completion",
+                       ctx_span, n_bad, first_bad);
+        }
+    }
     free(parsed_content);
     free(parsed_reasoning);
     tool_calls_free(&parsed_calls);
@@ -13532,6 +13604,7 @@ static void generate_job(server *s, server_slot *slot, job *j) {
     pthread_mutex_unlock(&s->model_mu);
 
     ds4_session_set_cancel(slot->session, job_cancelled, j);
+    ds4_session_set_think_level(slot->session, ds4_think_mode_level(j->req.think_mode));  /* sf: 419 */
     if (!job_cancelled(j)) generate_job_inner(s, slot, j);
     ds4_session_set_cancel(slot->session, NULL, NULL);
 
@@ -14468,11 +14541,28 @@ static server_config parse_options(int argc, char **argv) {
             }
         } else if (!strcmp(arg, "--dir-steering-file")) {
             c.engine.directional_steering_file = need_arg(&i, argc, argv, arg);
+        } else if (!strcmp(arg, "--dir-steering-file-2")) {
+            /* sf: rank-2 second direction file (orthogonal to the first) */
+            c.engine.directional_steering_file2 = need_arg(&i, argc, argv, arg);
+        } else if (!strcmp(arg, "--allow-v41-steering")) {
+            c.engine.allow_v41_steering = true;
+        } else if (!strcmp(arg, "--steering-profile")) {
+            /* sf: one .sfsteer file or a name in com-steering/profiles: vectors, scales, gates */
+            c.engine.steering_profile = need_arg(&i, argc, argv, arg);
         } else if (!strcmp(arg, "--dir-steering-ffn")) {
             c.engine.directional_steering_ffn = parse_float_arg(need_arg(&i, argc, argv, arg), arg, -100.0f, 100.0f);
             directional_steering_scale_set = true;
         } else if (!strcmp(arg, "--dir-steering-attn")) {
             c.engine.directional_steering_attn = parse_float_arg(need_arg(&i, argc, argv, arg), arg, -100.0f, 100.0f);
+            directional_steering_scale_set = true;
+        } else if (!strcmp(arg, "--dir-steering-residual")) {
+            /* sf: 401 post-HC-fold residual site; setting it suppresses the ffn=1
+             * default so a residual-hook vector is not also applied at ffn. */
+            c.engine.directional_steering_residual = parse_float_arg(need_arg(&i, argc, argv, arg), arg, -100.0f, 100.0f);
+            directional_steering_scale_set = true;
+        } else if (!strcmp(arg, "--dir-steering-residual-2")) {
+            /* sf: rank-2 second orthogonal direction, constant scale at the residual site */
+            c.engine.directional_steering_residual2 = parse_float_arg(need_arg(&i, argc, argv, arg), arg, -100.0f, 100.0f);
             directional_steering_scale_set = true;
         } else if (!strcmp(arg, "--warm-weights")) {
             c.engine.warm_weights = true;
@@ -14660,7 +14750,16 @@ int main(int argc, char **argv) {
         }
     }
 
-    if (cfg.kv_disk_dir) {
+    if (cfg.kv_disk_dir && (cfg.engine.directional_steering_residual != 0.0f ||
+                            cfg.engine.directional_steering_residual2 != 0.0f ||
+                            (cfg.engine.steering_profile && cfg.engine.steering_profile[0]))) {
+        /* sf: 401 cache entries carry no steering identity: a steered server
+         * runs without the disk cache, never reads or writes under its root,
+         * and leaves existing entries untouched. */
+        server_log(DS4_LOG_DEFAULT,
+                   "ds4-server: persistent KV cache is not supported while directional steering is active; "
+                   "not opening %s (existing entries are left untouched)", cfg.kv_disk_dir);
+    } else if (cfg.kv_disk_dir) {
         kv_cache_open(&s.kv, cfg.kv_disk_dir, cfg.kv_disk_space_mb,
                       cfg.kv_cache_reject_different_quant, cfg.kv_cache);
     }
@@ -16674,6 +16773,45 @@ static void test_streaming_holds_partial_utf8(void) {
     close(sv[1]);
 }
 
+/* 501: an invalid sequence split across stream updates becomes one U+FFFD, the
+ * same as escaping the whole text; the raw bytes never reach the wire. */
+static void test_streaming_replaces_invalid_utf8(void) {
+    const char acc1[] = {'x', 0};
+    const char acc2[] = {'x', (char)0xe2, 0};
+    const char acc3[] = {'x', (char)0xe2, (char)0x80, 0};
+    const char acc4[] = {'x', (char)0xe2, (char)0x80, 'A', 0};
+    const char raw_seq[] = {(char)0xe2, (char)0x80, 0};
+
+    int sv[2];
+    TEST_ASSERT(socketpair(AF_UNIX, SOCK_STREAM, 0, sv) == 0);
+    if (sv[0] < 0 || sv[1] < 0) return;
+
+    request r;
+    request_init(&r, REQ_CHAT, 128);
+    r.api = API_OPENAI;
+    r.stream = true;
+    r.think_mode = DS4_THINK_NONE;
+
+    openai_stream st;
+    openai_stream_start(&r, &st);
+    TEST_ASSERT(openai_sse_stream_update(sv[0], NULL, &r, "c", &st, acc1, strlen(acc1), false));
+    TEST_ASSERT(openai_sse_stream_update(sv[0], NULL, &r, "c", &st, acc2, strlen(acc2), false));
+    TEST_ASSERT(openai_sse_stream_update(sv[0], NULL, &r, "c", &st, acc3, strlen(acc3), false));
+    TEST_ASSERT(openai_sse_stream_update(sv[0], NULL, &r, "c", &st, acc4, strlen(acc4), true));
+    shutdown(sv[0], SHUT_WR);
+    char *out = read_socket_text(sv[1]);
+
+    /* the raw invalid bytes never reach the wire; the replacement + trailing A do */
+    TEST_ASSERT(strstr(out, raw_seq) == NULL);
+    TEST_ASSERT(strstr(out, "\xef\xbf\xbd" "A") != NULL);
+
+    free(out);
+    openai_stream_free(&st);
+    request_free(&r);
+    close(sv[0]);
+    close(sv[1]);
+}
+
 static void test_request_defaults_use_min_p_filtering(void) {
     request r;
     request_init(&r, REQ_CHAT, 128);
@@ -18594,6 +18732,59 @@ static void test_json_string_handles_surrogates(void) {
     TEST_ASSERT(strstr(s, "badlow \xef\xbf\xbd" "A") != NULL);
     TEST_ASSERT(*p == '\0');
     free(s);
+}
+
+#define RP "\xef\xbf\xbd"  /* U+FFFD, the replacement character */
+
+static char *escape_str_dup(const char *s) {
+    buf b = {0};
+    json_escape(&b, s);
+    return buf_take(&b);
+}
+
+static char *escape_frag_dup(const char *s, size_t n) {
+    buf b = {0};
+    json_escape_fragment_n(&b, s, n);
+    char *out = xstrdup(b.ptr ? b.ptr : "");
+    buf_free(&b);
+    return out;
+}
+
+/* 501: the serializer must never emit invalid UTF-8; each maximal ill-formed
+ * subpart (Unicode 3.9) becomes one U+FFFD, valid text is byte-identical. */
+static void test_json_escape_replaces_invalid_utf8(void) {
+    struct { const char *in; size_t n; const char *want; } frags[] = {
+        {"a\xe2(b", 4, "a" RP "(b"},          /* lead with no continuation */
+        {"ok\xe2\x80", 4, "ok" RP},           /* truncated 3-byte tail */
+        {"\x80\x80", 2, RP RP},               /* two stray continuations */
+        {"\xc0\xaf", 2, RP RP},               /* overlong: two bad bytes */
+        {"\xed\xa0\x80", 3, RP RP RP},        /* UTF-16 surrogate: three */
+        {"\xf4\x90\x80\x80", 4, RP RP RP RP}, /* above U+10FFFF: four */
+        /* valid text passes through unchanged */
+        {"plain ascii", 11, "plain ascii"},
+        {"caff\xc3\xa8", 6, "caff\xc3\xa8"},          /* e-grave, 2 bytes */
+        {"\xe2\x82\xac", 3, "\xe2\x82\xac"},          /* euro sign, 3 bytes */
+        {"\xf0\x9f\x9a\xa9", 4, "\xf0\x9f\x9a\xa9"},  /* flag, 4 bytes */
+    };
+    for (size_t i = 0; i < sizeof(frags) / sizeof(frags[0]); i++) {
+        char *got = escape_frag_dup(frags[i].in, frags[i].n);
+        TEST_ASSERT(!strcmp(got, frags[i].want));
+        free(got);
+    }
+    /* json_escape wraps the same bytes in quotes and keeps \u escapes */
+    char *q = escape_str_dup("a\xe2(b");
+    TEST_ASSERT(!strcmp(q, "\"a" RP "(b\""));
+    free(q);
+    char *ctrl = escape_str_dup("x\x01y");
+    TEST_ASSERT(!strcmp(ctrl, "\"x\\u0001y\""));
+    free(ctrl);
+
+    /* the log counter agrees: count of subparts and the first byte offset */
+    size_t first = 123;
+    TEST_ASSERT(utf8_count_invalid("caff\xc3\xa8", 6, &first) == 0);
+    TEST_ASSERT(utf8_count_invalid("a\xe2(b", 4, &first) == 1 && first == 1);
+    TEST_ASSERT(utf8_count_invalid("\x80\x80", 2, &first) == 2 && first == 0);
+    TEST_ASSERT(utf8_count_invalid("\xf4\x90\x80\x80", 4, &first) == 4);
 }
 
 static void test_json_int_handles_non_finite_values(void) {
@@ -20523,6 +20714,7 @@ static void ds4_server_unit_tests_run(void) {
     test_openai_tool_stream_holds_partial_utf8_arguments();
     test_openai_tool_stream_handles_multiple_calls();
     test_streaming_holds_partial_utf8();
+    test_streaming_replaces_invalid_utf8();
     test_parse_short_dsml_and_canonical_suffix();
     test_dsml_parser_recovers_loose_nested_parameters();
     test_dsml_repair_produces_parseable_calls();
@@ -20570,6 +20762,7 @@ static void ds4_server_unit_tests_run(void) {
     test_request_parsers_reject_malformed_duplicate_owned_fields();
     test_json_parser_handles_tool_heavy_requests();
     test_json_string_handles_surrogates();
+    test_json_escape_replaces_invalid_utf8();
     test_json_int_handles_non_finite_values();
     test_tool_history_validation_handles_large_replays();
     test_model_metadata_clamps_completion_to_context();

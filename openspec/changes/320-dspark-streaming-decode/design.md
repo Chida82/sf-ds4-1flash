@@ -97,6 +97,14 @@ The prefill's selected-addr kernels are used only if `310` found them bitwise to
   - `tools/parity-check.sh` runs without the flag, because upstream refuses DSpark for V4.1 and cannot be an oracle for it.
   - D2's tests, plus greedy 1024 tokens with and without the flag on the parity prompts, are the oracle for the flag.
 
+### D7b. Keep what `330` S4's draft-length rule reads
+`330` S4 may replace the threshold rule with an expected-cost rule (`310` D7b). This change ports #1073's threshold rule and `ds41_draft_adapt` as written, and does not change their interface. Three things stay in the port, although only S4 needs them:
+- the per-cycle arguments of `ds41_draft_adapt`: drafted k, kept tokens, cycle seconds and proposal seconds. S4's cost model is fed from the same call;
+- the confidences returned by `ds41_draft_propose` for the whole block, not only the prefix that passed;
+- `DS4_DSPARK_SPEC_LOG`, classified in `ds4_env.def` as a probe.
+
+If S4 needs a different signature, `330` changes it.
+
 ### D8. Registries before the flag ships
 Rule 6 binds the child to StarForge's registry. The StarForge change (`AGENTS.md`, `README.md`, `tools/lib.sh`, the parity prompt file) is prepared in the same session and committed only on request, before or with the child's commit.
 

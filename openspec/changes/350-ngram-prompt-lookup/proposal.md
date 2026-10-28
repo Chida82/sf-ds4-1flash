@@ -16,7 +16,7 @@ This change is conditional, and runs in one of two places:
   - The most recent earlier occurrence of the last n = 3 tokens in the session's context, and the tokens that followed it, up to the draft cap.
   - Opt-in with `--ngram-spec N`, upstream's name from #1167, in the CLI, the bench and (after `340`) the server.
   - Greedy, like `320`. After `340`, a sampled cycle treats a lookup draft as a proposal with probability one. Exact sampling then accepts each token with the target's probability of it, which keeps the distribution.
-- **Combined with DSpark** (the after-`320` case). Each cycle takes the longer of the two proposals: the lookup draft and DSpark's confident prefix. Both are verified by the same rows.
+- **Combined with DSpark** (the after-`320` case). Each cycle takes the longer of the two proposals: the lookup draft and DSpark's confident prefix. If `330` S4 made the expected-cost rule the default, it takes the one with the higher expected tokens per time instead, pricing the lookup by its own running acceptance. Either way, the chosen proposal is verified by the same rows.
 - **Harness, tool step.** An `agent-replay` decode kind: a prompt holding a source file, then a request to rewrite part of it, so the answer copies from context.
 - **Back-off** is shared with DSpark (`330` S3).
 - **Registry.** #1167 is `idea -> 350`. Its V4 Flash code is not ported.

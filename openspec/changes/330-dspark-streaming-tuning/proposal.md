@@ -24,7 +24,11 @@ Each step is kept or dropped by the config's rule, A = the previous step, B = th
   - any accepted draft restores drafting.
 
   On M5 Max, V4 Flash, it measured reasoning prose -0.1% and code +19.5%. This step is taken first if `320` left prose under `310`'s rule.
-- **S4, defaults.** The cap and the confidence threshold are swept on `decode-code` and `decode` together. The pair with the best code gain that keeps prose within the rule becomes the default.
+- **S4, draft length: expected cost against threshold and cap.** Two arms are run on `decode-code` and `decode` together:
+  - **Threshold and cap,** #1073's rule. The pair is swept, and the one with the best code gain that keeps prose within the rule is the arm.
+  - **Expected cost,** DeepInfer's rule (`MTPVarlen::schedule`) for one request. Each cycle drafts `k* = argmax_k (1 + sum_{j<=k} P_j) / t(k)`, with k = 0 allowed (a plain step). `P_j` is the running product of the block's per-position confidences. t(k) is `310`'s c(k) curve, scaled by the plain token time the session already measures and corrected at runtime by a windowed median of measured cycle times. That correction absorbs the variable cost of expert misses under streaming, which a fixed threshold cannot see.
+
+  The expected-cost arm becomes the default if it beats the threshold arm by the keep rule. It then replaces the threshold sweep. `--dspark-confidence X` keeps working and selects the threshold rule. The rule also absorbs part of S3's job: a cycle it prices as losing verifies nothing, so back-off only has to save the drafter's own time. `310` D7b's replay sets which arm starts as the baseline and whether the second arm runs at all.
 - **S5, a smaller drafter.** Only if `310`/`320` show that the drafter's memory costs more decode than its precision gives:
   - our own conversion of the official `mtp.*` weights with Q2-class experts, about 4 GiB (estimated);
   - its acceptance re-measured against MXFP4 on the four kinds;
@@ -36,11 +40,13 @@ Each step is kept or dropped by the config's rule, A = the previous step, B = th
 None.
 
 ### Modified Capabilities
-- `dspark-drafting`: the automatic cache budget leaves room for the drafter; the support file may carry Q2-class expert types (S5 only).
+- `dspark-drafting`: the automatic cache budget leaves room for the drafter; the draft length is chosen by expected cost unless a threshold is given (S4, only if kept); the support file may carry Q2-class expert types (S5 only).
 
 ## Impact
 
-- `ds4.c`: the budget, the scheduler, and the loader's accepted types (S5).
+- `ds4.c`: the budget, the scheduler (back-off and the S4 draft-length rule), and the loader's accepted types (S5).
+- `ds4_env.def`: S4's switches.
+- `docs/upstream-prs.md`: if S4 keeps the rule, a row records DeepInfer's `MTPVarlen::schedule` as the idea's source.
 - The miss path in `ds4.c` and `ds4_metal.m` (S2).
 - `speed-bench/perf-record.md`, `README.md` (the gains table), `download.sh` (S5).
 - S5 needs the owner for the shard download (about 7.4 GiB), a temporary Python environment in a `mktemp` directory, and publishing the converted file.

@@ -510,9 +510,17 @@ after you type `yes`. **Know what it does before installing:**
 Using it, like the rest of this project, is your own responsibility.
 
 Directional steering is present in the build and documented under
-[dir-steering/](dir-steering/README.md), but DeepSeek V4.1 Flash does not
-support it: passing `--dir-steering-file` makes the engine refuse to start,
-exactly as it does upstream.
+[dir-steering/](dir-steering/README.md). DeepSeek V4.1 Flash refuses it by
+default -- passing `--dir-steering-file` makes the engine refuse to start,
+exactly as upstream -- unless the CLI or server gets `--allow-v41-steering`
+(or `DS4_ALLOW_V41_STEERING` is set, to any value). The opt-in only admits the
+file; on V4.1 an edit is applied only at the residual site,
+`--dir-steering-residual` (the attention-input fold, change `401`), and a
+nonzero FFN or attention scale is refused rather than ignored.
+`--steering-profile NAME` loads a complete steered configuration from one
+file (both directions, their scales and think/answer gates) and needs no
+other flag; the shipped profile, how its directions were derived, and the
+measurements behind them are in [com-steering/](com-steering/investigation.md).
 
 `--prefix-file FILE` preloads complete `USER:` / `ASSISTANT:` pairs before
 the live conversation. A turn marker must start a line, roles must alternate,
@@ -535,6 +543,13 @@ non-interactive output, and `--regrade-trace FILE` scores an existing trace
 without generating again. Sources and licenses are in [EVAL_DATA.md](EVAL_DATA.md).
 For inference correctness and release checks, read [testing](docs/TESTING.md).
 
+The steering directions were validated with an A/B harness that measured an
+intervention as a base run against a steered run, judged by the unsteered model
+with two mandatory controls (refusal removal, benign fidelity, over-refusal,
+capability, breadth). That investigation is closed and its harness is not
+shipped; the method, the KPIs and the accepting runs are recorded in
+[com-steering/](com-steering/kpi.md).
+
 ## Detailed Guides
 
 - [The model and vision](docs/MODELS.md): downloads, memory, and the encoder.
@@ -544,6 +559,7 @@ For inference correctness and release checks, read [testing](docs/TESTING.md).
 - [Coding agent clients](docs/CLIENTS.md): Pi, OpenCode, Codex CLI, and Claude Code.
 - [Performance](docs/PERFORMANCE.md): reproducible measurements and recorded baselines.
 - [Testing and development](docs/TESTING.md): regression tests, debugging, and model-building tools.
+- [Steering research](com-steering/investigation.md): the techniques tried, results, KPIs and profiles.
 
 Read [CONTRIBUTING.md](CONTRIBUTING.md) before sending a pull request.
 

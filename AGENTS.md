@@ -20,7 +20,7 @@ what this repo is and how to work in it. For code-quality rules read
 | Vision | yes, `--vision gguf/DeepSeek-V4.1-Flash-Vision.gguf` |
 | Memory | **SSD streaming is the normal mode**: Q2 is 341 GiB against a 128 GB machine. See "SSD streaming is not optional" below |
 | Speculative decoding | none |
-| Steering | tooling kept (SPEC.md §B), but the model **refuses to start** with `--dir-steering-file`, exactly as upstream |
+| Steering | tooling kept (SPEC.md §B), but the model **refuses to start** with `--dir-steering-file`, exactly as upstream, unless `--allow-v41-steering` (CLI, server) or `DS4_ALLOW_V41_STEERING` admits it; the only live V4.1 site is `--dir-steering-residual`, the weighted HC attention-input fold after Engram and before the norm (`401`, `dir-steering/README.md`). A second orthogonal direction can be removed at the same site with `--dir-steering-file-2`/`--dir-steering-residual-2` (rank-2, constant scale; orthogonal directions compose as an exact 2D removal, non-orthogonal ones as two sequential rank-1 operations); each slot can be gated to the think or the answer phase. `--steering-profile NAME|FILE` loads a whole configuration from one `.sfsteer` file (vectors, scales, gates; `com-steering/`) and is itself the opt-in. The recommended default profile is `sf-ds4-1flash-candor` (`406`), whose slots, scales, gates and accepting-run provenance are recorded in `com-steering/README.md`; "default" is the config to pass, never auto-applied. A nonzero `--dir-steering-ffn` or `--dir-steering-attn` is refused on V4.1; a steered session refuses payloads and snapshots, and the server skips `--kv-disk-dir` |
 | TP / RDMA / pipeline | tensor parallel (TP, RDMA/TCP) works on the V4.1 graph. **Pipeline (layer-slice) is kept but does not work for V4.1 yet**: the `ds4_session_*layer*` entry points run the old `ds4_gpu_graph` code on a graph V4.1 never allocates (same in upstream). Kept by owner decision, to be fixed: do not ablate the graph code it reaches |
 | Upstream base | never written down: `git describe --tags --match 'sync-*' --abbrev=0` names the last sync, `git merge-base HEAD upstream/main` the base. A SHA typed into a file is a second source of truth that goes stale (SPEC.md §A) |
 
@@ -106,6 +106,14 @@ below `82GB`'s. `DS4_METAL_DISABLE_STREAMING_CACHE_LOCK_AHEAD=1` restores lazy
 locking. `--ssd-streaming-full-layers` is gone: it only ever applied
 to GLM graph streaming, and V4.1 warned and ignored it.
 
+A process that closes an engine and opens another keeps the first cache
+wired until it exits: a test that opened three 32 GiB engines in turn measured
+47, 72 and 98 GB wired (`vm_stat`, 2026-10-13), each open locking its full
+24.9 GiB, and the same test with 64 GiB froze the machine at its second open.
+Until `ds4_engine_close` releases the cache, a test that reopens the engine in
+one process uses 32 GiB at most (`--prefill-replica`, `--steering-admission`);
+anything larger runs each engine in its own process.
+
 The time to first token is set by the prefill schedule (`ds41_prefill_count`).
 A prompt runs as SSD layer sweeps, and a remainder under 1024 tokens after the
 first sweep runs token by token at the decode rate. That tail is frozen:
@@ -132,7 +140,12 @@ batched and token-major kernels round differently. Since
 `DS4_METAL_DISABLE_V41_SHORT_SWEEP=1` restores the plain schedule and
 `DS4_METAL_DISABLE_V41_DECODER_SUFFIX=1` turns the suffix off. The explicit
 buffers have no switch; they fall back to mmap when the reserve cannot hold
-them. All three keep the output bitwise identical.
+them. All three keep the output bitwise identical. The suffix's token-by-token
+branch (batch attention off) folds each reconstructed row with that row's
+carried split since `401`; before, the graph copy it loops with still pointed
+at the decode scratch, and `--decoder-suffix` was not exact although it is
+the test that claims it. A row copy of the graph re-aims only the fields it
+assigns: check them against `DS41_PREFILL_ROWS` before trusting a per-row loop.
 
 `DS4_METAL_PREFILL_REPLICA=<path>` (`140-dual-ssd-prefill`, off by default)
 names a byte-identical copy of the GGUF on a second drive. The explicit prefill

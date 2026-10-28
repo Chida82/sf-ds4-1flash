@@ -29753,15 +29753,17 @@ typedef struct {
     uint32_t layer;
     uint32_t n_threads;
     float    scale;
+    uint32_t additive;  /* sf: 419 1 = x += scale*dir, 0 = projection */
 } ds4_gpu_directional_steering_project_args;
 
-int ds4_gpu_directional_steering_project_tensor(
+static int ds4_gpu_directional_steering_dispatch(
         ds4_gpu_tensor       *x,
         const ds4_gpu_tensor *directions,
         uint32_t                layer,
         uint32_t                width,
         uint32_t                rows,
-        float                   scale) {
+        float                   scale,
+        uint32_t                additive) {
     if (!g_initialized && !ds4_gpu_init()) return 0;
     if (!x || !directions || width == 0 || rows == 0 || scale == 0.0f) return 0;
 
@@ -29796,6 +29798,7 @@ int ds4_gpu_directional_steering_project_tensor(
             .layer = layer,
             .n_threads = (uint32_t)nth,
             .scale = scale,
+            .additive = additive,
         };
 
         id<MTLComputeCommandEncoder> enc = ds4_gpu_compute_encoder(cb);
@@ -29812,6 +29815,27 @@ int ds4_gpu_directional_steering_project_tensor(
     }
 
     return 1;
+}
+
+int ds4_gpu_directional_steering_project_tensor(
+        ds4_gpu_tensor       *x,
+        const ds4_gpu_tensor *directions,
+        uint32_t                layer,
+        uint32_t                width,
+        uint32_t                rows,
+        float                   scale) {
+    return ds4_gpu_directional_steering_dispatch(x, directions, layer, width, rows, scale, 0u);
+}
+
+/* sf: 419 additive closure channel: x += scale * directions[layer]. */
+int ds4_gpu_directional_steering_add_tensor(
+        ds4_gpu_tensor       *x,
+        const ds4_gpu_tensor *directions,
+        uint32_t                layer,
+        uint32_t                width,
+        uint32_t                rows,
+        float                   scale) {
+    return ds4_gpu_directional_steering_dispatch(x, directions, layer, width, rows, scale, 1u);
 }
 
 static NSUInteger ds4_gpu_bin_threads(uint32_t width, id<MTLComputePipelineState> pipeline) {

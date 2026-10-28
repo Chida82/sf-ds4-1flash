@@ -486,6 +486,7 @@ static int run_sampled_generation(ds4_engine *engine, const cli_config *cfg, con
         fprintf(stderr, "ds4: sampled CLI generation requires a session backend\n");
         return 1;
     }
+    ds4_session_set_think_level(session, ds4_think_mode_level(cli_effective_think_mode(&cfg->gen)));  /* sf: 419 */
     if (cli_wait_distributed_route(cfg, session) != 0) {
         ds4_session_free(session);
         return 1;
@@ -652,6 +653,7 @@ static int run_logits_dump(ds4_engine *engine, const cli_config *cfg, const ds4_
         fprintf(stderr, "ds4: --dump-logits requires a graph session backend\n");
         return 1;
     }
+    ds4_session_set_think_level(session, ds4_think_mode_level(cli_effective_think_mode(&cfg->gen)));  /* sf: 419 */
     if (cli_wait_distributed_route(cfg, session) != 0) {
         ds4_session_free(session);
         return 1;
@@ -740,6 +742,7 @@ static int run_logprob_dump(ds4_engine *engine, const cli_config *cfg, const ds4
         fprintf(stderr, "ds4: --dump-logprobs requires a graph session backend\n");
         return 1;
     }
+    ds4_session_set_think_level(session, ds4_think_mode_level(cli_effective_think_mode(&cfg->gen)));  /* sf: 419 */
     if (cli_wait_distributed_route(cfg, session) != 0) {
         ds4_session_free(session);
         return 1;
@@ -874,6 +877,7 @@ static int run_decode_consistency(ds4_engine *engine, const cli_config *cfg,
         free(fresh_logits);
         return 1;
     }
+    ds4_session_set_think_level(live, ds4_think_mode_level(cli_effective_think_mode(&cfg->gen)));  /* sf: 419 */
 
     cli_prefill_progress progress = {
         .base_tokens = 0,
@@ -1182,7 +1186,7 @@ static void print_repl_help(void) {
     puts("  /nothink       Disable thinking mode.");
     puts("  /ctx N         Set context size for following prompts.");
     puts("  /power N       Set GPU duty cycle percentage, 1..100.");
-    puts("  /steer F       Set FFN steering for subsequent tokens; no value shows it.");
+    puts("  /steer F       Live FFN steering; V4.1 rejects a nonzero value (the residual site has no live control). No value shows it.");
     puts("  /read FILE     Submit a text file, PNG, or JPEG.");
     puts("  /quit, /exit   Leave the prompt.");
     puts("  Ctrl+C         Stop generation and return to the prompt.");
@@ -1928,6 +1932,14 @@ static cli_config parse_options(int argc, char **argv) {
             }
         } else if (!strcmp(arg, "--dir-steering-file")) {
             c.engine.directional_steering_file = need_arg(&i, argc, argv, arg);
+        } else if (!strcmp(arg, "--dir-steering-file-2")) {
+            /* sf: rank-2 second direction file (orthogonal to the first) */
+            c.engine.directional_steering_file2 = need_arg(&i, argc, argv, arg);
+        } else if (!strcmp(arg, "--allow-v41-steering")) {
+            c.engine.allow_v41_steering = true;
+        } else if (!strcmp(arg, "--steering-profile")) {
+            /* sf: one .sfsteer file or a name in com-steering/profiles: vectors, scales, gates */
+            c.engine.steering_profile = need_arg(&i, argc, argv, arg);
         } else if (!strcmp(arg, "--expert-profile")) {
             c.engine.expert_profile_path = need_arg(&i, argc, argv, arg);
         } else if (!strcmp(arg, "--dir-steering-ffn")) {
@@ -1935,6 +1947,15 @@ static cli_config parse_options(int argc, char **argv) {
             directional_steering_scale_set = true;
         } else if (!strcmp(arg, "--dir-steering-attn")) {
             c.engine.directional_steering_attn = parse_float_range(need_arg(&i, argc, argv, arg), arg, -100.0f, 100.0f);
+            directional_steering_scale_set = true;
+        } else if (!strcmp(arg, "--dir-steering-residual")) {
+            /* sf: 401 post-HC-fold residual site; setting it suppresses the ffn=1
+             * default so a residual-hook vector is not also applied at ffn. */
+            c.engine.directional_steering_residual = parse_float_range(need_arg(&i, argc, argv, arg), arg, -100.0f, 100.0f);
+            directional_steering_scale_set = true;
+        } else if (!strcmp(arg, "--dir-steering-residual-2")) {
+            /* sf: rank-2 second orthogonal direction, constant scale at the residual site */
+            c.engine.directional_steering_residual2 = parse_float_range(need_arg(&i, argc, argv, arg), arg, -100.0f, 100.0f);
             directional_steering_scale_set = true;
         } else if (!strcmp(arg, "-t") || !strcmp(arg, "--threads")) {
             c.engine.n_threads = parse_int(need_arg(&i, argc, argv, arg), arg);

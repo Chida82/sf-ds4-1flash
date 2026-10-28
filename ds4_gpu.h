@@ -1223,6 +1223,16 @@ int ds4_gpu_directional_steering_project_tensor(
         uint32_t                rows,
         float                   scale);
 
+/* sf: 419 additive sibling of the projection: x += scale * directions[layer]
+ * on every row (same kernel, no dot). */
+int ds4_gpu_directional_steering_add_tensor(
+        ds4_gpu_tensor       *x,
+        const ds4_gpu_tensor *directions,
+        uint32_t                layer,
+        uint32_t                width,
+        uint32_t                rows,
+        float                   scale);
+
 int ds4_gpu_router_select_tensor(
         ds4_gpu_tensor       *selected,
         ds4_gpu_tensor       *weights,

@@ -14,7 +14,7 @@
 - **THEN** the engine exits naming the valid range
 
 ### Requirement: Combined sources
-When both `--dspark` and `--ngram-spec` are given, each cycle SHALL verify the longer of the two proposals: the lookup draft and DSpark's confident prefix. The counters SHALL report accepted tokens per source.
+When both `--dspark` and `--ngram-spec` are given, each cycle SHALL verify one of the two proposals: the lookup draft or DSpark's. Under the threshold rule it SHALL be the longer one. Under the expected-cost rule it SHALL be the one with the higher expected tokens per expected time, the lookup's acceptance being estimated from its own running acceptance rate. The counters SHALL report accepted tokens per source.
 
 #### Scenario: Both sources
 - **WHEN** a greedy agent-replay request runs with `--dspark --ngram-spec 5`
