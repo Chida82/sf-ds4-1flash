@@ -50,6 +50,7 @@ figures are in the named section.
 | Reading `DS4_*` switches once per process (`280` S1: `getenv` redirected to a snapshot of the `DS4_*` entries) | The `130` profile had `getenv` at 0.5% of decode on the main thread, but two pooled invocations against `main` measured decode 2048 +0.13% (CI across zero) and decode 8192 -0.29% (CI below zero). The lookups are not on the path that sets the token rate. | DS4_* switches classified and reported |
 | Judging a kernel from back-to-back single timeline runs | Thermal drift is larger than the effect: the same baseline read 29 and 39 ms per dispatch. Use the harness's sections mode. | Prefill routed experts after 80 |
 | DSpark speculative decoding (#1073) under streaming, single session | One verify row costs about 0.6 of a decode token bitwise (attention +0.33, MoE +0.30 ms a layer): the rows of one user share few experts. Main projects to about 0.85x on code; an exact batched attention to 0.96x at best. | DSpark verify cost under streaming |
+| N-gram prompt lookup (#1167) under streaming | The verify row costs as in DSpark: on main 0.78-0.98x with #1167s rule, 1.21x only on whole-file rewrites, about 1x on edit blocks, prose and reasoning even with long matches. | Prompt lookup under streaming |
 
 ## Situation 0 (2026-09-27, `main` at `a60b8ee`)
 
@@ -2150,6 +2151,20 @@ Upstream #1073 (`cad7933`) with a scratch patch so its verify rows read experts 
 An exact extra row costs +25 ms wall, of which +18 ms GPU, +5 expert misses and 4-5 ms of reader work: compute, not the SSD. Per layer (synced profile) it splits into attention +0.33 ms and MoE +0.30 ms. One user's rows pick mostly different experts, so batching shares little; DeepInfer's gain comes from ~60 sequences a rank reading the same experts.
 
 **Projection onto main** (34 ms a token, design's code acceptance profile 0.82, 0.67, 0.54, 0.45, 0.37): exact about 0.85x at every k; fast at best 1.15x and not bitwise. With an exact batched attention at #1073's speed (+0.18 a row): c about 0.59, 0.89-0.96x. Even with the routed-expert kernels at full bandwidth: about 1.22x. The gate asked +25% and c(3) <= 0.3: stopped. The full tables are in the change's `tasks.md`.
+
+## Prompt lookup under streaming (2026-10-28, `350-ngram-prompt-lookup`, replay only)
+
+#1167's n-gram prompt-lookup drafter, replayed offline on five greedy answers of the 1017 checkpoint (`--temp 0`, streaming 82GB): the last n tokens are looked up in prompt + answer, the tokens after the most recent match are proposed (up to k), and a cycle keeps the accepted prefix plus the target's own next token. A cycle costs 1 + c x k decode tokens, with c from `310`: 0.6 on #1073's tree, about 0.77 on main. Lookup itself costs about 0. Gain on main:
+
+| answer (prompt ~3K tokens) | n = 3, k = 5 (#1167) | best rule found | known accepted length |
+|---|---|---|---|
+| whole-file rewrite (2048 tokens, 92% copied) | 0.98x | 1.21x (n 6-8, k 16) | 1.27x |
+| search/replace edit blocks (1024) | 0.90x | 0.97x (n 6, k 5) | 1.13x |
+| code explanation, think (1536) | 0.82x | 1.00x (n 6-8, k 5) | 1.05x |
+| prose summary (1024) | 0.80x | 0.98x (n 8, k 5) | 1.04x |
+| reasoning, think (1536) | 0.78x | 0.98x (n 8, k 5) | 1.02x |
+
+Even a perfectly copied answer is held near 1/c, about 1.3x. Edit blocks copy 45% of their tokens, but in short runs that waste rows. Longer matches only remove the loss on prose and reasoning. One prompt per kind, tokens rebuilt from the answer text, and c held at its k = 5 value above k = 5. Stopped with `310`.
 
 ## Adding a row
 

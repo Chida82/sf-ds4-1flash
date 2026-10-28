@@ -1,6 +1,6 @@
 # Proposal
 
-> **Status 2026-10-28: open, owner's call.** `310` measured the verify row this change also uses at about 0.6 of a decode token under streaming. With no drafter (D = 0), a lookup pays off only where k drafts are accepted with probability well above that cost per row; check that against `310`'s "Margin verdict" before starting.
+> **Status 2026-10-28: stopped, never started.** An offline replay on five greedy 1017 answers (one prompt each, ~3K-token prompts) priced each lookup cycle with `310`'s verify row (0.6 of a decode token on #1073's tree, about 0.77 on main). On main, #1167's rule (n = 3, k = 5) gives 0.78-0.98x; the best rule found (longest match 6-8 tokens, k up to 16) 1.21x on a whole-file rewrite, 0.97x on search/replace edit blocks and 0.98-1.00x on code explanation, prose and reasoning. A rule that knew each accepted length in advance would reach 1.27x, 1.13x and 1.02-1.05x. The typical workload gains about 0. Reopen with `320`-`340`, if a verify row costs well under 0.6 of a decode token (`speed-bench/perf-record.md`, "Prompt lookup under streaming").
 
 ## Why
 
