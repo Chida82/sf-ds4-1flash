@@ -49,6 +49,7 @@ figures are in the named section.
 | Decode miss reads through an uncached descriptor (`240`, `F_NOCACHE` on a second fd for the pread pool) | Closed at its gate on `225`'s evidence, not run: the file cache serves 20-28% of today's decode miss reads at about half the drive's time, so the estimate is decode about -0.8% and appends worse. The memory it returns pays only if it becomes cache slots, and `230` S1, the lever that would take it, was dropped. A retry needs that consumer first. | Memory levers |
 | Reading `DS4_*` switches once per process (`280` S1: `getenv` redirected to a snapshot of the `DS4_*` entries) | The `130` profile had `getenv` at 0.5% of decode on the main thread, but two pooled invocations against `main` measured decode 2048 +0.13% (CI across zero) and decode 8192 -0.29% (CI below zero). The lookups are not on the path that sets the token rate. | DS4_* switches classified and reported |
 | Judging a kernel from back-to-back single timeline runs | Thermal drift is larger than the effect: the same baseline read 29 and 39 ms per dispatch. Use the harness's sections mode. | Prefill routed experts after 80 |
+| DSpark speculative decoding (#1073) under streaming, single session | One verify row costs about 0.6 of a decode token bitwise (attention +0.33, MoE +0.30 ms a layer): the rows of one user share few experts. Main projects to about 0.85x on code; an exact batched attention to 0.96x at best. | DSpark verify cost under streaming |
 
 ## Situation 0 (2026-09-27, `main` at `a60b8ee`)
 
@@ -2132,6 +2133,23 @@ rate 0.900 on both:
 | guard decode 2500 | 21.5 | 21.9 | +1.5% | (one run) |
 
 Neutral end to end. Kept as an exception to the keep rule: the step changes one template line to the shuffle variant the causal prefill sort already uses, the output stays bitwise, and the micro-bench shows the kernel saving.
+
+## DSpark verify cost under streaming (2026-10-28, `310-dspark-streaming-evidence`)
+
+Upstream #1073 (`cad7933`) with a scratch patch so its verify rows read experts through the streaming cache (`ds41_moe_batch` resident flag), 1017 checkpoint, `--ssd-streaming-cache-experts 82GB`, ctx 32768, greedy. Drafter: `kernelpool/DeepSeek-V4.1-Flash-MXFP4-GGUF`, `DeepSeek-V4.1-Flash-DSpark.gguf` (revision `57ddd58e`, 8.6 GB).
+
+**Output.** Verify rows are bitwise against one-row decode only with per-row attention and `DS4_METAL_DISABLE_V41_ROWS_MMA=1` (510 of 510 rows). #1073's default (batched attention, Q8_0 MMA rows from 3 rows) is not.
+
+**Verify cost c** (one extra row as a fraction of a decode token), oracle drafts forced to k, three runs per cell, medians:
+
+| frontier | t_decode | D (drafter) | exact c(1..5) | fast c(1, 3, 5) |
+|---|---|---|---|---|
+| 2069 | 43.4 ms | 0.32 | 0.65, 0.64, 0.58, -, 0.58 | 0.39, 0.32, 0.39 |
+| 8408 | 47.9 ms | 0.31 | 0.66, 0.63, 0.60, -, 0.58 | 0.35, 0.31, 0.28 |
+
+An exact extra row costs +25 ms wall, of which +18 ms GPU, +5 expert misses and 4-5 ms of reader work: compute, not the SSD. Per layer (synced profile) it splits into attention +0.33 ms and MoE +0.30 ms. One user's rows pick mostly different experts, so batching shares little; DeepInfer's gain comes from ~60 sequences a rank reading the same experts.
+
+**Projection onto main** (34 ms a token, design's code acceptance profile 0.82, 0.67, 0.54, 0.45, 0.37): exact about 0.85x at every k; fast at best 1.15x and not bitwise. With an exact batched attention at #1073's speed (+0.18 a row): c about 0.59, 0.89-0.96x. Even with the routed-expert kernels at full bandwidth: about 1.22x. The gate asked +25% and c(3) <= 0.3: stopped. The full tables are in the change's `tasks.md`.
 
 ## Adding a row
 

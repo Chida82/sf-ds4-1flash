@@ -1,5 +1,7 @@
 # Proposal
 
+> **Status 2026-10-28: stopped by `310`.** One verify row costs about 0.6 of a decode token under streaming (bitwise configuration); main projects under 1x on code. Reopen only if a verify row can cost at most 0.3 of a decode token on main (`310` "Margin verdict", `speed-bench/perf-record.md` "DSpark verify cost under streaming").
+
 ## Why
 
 After `320`, drafting works only in the CLI and the bench, and only greedy. The owner's real requests reach the server, where most decoding samples: the DeepSeek thinking defaults set a temperature. Only tool-call syntax decodes greedily (`greedy_tool_syntax`). Without sampling support, drafting would help the server only inside tool calls.

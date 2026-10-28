@@ -1,5 +1,7 @@
 # Proposal
 
+> **Status 2026-10-28: stopped by `310`.** One verify row costs about 0.6 of a decode token under streaming (bitwise configuration); main projects under 1x on code. Reopen only if a verify row can cost at most 0.3 of a decode token on main (`310` "Margin verdict", `speed-bench/perf-record.md` "DSpark verify cost under streaming").
+
 ## Why
 
 `320` ports #1073's drafter as written, with the verify rows on the streaming cache. Four things are specific to streaming, and #1073, being resident only, never had to solve them:

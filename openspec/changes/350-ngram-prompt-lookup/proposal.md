@@ -1,5 +1,7 @@
 # Proposal
 
+> **Status 2026-10-28: open, owner's call.** `310` measured the verify row this change also uses at about 0.6 of a decode token under streaming. With no drafter (D = 0), a lookup pays off only where k drafts are accepted with probability well above that cost per row; check that against `310`'s "Margin verdict" before starting.
+
 ## Why
 
 A second draft source needs no weights and no memory. It finds the last few generated tokens earlier in the context and proposes what followed them there. Agent work repeats its context: code edits that copy most of a file, tool results quoted back, and long identifiers. #1167 does this for V4 Flash on the DSpark verifier, and measured on the M5 Max, Q2:

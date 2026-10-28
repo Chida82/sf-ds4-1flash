@@ -140,6 +140,22 @@ The outcomes:
   - A smaller quant is `330`'s work.
   - A file of our own needs a host the owner publishes to. That is the owner's step, outside the engine tree.
 
+### D9. Margin probe, then a clean close (added 2026-10-28, after 3.1)
+
+3.1 measured exact c at about 0.6 and D at 0.32 on #1073's tree, and D7 stops. Before closing, two bounds say whether engine work could reopen the question. The synced stage profile splits one extra exact verify row into attention (+0.33 ms a layer) and MoE (+0.30 ms a layer); every other stage adds about 0.
+
+- **Attention bound (3.2).** #1073's batched attention (not bitwise) costs +0.17 a row. An exact batched kernel can at best match it. Run exact MoE (`DS4_METAL_DISABLE_V41_ROWS_MMA=1`) with the batched attention: that c is the most an exact attention kernel can buy.
+- **MoE bound (3.3).** The extra MoE row reads mostly different experts: one user shares nothing, unlike DeepInfer's ~60 sequences a rank. The open question is how close the few-row expert kernels come to the bandwidth one row reaches. A scratch micro-bench (`microbench-prescreen` method) times the routed-expert kernels at 1, 2, 4 and 6 rows with distinct expert sets, without per-stage syncs. Its best per-row time is the MoE floor.
+- **Theory before the runs.** Both at their bound give about 0.17 + 0.11 = 0.28 ms a row against 0.63: c about 0.27 on the tree, about 0.35 on main (D6), code at k = 3 about 1.23x. That is D7's +10..25% band at best, with c(3) above 0.3, and only if both kernels reach their bound.
+- **Verdict (3.4).** Both bounds measured, projected onto main by D6: +25% or more on code is a margin, and the kernels become a new change (not `320`, which ports #1073 as written). +10..25% goes to the owner. Under +10%: stop.
+
+**Clean close.** The baseline is `d4960f2`, HEAD when 310 resumed (the change was proposed in `7058dbc`). 310 adds nothing to the tree outside its conclusions: every build, patch, script and run lives in scratchpad clones. On stop:
+- delete the scratch clones (`pr1073`, `pr1073-prof`, `batch-main`), the patches, the scripts and the run outputs; the tables in `tasks.md` and the `perf-record.md` section are the record;
+- do not write `speed-bench/dspark-verify-curve.json`: its numbers are in `tasks.md`;
+- ask the owner about the drafter GGUF (8.6 GB in the shared cache);
+- `320`, `330` and `340` depend on 310: each gets a status line naming 310's verdict and its reopen condition (c(3) <= 0.3); their files stay. `350` (n-gram lookup) has D = 0 but the same verify rows, so the same c applies: it gets the same note, and the owner decides it separately;
+- check: `git diff --stat d4960f2 -- . ':!openspec' ':!speed-bench/perf-record.md' ':!docs/upstream-prs.md'` prints nothing.
+
 ## Risks / Trade-offs
 
 - **[The PR under streaming breaks beyond the gate]** → D1's fallback bounds c on main, and the acceptance waits for the port.
@@ -148,20 +164,26 @@ The outcomes:
 - **[The PR's plain decode is slower than main's]** → D6 carries milliseconds, not ratios.
 - **[The GSM8K profile is a reported low]** → It is only a prior. D2's kinds replace it.
 
-## Status: paused 2026-10-28 (read this first in a new session)
+## Status: stopped 2026-10-28 at 3.4
+
+One extra verify row costs about 0.6 of a decode token in the bitwise configuration (3.1), and at least about 0.46 even with an exact batched attention at #1073's speed (3.4). On main that projects to under 1x on code: D7 stops. The DSpark commits of #1073 are `history: verify`. `320`, `330` and `340` carry a status line with the reopen condition; `350` shares the verify cost and is the owner's call. The evidence is in `tasks.md` and in `speed-bench/perf-record.md`, "DSpark verify cost under streaming".
+
+## Earlier status: unblocked 2026-10-28, resumed at 2.1
 
 **Decisions taken (owner approved the download; everything else was decided for the owner and is reversible):**
 - The drafter file is `kernelpool/DeepSeek-V4.1-Flash-MXFP4-GGUF`, `DeepSeek-V4.1-Flash-DSpark.gguf` (8 633 942 016 bytes, revision `57ddd58e`), kept in the shared HF cache. The name `DeepSeek-V4.1-Flash-DSpark-MXFP4.gguf` used earlier does not exist.
-- The scratch clone `scratchpad/pr1073/ds4` (`cad7933`) stays until 7.2. It carries four scratch edits: `g->streaming ||` out of `ds41_draft_init`, the `--ssd-streaming is not compatible with --mtp-model yet` exit removed, `markov_head.markov_w1/w2` bound instead of `embed/head` for V4.1, and a `DBG draft` print.
-- The D1 fallback was tried and does not run. 2.x to 5.x are not attempted again until the blocker below is lifted. 320 to 350 do not start: they read this change's go/no-go.
+- 320 to 350 do not start: they read this change's go/no-go.
 
-**The blocker (engine work, owner's call):** the batched MoE has no streaming expert path, on main and in #1073. With the guards removed, the first verify (or any 2+ session batch) fails with `Metal model range ... is not covered by mapped model views` (layer 1 routed gate/up/down, 1.09 + 1.09 + 1.38 GiB) and `V4.1 session batch failed at layer 1`. One session decodes fine. The nearest existing mechanism is the prefill sweeps' two explicit layer buffers.
+**The earlier blocker was misread.** The Metal batch kernel (`ds4_gpu_routed_moe_batch_tensor`) already has a streaming branch, `use_iq2_batch_selected_addr`: the union of the rows' selected experts through the expert cache, IQ2_XXS/Q2_K, 2..800 rows, with the same `mul_mv_addr_*` kernels as one-row streaming decode. The V4.1 graph never took it, because `ds41_moe_batch` passed `force_resident=true`. Upstream has the same gap (and refuses `--mtp-model` with `--ssd-streaming` for every model).
 
-**Options for the owner:**
-1. Give the batched MoE a streaming path (rows read the union of their experts through the cache or the layer buffers), then resume at 2.x. Largest cost; the only way to real acceptance and verify-cost numbers.
-2. Stop at the evidence in hand: D7 "stop", the DSpark lines become `history` with this blocker named. Needs the owner's word, since the gate was written for measured numbers.
-3. Measure only offline: redo 6.2 with a trace of 3000+ decode tokens (the 1024-token one never evicts), to bound the miss term of c without a working drafter.
+**Measured on main (scratch clone of `d4960f2`, 1017 checkpoint, streaming, cache 75.97 GiB dynamic):** the session-batch gate removed and `ds41_moe_batch` given a `resident` flag (`!streaming` for the session batch, `true` for the prefill sweep, which calls the same function). `test_metal_session_batch` (tolerance 0, 2 sessions, 6 steps plus the mixed batch):
+- batched vocabulary head (default): FAIL, max_abs 3.8e-6 (1 ulp at |logit| 32..64), top-1 identical. The Q8_0 head is excluded from `decode_rows_exact` and runs the generic matmul;
+- `DS4_METAL_DISABLE_V41_BATCH_HEAD=1` (head per row): **PASS, max_abs 0**.
 
-**What is done:** 1.1 (plain streaming baseline at `cad7933`: prefill 6.48 t/s, generation 13.49 t/s, cold run), 1.2 and 1.3 (failed under streaming). Findings and numbers are in `tasks.md`, "Findings during 1.2/1.3". 6.2 is partial and unticked.
+So rows up to 8 are bitwise with one-row decode, the `70` fusions included, once the head runs per row: D3's "bitwise only in a reduced configuration". The test's speed line (batch 10.0, serial 35.5 rows/s) compares a cold batch with a warm serial run and is not a c figure.
 
-**Resume checklist:** read this section and the findings; confirm the choice among options 1-3; keep `caffeinate -i` and one model process at a time; no push or commit without a request.
+**The #1073 scratch clone is rebuilt** (`scratchpad/pr1073` of session `87f36367`, at `cad7933`, built). Its patch (`pr1073-streaming-verify.patch` beside it): `g->streaming` out of `ds41_draft_init`; the `--ssd-streaming is not compatible with --mtp-model yet` exit removed; `markov_w1/w2` bound for V4.1; a `resident` flag through `ds41_moe_batch_experts`/`ds41_moe_batch`, `!streaming` only in `ds41_graph_step_batch` (the drafter's own MoE and the prefill sweep keep `true`). The server's session-batch gate is left in place: only verify batches under streaming. Run every 2.x-5.x step with `DS4_METAL_DISABLE_V41_BATCH_HEAD=1`.
+
+**What is done:** 1.1 (plain streaming baseline at `cad7933`: prefill 6.48 t/s, generation 13.49 t/s, cold run), 1.2 and 1.3 (failed under streaming before the fix above). Findings are in `tasks.md`, "Findings during 1.2/1.3". 6.2 is partial and unticked.
+
+**Resume checklist:** if the scratchpad is gone, re-clone `pr/1073` at `cad7933` and apply the patch described above; first run 1.3 again (256 tokens, `--dspark`, streaming) to confirm verify runs; then 2.1. Keep `caffeinate -i` and one model process at a time; no push or commit without a request.

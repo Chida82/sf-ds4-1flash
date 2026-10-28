@@ -1,5 +1,7 @@
 # Proposal
 
+> **Status 2026-10-28: stopped by `310`.** One verify row costs about 0.6 of a decode token under streaming (bitwise configuration); main projects under 1x on code. Reopen only if a verify row can cost at most 0.3 of a decode token on main (`310` "Margin verdict", `speed-bench/perf-record.md` "DSpark verify cost under streaming").
+
 ## Why
 
 This change starts only when `310`'s gate says go. It brings V4.1's own drafter into this child and makes it run under SSD streaming, the child's only mode. The aim is a faster single request on content the drafter predicts well, such as code, agents and tool calls. It is opt-in, and greedy output stays the same.
