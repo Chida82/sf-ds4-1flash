@@ -2785,11 +2785,11 @@ int ds4_tp_worker_run(ds4_engine *engine, const ds4_tp_options *opt) {
 
     ds4_tp *tp = NULL;
     if (!ds4_tp_create(&tp, opt, &id, err, sizeof(err))) {
-        ds4_log(stderr, DS4_LOG_ERROR, "tp worker: %s", err);
+        ds4_log(stderr, DS4_LOG_ERROR, "tp worker: %s\n", err);
         return 1;
     }
     if (!ds4_engine_tp_bind(engine, tp, err, sizeof(err))) {
-        ds4_log(stderr, DS4_LOG_ERROR, "tp worker: %s", err);
+        ds4_log(stderr, DS4_LOG_ERROR, "tp worker: %s\n", err);
         ds4_tp_free(tp);
         return 1;
     }
@@ -2798,24 +2798,24 @@ int ds4_tp_worker_run(ds4_engine *engine, const ds4_tp_options *opt) {
     float *logits = ds4_engine_tp_vocab_split(engine) ?
         malloc((size_t)vocab * sizeof(*logits)) : NULL;
     if (ds4_engine_tp_vocab_split(engine) && !logits) {
-        ds4_log(stderr, DS4_LOG_ERROR, "tp worker: logits buffer allocation failed");
+        ds4_log(stderr, DS4_LOG_ERROR, "tp worker: logits buffer allocation failed\n");
         ds4_engine_tp_unbind(engine);
         ds4_tp_free(tp);
         return 1;
     }
-    ds4_log(stderr, DS4_LOG_OK, "tp worker ready for mirrored sessions");
+    ds4_log(stderr, DS4_LOG_OK, "tp worker ready for mirrored sessions\n");
 
     int rc = 0;
     ds4_tokens prompt = {0};
     while (1) {
         ds4_tp_command command;
         if (!ds4_tp_recv_command(tp, &command, err, sizeof(err))) {
-            ds4_log(stderr, DS4_LOG_ERROR, "tp worker: %s", err);
+            ds4_log(stderr, DS4_LOG_ERROR, "tp worker: %s\n", err);
             rc = 1;
             break;
         }
         if (command.type == DS4_TP_FRAME_STOP) {
-            ds4_log(stderr, DS4_LOG_DEFAULT, "tp worker: leader finished");
+            ds4_log(stderr, DS4_LOG_DEFAULT, "tp worker: leader finished\n");
             ds4_tp_command_free(&command);
             break;
         }
@@ -2858,7 +2858,7 @@ int ds4_tp_worker_run(ds4_engine *engine, const ds4_tp_options *opt) {
         if (command.type != DS4_TP_FRAME_EVAL_BATCH &&
             command.type != DS4_TP_FRAME_MIXED_BATCH && !session) {
             ds4_log(stderr, DS4_LOG_ERROR,
-                    "tp worker: unknown session %llu for frame %d",
+                    "tp worker: unknown session %llu for frame %d\n",
                     (unsigned long long)command.session_id,
                     (int)command.type);
             ds4_tp_command_free(&command);
@@ -2880,7 +2880,7 @@ int ds4_tp_worker_run(ds4_engine *engine, const ds4_tp_options *opt) {
             if (!ds4_tp_send_command_ack(tp, command.session_id, sync_rc)) {
                 rc = 1;
             } else if (sync_rc != 0 && sync_rc != DS4_SESSION_SYNC_INTERRUPTED) {
-                ds4_log(stderr, DS4_LOG_ERROR, "tp worker sync: %s", err);
+                ds4_log(stderr, DS4_LOG_ERROR, "tp worker sync: %s\n", err);
                 rc = 1;
             } else if (sync_rc == 0 && ds4_engine_tp_vocab_split(engine) &&
                        !tp_worker_send_logits(tp, session, logits, vocab)) {
@@ -2888,7 +2888,7 @@ int ds4_tp_worker_run(ds4_engine *engine, const ds4_tp_options *opt) {
             }
         } else if (command.type == DS4_TP_FRAME_EVAL) {
             if (ds4_session_eval(session, command.value, err, sizeof(err)) != 0) {
-                ds4_log(stderr, DS4_LOG_ERROR, "tp worker eval: %s", err);
+                ds4_log(stderr, DS4_LOG_ERROR, "tp worker eval: %s\n", err);
                 rc = 1;
             }
         } else if (command.type == DS4_TP_FRAME_REWIND) {
@@ -2929,7 +2929,7 @@ int ds4_tp_worker_run(ds4_engine *engine, const ds4_tp_options *opt) {
                 rc = 1;
             } else if (batch_rc != 0) {
                 ds4_log(stderr, DS4_LOG_ERROR,
-                        "tp worker batch: %s", err[0] ? err : "failed");
+                        "tp worker batch: %s\n", err[0] ? err : "failed");
                 rc = 1;
             } else if (ds4_engine_tp_vocab_split(engine)) {
                 if (prefill &&
@@ -2943,7 +2943,7 @@ int ds4_tp_worker_run(ds4_engine *engine, const ds4_tp_options *opt) {
             }
             free(items);
         } else {
-            ds4_log(stderr, DS4_LOG_ERROR, "tp worker: unexpected frame %d",
+            ds4_log(stderr, DS4_LOG_ERROR, "tp worker: unexpected frame %d\n",
                     (int)command.type);
             rc = 1;
         }
