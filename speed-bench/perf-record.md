@@ -51,6 +51,7 @@ figures are in the named section.
 | Judging a kernel from back-to-back single timeline runs | Thermal drift is larger than the effect: the same baseline read 29 and 39 ms per dispatch. Use the harness's sections mode. | Prefill routed experts after 80 |
 | DSpark speculative decoding (#1073) under streaming, single session | One verify row costs about 0.6 of a decode token bitwise (attention +0.33, MoE +0.30 ms a layer): the rows of one user share few experts. Main projects to about 0.85x on code; an exact batched attention to 0.96x at best. | DSpark verify cost under streaming |
 | N-gram prompt lookup (#1167) under streaming | The verify row costs as in DSpark: on main 0.78-0.98x with #1167s rule, 1.21x only on whole-file rewrites, about 1x on edit blocks, prose and reasoning even with long matches. | Prompt lookup under streaming |
+| Approximate decoder prefill (`530`, DeepInfer's YOCO truncation: layers 21-39 on the last 128 rows of a sweep), opt-in, output not identical | A layer's expert read is paid whatever the row count (128 rows touch most of its experts): ceiling 0 on `cold-2500` and `cold-5000`, about 3% of ttft on `cold-10000`. Re-evaluate without SSD streaming, where the read-free ceiling is 9-23%. | Approximate decoder prefill ceiling |
 
 ## Situation 0 (2026-09-27, `main` at `a60b8ee`)
 
@@ -2165,6 +2166,22 @@ An exact extra row costs +25 ms wall, of which +18 ms GPU, +5 expert misses and 
 | reasoning, think (1536) | 0.78x | 0.98x (n 8, k 5) | 1.02x |
 
 Even a perfectly copied answer is held near 1/c, about 1.3x. Edit blocks copy 45% of their tokens, but in short runs that waste rows. Longer matches only remove the loss on prose and reasoning. One prompt per kind, tokens rebuilt from the answer text, and c held at its k = 5 value above k = 5. Stopped with `310`.
+
+## Approximate decoder prefill ceiling (2026-10-28, `530-v41-compact-decoder-optin` task 1.1)
+
+`main` at `a09efbb`, 1017 checkpoint, `sf-ds4-1flash-bench` with the harness flags (`82GB`, ctx 32768, 16 generated tokens), one run per shape under `DS4_METAL_V41_STAGE_PROFILE=1 DS4_METAL_GRAPH_PREFILL_PROFILE=1`. Per batched layer step: `map` is the wait for the layer's experts, `encode` the GPU work. K = 128, layers 21-39.
+
+| Shape | ttft (profiled run) | Batched sweeps measured | Batched wall (map / encode) | Decoder steps, read wait above 1 ms | Ceiling ignoring reads | Ceiling with reads |
+|---|---|---|---|---|---|---|
+| cold-2500 | 29.7 s | one 2048-row sweep (40 layers), then 452 tokens at decode rate | 13.8 s (0.3 / 13.2) | 1 of 19 | 5.7 s (19%) | 0 |
+| cold-5000 | 44.7 s | 2048-row tiles at 0 (23 layer steps) and 2048 (40), then 904 tokens | 14.2 s (1.2 / 12.6) | 16 of 21 | 3.9 s (9%) | 0 |
+| cold-10000 | 27.2 s | 8192-row wide sweep in 4096-row chunks with the decoder suffix tiles (2048 down to 1 row), then a 1808-row sweep | 25.2 s (1.1 / 23.0) | 28 of 40 | 6.2 s (23%) | 0.7 s (3%) |
+
+- **"Ceiling with reads"** keeps every layer's expert read (128 rows touch most of a layer's experts) and takes one layer's read as the median wall of the read-bound steps (364, 280 and 180 ms per shape). A step saves `encode - max(read, encode * K / rows)` only when it was compute-bound. The stage profile ends the command buffer at each stage, so its compute runs high and this ceiling is itself optimistic.
+- **Against the earlier decomposition.** The decoder suffix of the 10000 run sums to about 4.6 s, against "about 4 s"; the 2048-row sweep's stages sum to 13.2 s, above the 9.1-10.2 s recorded, under the same profile.
+- **Why the read wins.** As in "Prefill routed experts after 80": reading a layer's experts costs about 250-330 ms against about 100 ms of unprofiled GPU work on 2048-row sweeps, so a shorter decoder only lengthens the read wait. cold-2500 also spends 16 of its 30 s in the token-by-token tail, which the change does not touch.
+- **Verdict for task 1.2.** cold-2500 and cold-5000: no ceiling. cold-10000: at most about 3% of time to first token, above the harness's resolution on ttft, so by D1 the change does not stop by itself: the ceiling goes to the owner before any code. The typical mix's end-to-end ceiling is well under 1% (answers of 200-2000 tokens dominate).
+- **Decision (2026-10-29): no-go, change archived.** About 3% on one shape does not pay for the exception to identical output. Re-evaluate without SSD streaming (main weights resident, or two boxes with TP/RDMA): the prefill is then compute-bound and the "ceiling ignoring reads" column is the relevant one.
 
 ## Adding a row
 

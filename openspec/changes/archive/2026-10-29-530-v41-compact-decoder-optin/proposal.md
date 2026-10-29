@@ -1,5 +1,7 @@
 # Proposal
 
+> **Status 2026-10-29: no-go after the go/no-go, never implemented.** Under SSD streaming each decoder layer's expert read is paid whatever the row count, so the ceiling on time to first token is 0 on `cold-2500` and `cold-5000` and about 3% on `cold-10000`; the typical mix gains well under 1%. That does not justify the one exception to identical output. Re-evaluate without SSD streaming (main weights resident on a 256 GB or larger machine, or two boxes with TP/RDMA): there the prefill is compute-bound and the read-free ceiling, 19 / 9 / 23% of ttft on the same shapes, is the relevant one (`speed-bench/perf-record.md`, "Approximate decoder prefill ceiling").
+
 ## Why
 
 V4.1's decoder layers (20-39) take their compressed KV from layer 20's input. In prefill they are only needed for two things:
