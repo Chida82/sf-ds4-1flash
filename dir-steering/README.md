@@ -16,7 +16,7 @@ With no steering file or zero scales, ds4 follows the normal inference path.
 when `--dir-steering-file` is passed, exactly as it does upstream:
 
 ```text
-ds4: V4.1 requires Metal or single-GPU CUDA per rank (optional network tensor parallelism); DSpark, steering and legacy diagnostics are not supported (maximum context 1048576)
+ds4: V4.1 requires Metal, single-GPU CUDA or ROCm (network TP on Metal/CUDA); steering and legacy diagnostics are not supported (maximum context 1048576)
 ```
 
 `--allow-v41-steering` on the CLI or the server lifts only this refusal, on

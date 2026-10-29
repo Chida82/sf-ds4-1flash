@@ -2224,6 +2224,7 @@ static ds4_tensor *model_find_tensor(const ds4_model *m, const char *name) {
     return NULL;
 }
 
+/* sf-ablate(specdec): upstream's V4.1 DSpark support-model family check dropped; the DSpark support loader is not in this child */
 #ifndef DS4_NO_GPU
 #endif
 
@@ -3181,6 +3182,7 @@ typedef struct {
     ds4_layer_weights layer[DS4_MAX_LAYER];
 } ds4_weights;
 
+/* sf-ablate(specdec): upstream's V4.1 drafter fields (n_experts, n_experts_used, v41) dropped with the DSpark weight summary */
 /* =========================================================================
  * Fixed Weight Binding and Model Validation.
  * =========================================================================
@@ -3846,6 +3848,7 @@ static void weights_validate_layout(
     }
 }
 
+/* sf-ablate(specdec): upstream's V4.1 128-expert DSpark layer validation dropped; no DSpark support GGUF is validated here */
 static void config_expect_u32(const char *name, uint32_t got, uint32_t expected) {
     if (got == expected) return;
     fprintf(stderr, "ds4: expected %s=%u for %s, got %u\n",
@@ -4791,6 +4794,7 @@ static DS4_MAYBE_UNUSED bool weights_model_map_output_spans(
     return model_map_span_vec_finish(spans);
 }
 
+/* sf-ablate(specdec): upstream's V4.1 DSpark drafter metadata binding dropped; no DSpark support GGUF is bound here */
 static void weights_free(ds4_weights *w) {
     memset(w, 0, sizeof(*w));
 }
@@ -11817,6 +11821,7 @@ static bool sample_build_probabilities(const float *logits,
                                        float top_p,
                                        float min_p,
                                        float *probs);
+/* sf-ablate(specdec): upstream widened the residual-sampler forward declaration to DS4_HAS_DEEPSEEK41_GPU for V4.1 DSpark; the sampler is gone here */
 #endif
 
 /* =========================================================================
@@ -22878,6 +22883,8 @@ typedef struct {
 #undef DS41_ROW_FIELD
 } ds41_prefill_row;
 
+/* sf-ablate(specdec): upstream's ds41_dspark forward declarations (V4.1 DSpark draft graph) dropped; this child has no speculative decoding */
+
 static uint32_t ds41_prefill_limit(uint32_t ctx) {
     const uint32_t limit = ctx < 8192u || getenv("DS4_METAL_DISABLE_V41_WIDE_CHUNK") ? 2048u :
         (ctx < 16384u || getenv("DS4_METAL_DISABLE_V41_8K_CHUNK")) ? 4096u : DS41_PREFILL_CAP;
@@ -22943,6 +22950,7 @@ typedef struct {
     uint32_t tp_world, tp_rank;
     ds4_gpu_tensor *tp_logits_half;
     ds4_gpu_tensor **tp_out, **tp_in;
+    /* sf-ablate(specdec): upstream's tp_batch_out/tp_batch_in (RDMA verify-window views) dropped; only DSpark verification binds them */
     const ds4_vision_span *images;
     size_t image_count;
     ds4_engram_layout engram;
@@ -22954,6 +22962,7 @@ typedef struct {
     ds4_gpu_tensor *window[40];
     ds4_gpu_tensor *compressed[4], *index_cache[4];
     ds4_gpu_tensor *previous_kv[4], *previous_score[4];
+    /* sf-ablate(specdec): upstream's verify_previous_kv/score, verify_prefix and dspark fields and the CUDA engram_reader dropped; no DSpark verification or CUDA here */
     ds4_gpu_tensor *engram_q_norm[2], *engram_k_norm[2];
     ds4_gpu_tensor *residual_dirs;  /* sf: 401 per-layer steering directions (40x5120), NULL when off */
     float residual_scale;           /* sf: 401 residual_stream_post_layer scale (0 = off) */
@@ -22979,6 +22988,7 @@ static bool ds41_read_array(const ds4_model *m, const char *key, uint32_t type,
 
 static void ds41_graph_free(ds41_gpu_graph *g) {
     if (!g) return;
+    /* sf-ablate(specdec): ds41_dspark_free, the CUDA engram_reader free and the CUDA decode-graph invalidate dropped; none exist in this Metal child */
     ds4_gpu_tensor_free(g->tp_logits_half);
     for (uint32_t i = 0; g->rows_view && i < g->prefill_cap; i++) {
 #define DS41_ROW_FREE(name, count) ds4_gpu_tensor_free(g->rows_view[i].name);
@@ -23324,17 +23334,22 @@ static bool ds41_sum_partial(ds41_gpu_graph *g, ds4_gpu_tensor *x,
 
 static bool ds41_norm(ds4_gpu_tensor *out, const ds4_gpu_tensor *in,
                       const ds4_model *m, const ds4_tensor *weight) {
+    /* sf-ablate(cuda): upstream's CUDA ds4_gpu_dsv41_norm fusion (DS4_CUDA_DISABLE_V41_POINTWISE_FUSION) dropped; Metal rounds to BF16 inside this kernel */
     return ds4_gpu_rms_norm_weight_bf16_tensor(out, in, m->map, m->size,
         weight->abs_offset, (uint32_t)weight->dim[0], DS4_RMS_EPS) != 0;
 }
 
+/* sf-ablate(cuda): upstream's ds41_hc_sum/ds41_hc_expand wrappers (CUDA BF16 store fusion, unfused on Apple) dropped; the Metal call sites keep this child's fused kernels */
+
 static bool ds41_sum_partial_batch(ds41_gpu_graph *g, ds4_gpu_tensor *x,
-                                   uint32_t il, uint32_t count) {
+                                   uint32_t il, uint32_t gate, uint32_t count) {
     if (g->tp_world != 2) return true;
+    const uint64_t bytes = (uint64_t)count * DS4_N_EMBD * sizeof(float);
+    /* sf-ablate(specdec): upstream's verify_prefix RDMA verify-window branch (the only reader of gate) dropped; no DSpark verification here */
+    (void)gate;
     /* Q is dead after attention; its expert-output alias is dead after the
      * routed reduction. Reuse it for the peer, without another large buffer. */
     ds4_gpu_tensor *peer = g->batch.q;
-    const uint64_t bytes = (uint64_t)count * DS4_N_EMBD * sizeof(float);
     if (!ds4_gpu_tp_big_gate_encode(il, count, x, peer, bytes)) return false;
     return ds4_gpu_add_tensor(x, g->tp_rank ? peer : x,
         g->tp_rank ? x : peer, count * DS4_N_EMBD) != 0;
@@ -23524,6 +23539,7 @@ static bool ds41_attention_publish(ds41_gpu_graph *g, const ds4_model *m,
                 !ds4_gpu_dsv41_pool2(g->latent, g->pool_kv, g->pool_score,
                     g->previous_kv[owner], g->previous_score[owner], 512, 1, pos)) return false;
         } else if (!ds4_gpu_tensor_copy(g->latent, 0, g->pool_kv, 0, 512u * 4u)) return false;
+        /* sf-ablate(specdec): upstream's verify_previous_kv/score snapshot dropped; only a DSpark verify block reads it */
         if ((pos + 1u) % ratio == 0) {
             const uint32_t rope_pos = pos + 1u - ratio;
             if (!ds41_norm(g->latent, g->latent, m, l->attn_compressor_norm) ||
@@ -23544,6 +23560,9 @@ static bool ds41_attention_candidates(ds41_gpu_graph *g, uint32_t il) {
     if (n_comp && ds41_index_source(il)) {
         if (il == 20) {
             const uint32_t blocks = (n_comp + 7u) / 8u, top = blocks < 2048u ? blocks : 2048u;
+            /* Below the block cap every block survives. Their sorted order
+             * is unused; only the mask is consumed by subsequent layers. */
+            if (top == blocks) return ds4_gpu_tensor_fill_f32(g->block_mask, 0, blocks) != 0;
             if (!ds4_gpu_dsv41_candidate_blocks(g->block_scores, g->index_scores, n_comp, 1, pos, ratio) ||
                 !ds4_gpu_indexer_topk_tensor(g->block_selected, g->block_scores, blocks, 1, top) ||
                 !ds4_gpu_dsv4_topk_mask_tensor(g->block_mask, g->block_selected, blocks, 1, top)) return false;
@@ -23649,6 +23668,7 @@ static bool ds41_attention(ds41_gpu_graph *g, const ds4_model *m,
            ds41_sum_partial(g, g->block, il, DS4_TP_GATE_ATTN) && ds41_bf16(g->block, DS4_N_EMBD);
 }
 
+/* sf-ablate(cuda): ds41_shared_balance_enabled/ds41_balance_shared (CUDA TP shared-expert balance) dropped; constant false on Apple */
 #ifdef __APPLE__
 static bool ds41_router_one_off(void) {
     static int cache = -1;
@@ -23697,7 +23717,7 @@ static bool ds41_moe_partial(ds41_gpu_graph *g, const ds4_model *m,
         !ds4_gpu_split_readback(g->selected, DS4_N_EXPERT_USED)) return false;
 #endif
     const bool shared_here = !shared_owner || g->tp_rank == (il & 1u);
-    /* sf-ablate(cuda): shared_queued and ds4_gpu_dsv41_shared_start are CUDA-only; on Metal the shared expert always runs here */
+    /* sf-ablate(cuda): shared_queued, ds4_gpu_dsv41_shared_start, its TP shared balance and the ROCm selected-expert load are CUDA/ROCm-only; on Metal the shared expert always runs here */
     const bool shared_fused = shared_here &&
         l->ffn_gate_shexp->type == DS4_TENSOR_Q8_0 && l->ffn_up_shexp->type == DS4_TENSOR_Q8_0 &&
         ds4_gpu_dsv41_shared_swiglu(g->shared_mid, g->shared_gate, g->shared_up, m->map, m->size,
@@ -23763,12 +23783,14 @@ static bool ds41_graph_before_attention(ds41_gpu_graph *g, const ds4_model *m,
             return false;
     }
     return ds41_hc_mix(g, m, l, false, il ? g->ffn_split : g->pre, il);
+    /* sf-ablate(specdec): upstream's ds41_dspark_capture and unfused ds41_hc_sum dropped; no DSpark here, and ds41_hc_mix above already fuses the sum and norm on Metal */
 }
 
 static bool ds41_graph_after_attention(ds41_gpu_graph *g, const ds4_model *m,
                                       const ds4_layer_weights *l) {
     return ds4_gpu_hc_expand_split_bf16_tensor(g->after_attn, g->block, g->residual, g->attn_split, DS4_N_EMBD, DS4_N_HC) &&
         ds41_hc_mix(g, m, l, true, g->attn_split, 0u);
+    /* sf-ablate(cuda): upstream's ds41_hc_expand/ds41_hc_sum wrappers (CUDA BF16 store fusion) dropped; the Metal kernels above already store BF16 */
 }
 
 static bool ds41_graph_before_moe(ds41_gpu_graph *g, const ds4_model *m,
@@ -23779,6 +23801,7 @@ static bool ds41_graph_before_moe(ds41_gpu_graph *g, const ds4_model *m,
 
 static bool ds41_norm_batch(ds4_gpu_tensor *out, const ds4_gpu_tensor *in,
                             const ds4_model *m, const ds4_tensor *weight, uint32_t count) {
+    /* sf-ablate(cuda): upstream's CUDA ds4_gpu_dsv41_norm row fusion dropped; Metal-only child */
     return ds4_gpu_rms_norm_weight_rows_tensor(out, in, m->map, m->size,
         weight->abs_offset, (uint32_t)weight->dim[0], count, DS4_RMS_EPS) &&
         ds4_gpu_dsv41_quantize(out, (uint32_t)weight->dim[0], count, DS4_V41_BF16);
@@ -24087,6 +24110,7 @@ static bool ds41_attention_batch(ds41_gpu_graph *g, const ds4_model *m,
             (n_raw - kept + part) * row_bytes, (kept - part) * row_bytes));
 }
 
+/* sf-ablate(cuda): upstream's ds41_hc_expand wrapper dropped here; this child's expand already stores BF16 and fuses the shared down projection on Metal */
 /* `carry` keeps the block's split in `pre`: decode needs it after the last
  * layer, for the next token and the head; the sweep's rows every layer.
  * With `l` the shared expert's down projection is still pending and lands
@@ -24112,6 +24136,7 @@ static bool ds41_graph_layer(ds41_gpu_graph *g, const ds4_model *m,
         ds41_graph_after_moe(g, m, l, il + 1u == DS4_N_LAYER);
 }
 
+/* sf-ablate(specdec): upstream added g->dspark to the TP shared-owner decode-layer gate; that CUDA decode layer and DSpark are not in this child */
 static bool ds41_route_batch(ds41_gpu_graph *g, const ds4_model *m,
                               const ds4_layer_weights *l, uint32_t count) {
     ds41_prefill_row *b = &g->batch;
@@ -24153,6 +24178,7 @@ static bool ds41_moe_batch(ds41_gpu_graph *g, const ds4_model *m,
     ds41_prefill_row *b = &g->batch;
     const uint64_t gate_row = routed_expert_row_bytes(l->ffn_gate_exps);
     const uint64_t down_row = routed_expert_row_bytes(l->ffn_down_exps);
+    /* sf-ablate(cuda): upstream's balance_shared (CUDA TP shared-expert balance, constant false on Apple) and its shared mask dropped; grouping kept as main */
     bool mid_f16 = false;
     return ds41_matmul_batch(b->route_logits, m, l->ffn_gate_inp, b->norm, count, false) &&
         ds41_route_batch(g, m, l, count) &&
@@ -24173,7 +24199,7 @@ static bool ds41_moe_batch(ds41_gpu_graph *g, const ds4_model *m,
             il, count, &mid_f16, true)) &&
         (!shared_owner || g->tp_rank != (il & 1u) ||
             ds4_gpu_add_tensor(b->routed, b->routed, b->shared, count * DS4_N_EMBD)) &&
-        ds41_sum_partial_batch(g, b->routed, il, count);
+        ds41_sum_partial_batch(g, b->routed, il, DS4_TP_GATE_FFN, count);
 }
 
 static DS4_MAYBE_UNUSED bool ds41_graph_step(ds41_gpu_graph *g, const ds4_model *m,
@@ -24182,6 +24208,7 @@ static DS4_MAYBE_UNUSED bool ds41_graph_step(ds41_gpu_graph *g, const ds4_model 
     uint32_t ids[2][DS4_ENGRAM_COLS];
     ds4_engram_history next_history = g->history;
     if (!ds41_hash_tokens(g, &next_history, &token, 1, &ids[0][0])) return false;
+    /* sf-ablate(cuda): upstream's pthread engram_reader overlap (DS4_DISABLE_V41_ENGRAM_OVERLAP) dropped; Metal overlaps these reads with ds4_engram_read_batch_start below */
     /* The rows come from an uncached file: workers read them while the first
      * layers encode; each table joins just before its layer uploads it. */
     ds4_engram_prefetch *reads[2] = {NULL, NULL};
@@ -25131,6 +25158,7 @@ static bool ds41_graph_prefill_sweep(ds41_gpu_graph *g, const ds4_model *m,
             if (!g->encoder_resident || il >= 20)
                 ok = metal_graph_stream_prepare_join_layer(NULL, m, w, il, first_count,
                         false, true, false, false, &prepare, 1);
+            /* sf-ablate(cuda): upstream's ROCm per-layer expert load and CUDA DS4_CUDA_ENABLE_SSD_PREFETCH whole-layer prefetch dropped; Metal maps the layer below */
             if (ok) ok = metal_graph_stream_map_layer(m, w, il);
             /* CUDA reads into its device cache: warming mmap would read twice. */
             if (ok && il + 1u < (encoder_only ? 20u : DS4_N_LAYER) &&
@@ -25144,6 +25172,7 @@ static bool ds41_graph_prefill_sweep(ds41_gpu_graph *g, const ds4_model *m,
             if (il == 20u)
                 ok = ds41_decoder_prepare(g, m, &w->layer[il], il, initial_start,
                     0, total_count, true, batch_hc, batch_attention, cancel, cancel_ud);
+            /* sf-ablate(specdec): upstream's 128 extra DSpark capture rows dropped; no drafter reads them here */
             const uint32_t needed = 1u + (DS4_N_LAYER - 1u - il) * 127u;
             first = total_count - needed;
             /* short sweeps prune whole tiles and warm a complete one, keeping
@@ -25261,7 +25290,7 @@ static bool ds41_graph_prefill_sweep(ds41_gpu_graph *g, const ds4_model *m,
                     ok = ds4_gpu_dsv41_attention_output_tp_batch(g->batch.block, g->batch.low,
                         m->map, m->size, l->attn_output_a->abs_offset, l->attn_output_b->abs_offset,
                         g->batch.heads, count, g->tp_rank) &&
-                        ds41_sum_partial_batch(g, g->batch.block, il, count) &&
+                        ds41_sum_partial_batch(g, g->batch.block, il, DS4_TP_GATE_ATTN, count) &&
                         ds4_gpu_dsv41_quantize(g->batch.block, DS4_N_EMBD, count, DS4_V41_BF16);
                 } else if (ok && l->attn_output_b->type == DS4_TENSOR_Q8_0) {
                     ok = ds4_gpu_dsv41_attention_output_batch(g->batch.block, g->batch.low,
@@ -25345,6 +25374,7 @@ static bool ds41_graph_prefill_sweep(ds41_gpu_graph *g, const ds4_model *m,
         }
     }
     if (!ds41_engram_prefetch_join(&engram_prefetch, !ok)) ok = false;
+    /* sf-ablate(cuda): upstream's ROCm layer-cache release and CUDA prefetch finish dropped; Metal-only child */
     if (!metal_graph_stream_prepare_join_all(&prepare, 1)) ok = false;
     if (explicit_experts && !ds41_prefill_expert_buffers_free(expert_slots)) ok = false;
     if (g->streaming && !metal_graph_stream_map_decode_static_all(m, w)) ok = false;
@@ -25441,8 +25471,14 @@ static DS4_MAYBE_UNUSED bool ds41_graph_step_batch(ds41_gpu_graph *const *graphs
                     sizeof(s->rows[table]));
             }
         }
+        /* sf-ablate(specdec): upstream's per-row ds41_dspark_capture loop dropped; no drafter here */
         if (ok) ok = ds41_before_attention_batch(g, &active, model, l, il, rows) &&
             ds41_attention_project_batch(g, model, l, rows);
+        /* sf-ablate(rocm): upstream's DS4_ROCM_BUILD guard around batch_output dropped; Metal-only child */
+        const bool batch_output =
+            l->attn_output_a->type == DS4_TENSOR_Q8_0 &&
+            l->attn_output_b->type == DS4_TENSOR_Q8_0 &&
+            !getenv("DS4_DISABLE_V41_BATCH_OUTPUT");
         for (int i = 0; ok && i < count; i++) {
             ds41_gpu_graph row = *graphs[i];
             row.pos = positions[i];
@@ -25452,9 +25488,17 @@ static DS4_MAYBE_UNUSED bool ds41_graph_step_batch(ds41_gpu_graph *const *graphs
             row.q = queries[i];
             row.heads = heads[i];
             ok = ds41_attention(&row, model, l, il, true) &&
-                ds41_attention_output(&row, model, l, -1);
+                (batch_output || ds41_attention_output(&row, model, l, -1));
         }
-        if (ok) ok = ds41_sum_partial_batch(g, active.block, il, rows);
+        if (ok && batch_output)
+            ok = g->tp_world == 2 ?
+                ds4_gpu_dsv41_attention_output_tp_batch(active.block, active.low,
+                    model->map, model->size, l->attn_output_a->abs_offset,
+                    l->attn_output_b->abs_offset, g->batch.heads, rows, g->tp_rank) :
+                ds4_gpu_dsv41_attention_output_batch(active.block, active.low,
+                    model->map, model->size, l->attn_output_a->abs_offset,
+                    l->attn_output_b->abs_offset, g->batch.heads, rows);
+        if (ok) ok = ds41_sum_partial_batch(g, active.block, il, DS4_TP_GATE_ATTN, rows);
         if (ok) ok = ds4_gpu_dsv41_quantize(active.block, DS4_N_EMBD, rows, DS4_V41_BF16) &&
             ds41_after_attention_batch(&active, model, l, rows) &&
             ds41_moe_batch(g, model, l, il, rows, shared_owner) &&
@@ -25514,6 +25558,7 @@ static DS4_MAYBE_UNUSED bool ds41_graph_step_batch(ds41_gpu_graph *const *graphs
     return ok;
 }
 
+/* sf-ablate(specdec): upstream's #include "ds4_deepseek41_dspark.h" (V4.1 DSpark draft graph) dropped; this child has no speculative decoding */
 #undef DS41_PREFILL_ROWS
 #undef DS41_PREFILL_ALIASES
 #undef DS41_PREFILL_STORAGE
@@ -25713,6 +25758,7 @@ static void ds4_engine_print_startup_memory(
     total = ds4_add_sat_u64(total, resident_model_bytes);
     total = ds4_add_sat_u64(total, dynamic_expert_cache_bytes);
     total = ds4_add_sat_u64(total, expert_reserved_bytes);
+    /* sf-ablate(specdec): upstream's V4.1 drafter weights/buffers in the startup memory plan dropped; no drafter is loaded here */
 
     const bool color = ds4_log_is_tty(stderr);
     const char *green = color ? "\x1b[32m" : "";
@@ -29387,6 +29433,7 @@ static int ds41_load_payload(ds4_session *s, FILE *fp, const uint32_t *h,
         s->checkpoint_valid = false;
         g->valid = false;
         rc = payload_read_bytes(fp, s->logits, (uint64_t)DS4_N_VOCAB * 4u, &remaining, err, errlen);
+        /* sf-ablate(specdec): upstream's device-logits restore dropped; its only consumer is the DSpark verify commit */
         ds41_state_span spans[54];
         const uint32_t n = ds41_state_spans(g, pos, spans);
         uint8_t *buf = xmalloc(DS4_SESSION_IO_CHUNK);
@@ -30397,6 +30444,7 @@ static bool ds41_memory_admit_for_host(ds4_engine *e, uint64_t graph_bytes,
     uint64_t weights = g_tp_shard_model_bytes ? g_tp_shard_model_bytes : e->model.size;
     if (e->ssd_streaming && !weights_streaming_non_routed_bytes(&e->weights, &weights)) return false;
     weights = ds4_add_sat_u64(weights, e->vision_model.size);
+    /* sf-ablate(specdec): upstream's drafter model and per-session DSpark buffers in admission dropped; no drafter here */
     const uint64_t fixed = ds4_add_sat_u64(weights,
         ds4_add_sat_u64(graph_bytes, 2u * gib + e->ssd_streaming_prefill_headroom_bytes));
     uint64_t expert = 0;
@@ -30574,6 +30622,7 @@ static int ds4_engine_open_internal(ds4_engine **out,
         return 1;
     }
     config_validate_model(&e->model);
+    /* sf-ablate(cuda): upstream's CUDA/ROCm backend terms in the V4.1 support check dropped; Metal-only child */
     if (!opt->inspect_only) {
         const bool supported = e->backend == DS4_BACKEND_METAL &&
             opt->distributed.role == DS4_DISTRIBUTED_NONE &&
@@ -30587,8 +30636,9 @@ static int ds4_engine_open_internal(ds4_engine **out,
               (!opt->directional_steering_file2 || !opt->directional_steering_file2[0]))) &&
             e->power_percent == 100 && opt->context_size <= 1048576;
         if (!supported) {
-            fprintf(stderr, "ds4: V4.1 requires Metal or single-GPU CUDA per rank (optional network tensor parallelism); "
-                            "DSpark, steering and legacy diagnostics are not supported (maximum context 1048576)\n");
+            fprintf(stderr, "ds4: V4.1 requires Metal, single-GPU CUDA or ROCm (network TP on Metal/CUDA); "
+                            "steering and legacy diagnostics "
+                            "are not supported (maximum context 1048576)\n");
             ds4_engine_close(e);
             *out = NULL;
             return 1;
@@ -30767,6 +30817,7 @@ static int ds4_engine_open_internal(ds4_engine **out,
         *out = NULL;
         return 1;
     }
+    /* sf-ablate(specdec): upstream's V4.1 DSpark support-model load and validation dropped; this child has no --mtp-model */
 #ifndef DS4_NO_GPU
     if (e->backend == DS4_BACKEND_METAL) {
     }
@@ -31106,6 +31157,7 @@ static int ds4_engine_open_internal(ds4_engine **out,
             model_warm_weights_sharded(&e->model, &e->weights,
                                        tp_shard_rank);
         }
+        /* sf-ablate(cuda): upstream's ROCm V4.1 drafter residency dropped; Metal-only child without a drafter */
         free(load_offsets);
         free(load_sizes);
         if (e->vision_ready) {
@@ -31649,6 +31701,7 @@ int ds4_engine_tp_bind(ds4_engine *e, struct ds4_tp *tp, char *err, size_t errle
         snprintf(err, errlen, "tensor parallelism already bound");
         return 0;
     }
+    /* sf-ablate(tp): ds4_tp_agree_execution_mode handshake (CUDA expert split, V4.1 shared owner/balance, DSpark modes) dropped; two-Mac TP handshake deferred */
     const uint32_t slots = (uint32_t)DS4_N_LAYER * DS4_TP_GATES_PER_LAYER;
     const uint64_t vec_bytes = (uint64_t)DS4_N_EMBD * sizeof(float);
     const uint64_t slab_bytes = ds4_tp_slab_bytes((uint32_t)DS4_N_LAYER, (uint32_t)DS4_N_EMBD);
@@ -31871,6 +31924,7 @@ int ds4_session_create(ds4_session **out, ds4_engine *e, int ctx_size) {
         }
         s->ds41_graph.quality = e->quality;
         s->ds41_graph.streaming_prefill_bytes = e->ssd_streaming_prefill_headroom_bytes;
+        /* sf-ablate(specdec): upstream's ds41_dspark_alloc for the session graph dropped; no drafter here */
         if (e->tp.active) {
             s->ds41_graph.tp_world = 2;
             s->ds41_graph.tp_rank = (uint32_t)e->tp.rank;
@@ -33270,6 +33324,7 @@ static int ds4_session_eval_internal(ds4_session *s, int token,
 #ifdef DS4_HAS_DEEPSEEK41_GPU
     {
         ds41_steering_on_decode(s, token);  /* sf: think/answer gate, switched at </think> */
+        /* sf-ablate(specdec): upstream's DSpark rewindable-verify check dropped; no speculative decoding here */
         if (!s->ds41_graph_ready ||
             (!s->checkpoint_valid && s->checkpoint.len != 0) ||
             s->ds41_graph.pos != (uint32_t)s->checkpoint.len ||
@@ -33677,6 +33732,7 @@ int ds4_sessions_eval_batch_with_prefill(
     return rc;
 }
 
+/* sf-ablate(specdec): upstream's V4.1 DSpark session draft/verify/commit/speculate and TP verify hooks dropped; the speculative API is not in this child */
 void ds4_session_invalidate(ds4_session *s) {
     if (!s) return;
     if (ds4_session_tp_leader(s) &&
@@ -33692,6 +33748,7 @@ void ds4_session_invalidate(ds4_session *s) {
 #ifdef DS4_HAS_DEEPSEEK41_GPU
     if (s->ds41_graph_ready) ds41_graph_reset(&s->ds41_graph);
 #endif
+/* sf-ablate(specdec): upstream's V4.1 DSpark speculative-prefix restore dropped; the speculative API is not in this child */
 #endif
 }
 

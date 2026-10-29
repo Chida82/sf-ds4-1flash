@@ -2,7 +2,7 @@
 #
 # No steering prompt here, and that is deliberate: DeepSeek V4.1 Flash REFUSES to
 # start when --dir-steering-file is passed (ds4.c, "V4.1 requires Metal ...;
-# DSpark, steering and legacy diagnostics are not supported"), so both binaries
+# steering and legacy diagnostics are not supported"), so both binaries
 # would exit without generating and the oracle would read that as "a binary
 # produced no output". Steering parity for this child is the separate claim that
 # upstream and this fork refuse it identically; it is not a generation prompt.

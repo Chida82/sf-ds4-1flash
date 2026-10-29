@@ -66,5 +66,6 @@ typedef struct ds4_engram_prefetch ds4_engram_prefetch;
 ds4_engram_prefetch *ds4_engram_read_batch_start(const ds4_engram_table *table, const uint32_t *rows,
                                                  size_t tokens, size_t stride, float *out);
 bool ds4_engram_read_batch_finish(ds4_engram_prefetch *prefetch);
+/* sf-ablate(cuda): upstream's pthread engram_reader (CUDA decode overlap); Metal reads Engram rows through ds4_engram_read_batch_start */
 
 #endif

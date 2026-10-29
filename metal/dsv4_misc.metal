@@ -1582,6 +1582,24 @@ kernel void kernel_dsv4_topk_mask_scatter(
     }
 }
 
+// Copy the selected compressed-key mask while retaining causal visibility.
+// Image bidirectionality applies to raw keys only, never compressed keys.
+struct ds4_metal_args_causal_comp_mask {
+    uint n_comp, n_tokens, pos0, ratio, n_keys;
+};
+
+kernel void kernel_dsv4_causal_comp_mask(
+        constant ds4_metal_args_causal_comp_mask &args,
+        device const float *selected_mask,
+        device half *dst,
+        uint2 gid [[thread_position_in_grid]]) {
+    const uint col = gid.x, row = gid.y;
+    if (col >= args.n_comp || row >= args.n_tokens) return;
+    const ulong visible = (ulong(args.pos0) + ulong(row) + 1ul) / args.ratio;
+    dst[ulong(row) * args.n_keys + col] = ulong(col) < visible
+        ? half(selected_mask[ulong(row) * args.n_comp + col]) : half(-INFINITY);
+}
+
 // Sorts each token's selected compressed rows by row id. The indexer selects by
 // score, but attention scans compressed K/V in cache order in the dense graph.
 // Sorting preserves that order while still letting the indexed attention kernel

@@ -256,7 +256,7 @@ ds4_eval_cases.o: ds4_eval_cases.c ds4_eval_cases.h
 ds4_kvstore.o: ds4_kvstore.c ds4_kvstore.h ds4.h ds4_ssd.h
 	$(CC) $(CFLAGS) -c -o $@ ds4_kvstore.c
 
-ds4_test.o: tests/ds4_test.c ds4_server.c ds4.h ds4_ssd.h ds4_distributed.h ds4_help.h ds4_kvstore.h rax.h
+ds4_test.o: tests/ds4_test.c ds4_server.c ds4.h ds4_image.h ds4_ssd.h ds4_distributed.h ds4_help.h ds4_kvstore.h rax.h
 	$(CC) $(CFLAGS) -Wno-unused-function -c -o $@ tests/ds4_test.c
 
 rax.o: rax.c rax.h rax_malloc.h
@@ -420,6 +420,7 @@ test: env-check ds4_test $(BIN)-eval q4k-dot-test mxfp4-dot-test test-session-st
 	./tests/test_deepseek41_prefill --dispatch
 	./tests/test_deepseek41_graph --prefill-expert-discard
 	./tests/test_deepseek41_graph --prefill-expert-stream
+	./tests/test_deepseek41_graph --candidate-mask
 
 .PHONY: test-download-model
 test-download-model:

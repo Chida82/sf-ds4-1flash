@@ -708,6 +708,7 @@ int main(int argc, char **argv) {
             return 2;
         }
         if (tp_parse == DS4_TP_CLI_MATCHED) continue;
+        /* sf-ablate(specdec): upstream's DS4_TEST_HOOKS --mtp-model/--verify-batch DSpark verify scoring dropped; this child has no speculative decoding */
 
         if (!strcmp(arg, "--quality")) {
             quality = true;

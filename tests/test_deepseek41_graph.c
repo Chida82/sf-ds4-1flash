@@ -991,7 +991,10 @@ done:
     ds4_session_free(too_large);
     ds4_session_free(s);
     ds4_engine_close(engine);
-    if (cwd_fd >= 0) { fchdir(cwd_fd); close(cwd_fd); }
+    if (cwd_fd >= 0) {
+        if (fchdir(cwd_fd) != 0) { perror("restore working directory"); rc = 1; }
+        close(cwd_fd);
+    }
     return rc;
 }
 
@@ -2556,7 +2559,61 @@ done:
     return rc;
 }
 
+/* Below the 2048-block cap the layer-20 candidate mask is filled
+ * directly; it must match the sorted top-k mask on both sides of the cap. */
+static int check_candidate_mask(void) {
+    int rc = 1;
+    ds41_gpu_graph g = {0};
+    ds4_gpu_tensor *reference = NULL;
+    const uint32_t widths[] = {1, 7, 8, 9, 127, 1025, 8191, 8192, 12307, 16383, 16384, 16385, 17017};
+    const uint32_t capacity = 17017, max_blocks = (capacity + 7u) / 8u;
+    float *scores = malloc(capacity * sizeof(float));
+    float *expected = malloc(max_blocks * sizeof(float));
+    float *actual = malloc(max_blocks * sizeof(float));
+    g_ds4_shape = DS4_SHAPE_FLASH41;
+    for (uint32_t il = 0; il < DS4_N_LAYER; il++)
+        g_ds4_compress_ratios[il] = ds4_expected_layer_compress_ratio(il);
+    REQUIRE(scores && expected && actual && ds4_gpu_init());
+    g.index_scores = ds4_gpu_tensor_alloc(capacity * sizeof(float));
+    g.block_scores = ds4_gpu_tensor_alloc(max_blocks * sizeof(float));
+    g.block_selected = ds4_gpu_tensor_alloc(2048u * sizeof(uint32_t));
+    g.block_mask = ds4_gpu_tensor_alloc(max_blocks * sizeof(float));
+    reference = ds4_gpu_tensor_alloc(max_blocks * sizeof(float));
+    REQUIRE(g.index_scores && g.block_scores && g.block_selected && g.block_mask && reference);
+    for (uint32_t i = 0; i < capacity; i++) scores[i] = (float)((i * 7919u) % 104729u) - 50000;
+    REQUIRE(ds4_gpu_tensor_write(g.index_scores, 0, scores, capacity * sizeof(float)));
+    for (unsigned wi = 0; wi < sizeof(widths) / sizeof(*widths); wi++) {
+        const uint32_t n = widths[wi], blocks = (n + 7u) / 8u;
+        const uint32_t top = blocks < 2048u ? blocks : 2048u;
+        g.pos = n - 1u;
+        REQUIRE(ds4_gpu_begin_commands());
+        REQUIRE(ds4_gpu_dsv41_candidate_blocks(g.block_scores, g.index_scores, n, 1, g.pos, 1));
+        REQUIRE(ds4_gpu_indexer_topk_tensor(g.block_selected, g.block_scores, blocks, 1, top));
+        REQUIRE(ds4_gpu_dsv4_topk_mask_tensor(reference, g.block_selected, blocks, 1, top));
+        REQUIRE(ds4_gpu_tensor_fill_f32(g.block_mask, -123, max_blocks));
+        REQUIRE(ds41_attention_candidates(&g, 20));
+        REQUIRE(ds4_gpu_end_commands());
+        REQUIRE(ds4_gpu_tensor_read(reference, 0, expected, blocks * sizeof(float)));
+        REQUIRE(ds4_gpu_tensor_read(g.block_mask, 0, actual, max_blocks * sizeof(float)));
+        REQUIRE(!memcmp(expected, actual, blocks * sizeof(float)));
+        for (uint32_t i = blocks; i < max_blocks; i++) REQUIRE(actual[i] == -123);
+        fprintf(stderr, "V4.1 candidate mask width=%u: exact\n", n);
+    }
+    rc = 0;
+done:
+    if (ds4_gpu_commands_active()) (void)ds4_gpu_end_commands();
+    ds4_gpu_tensor_free(reference);
+    ds4_gpu_tensor_free(g.block_mask);
+    ds4_gpu_tensor_free(g.block_selected);
+    ds4_gpu_tensor_free(g.block_scores);
+    ds4_gpu_tensor_free(g.index_scores);
+    ds4_gpu_cleanup();
+    free(actual); free(expected); free(scores);
+    return rc;
+}
+
 int main(int argc, char **argv) {
+    if (argc == 2 && !strcmp(argv[1], "--candidate-mask")) return check_candidate_mask();
     if (argc == 5 && !strcmp(argv[2], "--prefill-replica"))
         return check_prefill_replica(argv[1], argv[3], argv[4]);
     if (argc == 2 && !strcmp(argv[1], "--prefill-expert-stream"))

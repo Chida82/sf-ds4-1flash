@@ -232,6 +232,7 @@ static void test_all_scaled_values(void) {
     close(fd);
 }
 
+/* sf-ablate(cuda): upstream's test_reader for the pthread engram_reader (CUDA decode overlap) dropped; the reader is not in this child */
 int main(void) {
     test_hash();
     test_rows();

@@ -71,6 +71,7 @@ static int check_router(void) {
     ds4_gpu_tensor *tok = upload(tokens, sizeof(tokens));
     CHECK(x && p && ids && weights && tok);
     const unsigned counts[] = {1, 3, 17, ROWS};
+    /* sf-ablate(specdec): upstream's 128-expert/top-3 router case dropped; only the DSpark drafter routes that shape */
     for (unsigned n = 256; n <= MAX_EXPERTS; n += 128) {
         for (unsigned mode = 0; mode < 3; mode++) {
             for (unsigned i = 0; i < ROWS * n; i++) logits[i] = mode == 1 ? 0 :
@@ -665,7 +666,7 @@ static int check_attention_output(bool large) {
     CHECK(ds4_gpu_end_commands());
     CHECK(ds4_gpu_tensor_read(out, 0, reference, ob));
     CHECK(ds4_gpu_tensor_read(low, 0, reference_low, lb));
-    const uint32_t sizes[] = {31, 32, 63, 64, 65, 257, 512, 513, 8191, 8192};
+    const uint32_t sizes[] = {1, 2, 3, 5, 6, 8, 31, 32, 63, 64, 65, 257, 512, 513, 8191, 8192};
     for (unsigned n = 0; n < sizeof(sizes) / sizeof(*sizes); n++) {
         const uint32_t rows = sizes[n];
         if (rows > ROWS) break;
@@ -692,7 +693,7 @@ static int check_attention_output(bool large) {
     ds4_gpu_tensor *packed = upload(NULL, xb / 2);
     ds4_gpu_tensor *partial[2] = {upload(NULL, ob), upload(NULL, ob)};
     CHECK(packed && partial[0] && partial[1]);
-    const uint32_t tp_sizes[] = {1, 31, 32, 33, 63, 64, 65, 127, 128, 129, 257, 512, 513};
+    const uint32_t tp_sizes[] = {1, 2, 3, 5, 6, 8, 31, 32, 33, 63, 64, 65, 127, 128, 129, 257, 512, 513};
     const uint32_t q_half = GROUPS / 2 * GROUP, low_half = GROUPS / 2 * RANK;
     for (size_t n = 0; n < sizeof(tp_sizes) / sizeof(*tp_sizes); n++) {
         const uint32_t rows = tp_sizes[n];
@@ -1078,6 +1079,7 @@ static int check_causal_topk(void) {
                 CHECK(ds4_gpu_synchronize());
                 CHECK(ids[rows * 512u] == 123456);
                 for (uint32_t t = 0; t < rows; t++) {
+                    CHECK(s[(size_t)t * width + width - 1u] == 12345.0f);
                     for (uint32_t k = 0; k < 512u; k++) {
                         if (ids[t * 512u + k] != ref[t * 512u + k]) {
                             fprintf(stderr, "top-k mismatch ratio=%u visible=%u rows=%u pattern=%u row=%u rank=%u: %d vs %d\n",

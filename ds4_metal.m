@@ -24835,6 +24835,9 @@ static int ds4_gpu_attention_output_q8_batch_impl(
                     low, (uint64_t)t * low_dim);
                 ds4_gpu_tensor_free(row);
             }
+        } else if (ok && round_low_bf16 && n_tokens <= 8u) {
+            ok = ds4_gpu_matmul_q8_0_decode_rows_exact_tensor(out, model_map, model_size,
+                out_b_offset, low_dim, out_dim, low, n_tokens) != 0;
         } else if (ok) {
             ok = ds4_gpu_matmul_q8_0_tensor(out, model_map, model_size,
                                               out_b_offset,
@@ -28538,17 +28541,23 @@ static int ds4_gpu_encode_flash_attention_decode_mixed_batch_heads(
                                                ratio);
     }
     if (use_comp_mask) {
-        if (!ds4_gpu_encode_cpy_f32_f16_2d(cb,
-                                             maskbuf,
-                                             ds4_gpu_tensor_offset(comp_mask),
-                                             mask_buffer,
-                                             (NSUInteger)n_raw * sizeof(uint16_t),
-                                             n_comp,
-                                             n_tokens,
-                                             (uint64_t)n_comp * sizeof(float),
-                                             (uint64_t)n_keys * sizeof(uint16_t))) {
-            return 0;
-        }
+        /* Top-k may contain -inf-scored future rows when fewer than top_k
+         * causal keys exist. Selection must never replace causal visibility.
+         * Keep raw image bidirectionality; intersect only compressed keys. */
+        id<MTLComputePipelineState> pipeline =
+            ds4_gpu_get_pipeline("kernel_dsv4_causal_comp_mask");
+        if (!pipeline) return 0;
+        const struct {
+            uint32_t n_comp, n_tokens, pos0, ratio, n_keys;
+        } args = { n_comp, n_tokens, pos0, ratio, n_keys };
+        id<MTLComputeCommandEncoder> enc = ds4_gpu_compute_encoder(cb);
+        [enc setComputePipelineState:pipeline];
+        [enc setBytes:&args length:sizeof(args) atIndex:0];
+        [enc setBuffer:maskbuf offset:ds4_gpu_tensor_offset(comp_mask) atIndex:1];
+        [enc setBuffer:mask_buffer offset:(NSUInteger)n_raw * sizeof(uint16_t) atIndex:2];
+        [enc dispatchThreads:MTLSizeMake(n_comp, n_tokens, 1)
+             threadsPerThreadgroup:MTLSizeMake(MIN(256u, pipeline.maxTotalThreadsPerThreadgroup), 1, 1)];
+        ds4_gpu_end_compute_encoder(cb, enc);
     }
 
     id<MTLComputePipelineState> pad_pipeline = nil;

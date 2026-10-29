@@ -101,6 +101,7 @@ bool ds4_engram_table_open(ds4_engram_table *t, const char *path,
         goto fail;
     }
     if (fcntl(fd, F_NOCACHE, 1) != 0 || fcntl(fd, F_RDAHEAD, 0) != 0) goto fail;
+    /* sf-ablate(linux): POSIX_FADV_RANDOM read-ahead hint; macOS only, F_RDAHEAD 0 above already disables read-ahead */
     *t = (ds4_engram_table){.fd = fd, .offset = offset, .rows = rows};
     return true;
 fail: {

@@ -200,6 +200,7 @@ DS4_ENV(DS4_METAL_DISABLE_V41_BATCH_CORE, disable, unset, "Runs the V4.1 prefill
 DS4_ENV(DS4_METAL_DISABLE_V41_BATCH_ENGRAM, disable, unset, "Reads V4.1 prefill Engram rows one token at a time, no batch read or prefetch")
 DS4_ENV(DS4_METAL_DISABLE_V41_BATCH_HC, disable, unset, "Runs V4.1 prefill HC mixing per row; under TP forces token-major prefill")
 DS4_ENV(DS4_METAL_DISABLE_V41_BATCH_HEAD, disable, unset, "Computes the vocab head per session instead of batched in V4.1 multi-session decode")
+DS4_ENV(DS4_DISABLE_V41_BATCH_OUTPUT, disable, unset, "Runs the V4.1 multi-session decode attention output projection per session instead of batched")
 DS4_ENV(DS4_METAL_DISABLE_V41_BATCH_INDEX, disable, unset, "Runs the V4.1 prefill indexer per row instead of batched")
 DS4_ENV(DS4_METAL_DISABLE_V41_BATCH_INDEX_PROJ, disable, unset, "Runs the V4.1 prefill indexer q/weight projections per row instead of batched")
 DS4_ENV(DS4_METAL_DISABLE_V41_BATCH_MOE, disable, unset, "Runs V4.1 prefill MoE per row instead of batched; under TP forces token-major prefill")

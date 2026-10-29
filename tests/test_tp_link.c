@@ -57,6 +57,7 @@ int main(int argc, char **argv) {
     int rc = 1;
     CHECK(ds4_tp_create(&tp, &opt, &id, error, sizeof(error)));
     CHECK(ds4_tp_is_rdma(tp) == (opt.transport == DS4_TP_TRANSPORT_RDMA));
+    /* sf-ablate(tp): ds4_tp_agree_execution_mode checks; the handshake is not in this child */
     slab = calloc(1, ds4_tp_slab_bytes(id.n_layer, width));
     out = malloc((size_t)capacity * sizeof(float));
     in = malloc((size_t)capacity * sizeof(float));

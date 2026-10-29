@@ -1957,6 +1957,7 @@ fail:
     return 0;
 }
 
+/* sf-ablate(tp): ds4_tp_agree_execution_mode; two-Mac TP mode handshake deferred, no CUDA shared-owner/DSpark modes here */
 int ds4_tp_attach_slab(ds4_tp *tp, void *base, char *err, size_t errlen) {
     tp->slab = base;
     memset(tp->slab + tp->in_flags_off, 0, (uint64_t)tp->n_slots * 8);

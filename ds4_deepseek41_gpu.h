@@ -94,6 +94,7 @@ int ds4_gpu_dsv41_rope_quantize(const ds4_gpu_tensor *x, ds4_gpu_tensor *dst, ui
                                 ds4_v41_activation_format format);
 int ds4_gpu_dsv41_quantize(ds4_gpu_tensor *x, uint32_t width, uint32_t rows,
                           ds4_v41_activation_format format);
+/* sf-ablate(cuda): CUDA fused norm/HC wrappers and the scalar Q8 shared expert start/join/mask; Metal-only child */
 /* Full-head prefill, with BF16 rounding between the two Q8 projections. */
 int ds4_gpu_dsv41_attention_output_batch(
         ds4_gpu_tensor *out, ds4_gpu_tensor *low,
