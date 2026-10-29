@@ -9273,8 +9273,6 @@ struct server_slot {
     bool decode_in_flight;
     bool decode_done;
     int decode_token;
-    int decode_accepted[2];
-    int decode_accepted_count;
     int decode_rc;
     char decode_err[160];
 };
@@ -9398,7 +9396,7 @@ struct server {
     pthread_mutex_t model_mu;
     pthread_cond_t model_cv;
     bool model_busy;
-    bool qwen4_batch_mtp;
+    /* sf-ablate(specdec): qwen4_batch_mtp dropped; no MTP batch in this child */
     bool model_stopping;
     int decode_pending;
     int active_generations;
@@ -11271,26 +11269,6 @@ static void trace_piece(server *s, uint64_t id, const char *piece, size_t len) {
     pthread_mutex_unlock(&s->trace_mu);
 }
 
-/* One line per generated token: its id and its bytes in hex. */
-static void trace_note_token(server *s, buf *ids, int token, const char *piece, size_t len) {
-    if (!s->trace) return;
-    buf_printf(ids, "%d ", token);
-    for (size_t i = 0; i < len; i++) buf_printf(ids, "%02x", (unsigned char)piece[i]);
-    buf_putc(ids, '\n');
-}
-
-static void trace_flush_tokens(server *s, uint64_t id, buf *ids) {
-    if (s->trace && id && ids->len) {
-        pthread_mutex_lock(&s->trace_mu);
-        fputs("\n\n--- generated token ids (id, hex bytes) ---\n", s->trace);
-        fwrite(ids->ptr, 1, ids->len, s->trace);
-        fputs("--- end generated token ids ---\n\n", s->trace);
-        fflush(s->trace);
-        pthread_mutex_unlock(&s->trace_mu);
-    }
-    buf_free(ids);
-}
-
 static void trace_event(server *s, uint64_t id, const char *fmt, ...) {
     if (!s->trace || !id) return;
     pthread_mutex_lock(&s->trace_mu);
@@ -12313,10 +12291,9 @@ static bool server_cancel_pending_decode_locked(server *s, server_slot *slot) {
     return true;
 }
 
-static int server_eval_tokens(server *s, server_slot *slot, int token,
-                              int accepted[2], int *n_accepted,
-                              char *err, size_t errlen) {
-    *n_accepted = 0;
+/* sf-ablate(specdec): upstream's accepted-token list (server_eval_tokens) dropped; without a drafter a decode accepts exactly the token it was given */
+static int server_eval_token(server *s, server_slot *slot, int token,
+                             char *err, size_t errlen) {
     if (!s || !slot) return 1;
     if (!s->batched_mode) {
         if (g_stop_requested || slot_job_cancelled(slot)) {
@@ -12328,7 +12305,6 @@ static int server_eval_tokens(server *s, server_slot *slot, int token,
         pthread_mutex_lock(&s->inference_mu);
         int rc = ds4_session_eval(slot->session, token, err, errlen);
         pthread_mutex_unlock(&s->inference_mu);
-        if (rc == 0) { accepted[0] = token; *n_accepted = 1; }
         return rc;
     }
 
@@ -12346,7 +12322,6 @@ static int server_eval_tokens(server *s, server_slot *slot, int token,
         return 1;
     }
     slot->decode_token = token;
-    slot->decode_accepted_count = 0;
     slot->decode_rc = 1;
     slot->decode_err[0] = '\0';
     slot->decode_done = false;
@@ -12376,18 +12351,8 @@ static int server_eval_tokens(server *s, server_slot *slot, int token,
                  (slot->decode_err[0] ? slot->decode_err : "decode interrupted"));
     }
     slot->decode_done = false;
-    if (rc == 0) {
-        *n_accepted = slot->decode_accepted_count;
-        memcpy(accepted, slot->decode_accepted, (size_t)*n_accepted * sizeof(int));
-    }
     pthread_mutex_unlock(&s->model_mu);
     return rc;
-}
-
-static int server_eval_token(server *s, server_slot *slot, int token,
-                             char *err, size_t errlen) {
-    int accepted[2], count;
-    return server_eval_tokens(s, slot, token, accepted, &count, err, errlen);
 }
 
 static long server_decode_coalesce_us(void) {
@@ -12412,8 +12377,6 @@ static void *decode_worker_main(void *arg) {
     server *s = arg;
     ds4_decode_item *items = xmalloc((size_t)s->slot_count * sizeof(*items));
     server_slot **members = xmalloc((size_t)s->slot_count * sizeof(*members));
-    int (*accepted)[2] = xmalloc((size_t)s->slot_count * sizeof(*accepted));
-    int *n_accepted = xmalloc((size_t)s->slot_count * sizeof(*n_accepted));
     const long coalesce_us = server_decode_coalesce_us();
     const bool log_batches = getenv("DS4_SERVER_BATCH_LOG") != NULL;
 
@@ -12465,10 +12428,6 @@ static void *decode_worker_main(void *arg) {
         const double batch_t0 = log_batches ? now_sec() : 0.0;
         pthread_mutex_lock(&s->inference_mu);
         int rc = ds4_sessions_eval_batch(items, count, batch_err, sizeof(batch_err));
-        for (int i = 0; i < count; i++) {
-            accepted[i][0] = items[i].token;
-            n_accepted[i] = 1;
-        }
         if (rc != 0)
             for (int i = 0; i < count; i++) ds4_session_invalidate(items[i].session);
         pthread_mutex_unlock(&s->inference_mu);
@@ -12485,10 +12444,6 @@ static void *decode_worker_main(void *arg) {
             server_slot *slot = members[i];
             slot->decode_in_flight = false;
             slot->decode_rc = rc;
-            if (rc == 0) {
-                slot->decode_accepted_count = n_accepted[i];
-                memcpy(slot->decode_accepted, accepted[i], (size_t)n_accepted[i] * sizeof(int));
-            }
             if (rc != 0) {
                 snprintf(slot->decode_err, sizeof(slot->decode_err), "%s",
                          batch_err[0] ? batch_err : "batched decode failed");
@@ -12500,8 +12455,6 @@ static void *decode_worker_main(void *arg) {
     pthread_mutex_unlock(&s->model_mu);
     free(members);
     free(items);
-    free(accepted);
-    free(n_accepted);
     return NULL;
 }
 
@@ -13029,7 +12982,6 @@ decode_again:
     ;
     buf text = {0};
     output_view view = {0}; /* what the marker parsers read */
-    buf trace_ids = {0};
     size_t plain_stream_pos = 0;
     size_t stop_scan_from = 0;
     const char *finish = "length";
@@ -13147,7 +13099,6 @@ decode_again:
             kept++;
 
             trace_piece(s, trace_id, piece, piece_len);
-            trace_note_token(s, &trace_ids, token, piece, piece_len);
             buf_append(&text, piece, piece_len);
             const ds4_output_marker marker = ds4_token_output_marker(s->engine, token);
             output_view_append(&view, piece, piece_len, marker);
@@ -13351,7 +13302,6 @@ decode_again:
         if (stop_decode) break;
     }
     server_generation_leave(s);
-    trace_flush_tokens(s, trace_id, &trace_ids);
 
     if (job_cancelled(j)) {
         request_live_state_clear(s, slot);
@@ -14968,7 +14918,6 @@ int main(int argc, char **argv) {
     s.ctx_size = cfg.ctx_size;
     s.slot_count = slot_count;
     s.batched_mode = cfg.batched_sessions > 0;
-    s.qwen4_batch_mtp = false;
     s.mixed_prefill_quantum = cfg.mixed_prefill_quantum;
     s.last_prefill_slot = slot_count - 1;
     s.default_tokens = cfg.default_tokens;

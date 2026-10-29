@@ -1585,7 +1585,6 @@ int ds4_gpu_glm53_matmul_bf16(
 #define DS4_DEEPSEEK4_VISION_TYPES_DEFINED
 #define DS4_DEEPSEEK4_VISION_LAYERS 32u
 #define DS4_DEEPSEEK4_LANGUAGE_LAYERS 43u
-#define DS4_DEEPSEEK4_MTP_LAYERS 3u
 
 typedef struct {
     uint64_t norm1;
@@ -1611,7 +1610,7 @@ typedef struct {
     uint64_t image_newline;
     uint64_t image_end;
     uint64_t visual_router_bias[DS4_DEEPSEEK4_LANGUAGE_LAYERS];
-    uint64_t mtp_visual_router_bias[DS4_DEEPSEEK4_MTP_LAYERS];
+    /* sf-ablate(mtp): mtp_visual_router_bias dropped; this child has no MTP stages to bias */
     uint64_t hash_router_bias[3];
     ds4_deepseek4_vision_layer_weights layer[DS4_DEEPSEEK4_VISION_LAYERS];
     uint32_t projection_dim;

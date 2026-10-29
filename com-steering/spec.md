@@ -19,14 +19,16 @@ this model; the residual fold is the only place a direction acts.
 A direction is a `40 × 5120` float32 matrix: one unit row per layer (row 0 is
 all-zero — layer 0 is never steered), each other row either unit-norm (within
 `1e-2`) or all-zero. It is applied per layer at the fold site, scaled by its
-**residual** (the `--residual` / profile `scale`). The vectors live in
-`dir-steering/out/*.f32` while under test and are copied, with a `.json`
-provenance sidecar, into [`vectors/`](vectors/) once shipped.
+**residual** (`--dir-steering-residual` / the profile slot's `scale`). Raw
+direction files are not shipped: a profile embeds its matrices, and the
+provenance of each embedded direction is recorded in [`README.md`](README.md),
+"Directions (provenance)".
 
 ## Two slots, and how they compose
 
 A session can remove up to two directions at the same site (slot 1 and slot 2,
-`--steer` / `--steer2`). Geometry decides what the pair does:
+`--dir-steering-file` / `--dir-steering-file-2`, or a profile's two slots).
+Geometry decides what the pair does:
 
 - **Orthogonal** directions compose as an exact rank-2 removal — a clean 2D
   subspace taken out at once.
@@ -45,8 +47,8 @@ transfers.
 
 ## Vector families
 
-Named for where they came from, not for a model. Provenance per file is in the
-`.json` sidecars and, for the raw captures, `vectors/mrfk_extract.py`.
+Named for where they came from, not for a model. How each was derived is in
+[`README.md`](README.md), "Directions (provenance)".
 
 | Family | What it is |
 |---|---|
@@ -58,5 +60,6 @@ Named for where they came from, not for a model. Provenance per file is in the
 
 **One fusion is never *the* fusion.** `equi` is a 50/50 bisector; every
 composition idea must keep a variant that restarts from the two original
-directions, not only from an already-fused one. (`fused` in the historical log
-means this 50/50 bisector specifically.)
+directions, not only from an already-fused one. (`fused`, in the search that
+preceded the `1017` vectors, was the same 50/50 bisector of two older
+directions, abliteration and msuiche: `unit(a+m)`.)

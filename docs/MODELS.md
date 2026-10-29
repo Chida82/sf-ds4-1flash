@@ -6,7 +6,7 @@ This fork is not a general GGUF runner: it loads DeepSeek V4.1 Flash and
 refuses any GGUF whose `general.architecture` is not `deepseek41`. Run
 `./download.sh` for the components it offers.
 
-`./download.sh q2` updates the `deepseek-v4.1-flash.gguf` link; the vision
+`./download.sh main` updates the `deepseek-v4.1-flash.gguf` link; the vision
 encoder does not. Pass `-m FILE` to avoid depending on the last download.
 
 Downloads go through the Hugging Face CLI, which owns the shared cache; this
@@ -17,7 +17,7 @@ weights; your cached token or `HF_TOKEN` is used when present.
 
 | Component | File size | Main weights |
 | --- | ---: | ---: |
-| `q2` | 341 GiB | 152 GiB |
+| `main` (1017) | 341 GiB | 152 GiB |
 
 It uses imatrix-calibrated routed experts and includes 189 GiB of Engram
 tables. Engram rows are read directly from the file as needed in every mode,
@@ -26,7 +26,7 @@ never loaded as a resident table. Keep the GGUF on a fast local SSD.
 On one 128 GB Mac, use SSD streaming. Leave the expert cache budget automatic:
 
 ```sh
-./download.sh q2
+./download.sh main
 ./sf-ds4-1flash --ssd-streaming --ctx 32768
 ```
 
@@ -60,7 +60,7 @@ For images, download the matching encoder and add it to the same command:
 
 ```sh
 ./download.sh vision
-./sf-ds4-1flash -m gguf/DeepSeek-V4.1-Flash-Q2.gguf \
+./sf-ds4-1flash -m gguf/DeepSeek-V4.1-Flash-1017-IQ2_XXS-Q2_K-imatrix.gguf \
   --ssd-streaming --vision gguf/DeepSeek-V4.1-Flash-Vision.gguf
 ```
 

@@ -16,7 +16,7 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "download.sh"
 DEFAULT_LINK = "deepseek-v4.1-flash.gguf"
-Q2 = "DeepSeek-V4.1-Flash-Q2.gguf"
+MAIN = "DeepSeek-V4.1-Flash-1017-IQ2_XXS-Q2_K-imatrix.gguf"
 VISION = "DeepSeek-V4.1-Flash-Vision.gguf"
 
 
@@ -29,7 +29,7 @@ class DownloadScript(unittest.TestCase):
     def test_lists_components_without_arguments(self):
         r = run([])
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn("q2", r.stdout)
+        self.assertIn("main", r.stdout)
         self.assertIn("vision", r.stdout)
         # The Q4 release is deliberately not offered: joining its two parts
         # would put a multi-gigabyte real file in the repository.
@@ -66,16 +66,16 @@ class DownloadScript(unittest.TestCase):
             (work / "download.sh").chmod(0o755)
 
             env = dict(os.environ, PATH=f"{bin_dir}:{os.environ['PATH']}")
-            r = subprocess.run([str(work / "download.sh"), "q2"],
+            r = subprocess.run([str(work / "download.sh"), "main"],
                                capture_output=True, text=True, env=env)
             self.assertEqual(r.returncode, 0, r.stderr)
 
-            component = work / "gguf" / Q2
+            component = work / "gguf" / MAIN
             default = work / DEFAULT_LINK
             self.assertTrue(component.is_symlink(), "gguf/ entry must be a symlink")
-            self.assertEqual(os.readlink(component), str(cache / Q2))
+            self.assertEqual(os.readlink(component), str(cache / MAIN))
             self.assertTrue(default.is_symlink(), "default model must be a symlink")
-            self.assertEqual(os.readlink(default), f"gguf/{Q2}")
+            self.assertEqual(os.readlink(default), f"gguf/{MAIN}")
             self.assertTrue(default.resolve().is_file())
 
             # The vision encoder gets a component link but must not steal the
@@ -84,7 +84,7 @@ class DownloadScript(unittest.TestCase):
                                capture_output=True, text=True, env=env)
             self.assertEqual(r.returncode, 0, r.stderr)
             self.assertTrue((work / "gguf" / VISION).is_symlink())
-            self.assertEqual(os.readlink(default), f"gguf/{Q2}")
+            self.assertEqual(os.readlink(default), f"gguf/{MAIN}")
 
             # Nothing in the repository may be a regular file holding model data.
             reals = [p for p in work.rglob("*")
@@ -98,7 +98,7 @@ class DownloadScript(unittest.TestCase):
         if subprocess.run(["sh", "-c", "command -v hf"], env=env,
                           capture_output=True).returncode == 0:
             self.skipTest("hf is installed in /usr/bin")
-        r = run(["q2"], env=env)
+        r = run(["main"], env=env)
         self.assertEqual(r.returncode, 1)
         self.assertIn("Hugging Face CLI", r.stderr)
 

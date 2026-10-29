@@ -55,7 +55,7 @@ typedef decltype(kernel_cpy_t_t<float, float>) kernel_cpy_t;
 template [[host_name("kernel_cpy_f32_f32")]] kernel kernel_cpy_t kernel_cpy_t_t<float, float>;
 template [[host_name("kernel_cpy_f32_f16")]] kernel kernel_cpy_t kernel_cpy_t_t<float, half>;
 template [[host_name("kernel_cpy_f16_f32")]] kernel kernel_cpy_t kernel_cpy_t_t<half, float>;
-template [[host_name("kernel_cpy_f16_f16")]] kernel kernel_cpy_t kernel_cpy_t_t<half, half>;
+/* sf-ablate(metal): kernel_cpy_f16_f16 instantiation dropped; its pipeline was never dispatched in this child */
 
 // Contiguous 1D conversions avoid the generic tensor-index reconstruction
 // above. Packed vector types retain scalar alignment, so tensor views whose

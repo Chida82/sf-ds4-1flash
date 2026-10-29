@@ -66,11 +66,6 @@ def build(args):
             if tokens < 0 or not 0.0 <= final <= float(scale):
                 sys.exit(f"slot {i}: decay_tokens >= 0 and 0 <= decay_final <= scale")
             slot["decay_tokens"], slot["decay_final"] = tokens, final
-            if i < len(args.decay_phase):  # 418: phase the decay applies in
-                ph = args.decay_phase[i]
-                if ph not in ("both", "think", "answer"):
-                    sys.exit(f"slot {i}: decay_phase must be both, think or answer")
-                slot["decay_phase"] = ph
             if i < len(args.decay_hold):  # 418-C: plateau before the decay
                 hold = int(args.decay_hold[i][0])
                 if hold < 0:
@@ -81,11 +76,6 @@ def build(args):
                 if not 0.0 <= fa <= float(scale):
                     sys.exit(f"slot {i}: 0 <= decay_final_answer <= scale")
                 slot["decay_final_answer"] = fa
-        if i < len(args.ramp):  # 418-B: optional per-slot cyclic ramp in think
-            tokens, low = int(args.ramp[i][0]), float(args.ramp[i][1])
-            if tokens < 0 or not 0.0 <= low <= float(scale):
-                sys.exit(f"slot {i}: ramp_tokens >= 0 and 0 <= ramp_low <= scale")
-            slot["ramp_tokens"], slot["ramp_low"] = tokens, low
         slots.append(slot)
     header = {"name": args.name, "site": SITE, "layers": LAYERS, "width": WIDTH, "slots": slots}
     if args.closure:  # 419: additive closure channel, matrix after the slot matrices
@@ -138,10 +128,6 @@ def main():
     ap.add_argument("--slot", nargs=3, action="append", default=[], metavar=("VECTOR", "SCALE", "PHASE"))
     ap.add_argument("--decay", nargs=2, action="append", default=[], metavar=("TOKENS", "FINAL"),
                     help="418: per-slot decay, in slot order; scale eases to FINAL over TOKENS in-phase tokens")
-    ap.add_argument("--decay-phase", dest="decay_phase", action="append", default=[], metavar="PHASE",
-                    help="418: per-slot (slot order) phase the decay applies in: both|think|answer (default both)")
-    ap.add_argument("--ramp", nargs=2, action="append", default=[], metavar=("TOKENS", "LOW"),
-                    help="418-B: per-slot (slot order) cyclic ramp in THINK; scale rides scale->LOW over TOKENS, holds LOW, rises back (period 3*TOKENS)")
     ap.add_argument("--decay-hold", dest="decay_hold", nargs=1, action="append", default=[], metavar="TOKENS",
                     help="418-C: per-slot (slot order) plateau; hold scale for TOKENS before the decay smoothstep starts")
     ap.add_argument("--closure", nargs=5, metavar=("VECTOR", "SCALE", "ONSET_MIN", "ONSET_MAX", "RAMP"),

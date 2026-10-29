@@ -43,8 +43,7 @@ int ds4_gpu_tp_gate_prefetch_plan(uint32_t gate,
                                 const void *model_map, uint64_t model_size,
                                 const uint64_t *offsets, const uint64_t *bytes,
                                 uint32_t count);
-/* Coordinator-only drafting is replicated; verification remains sharded. */
-void ds4_gpu_tp_suspend_expert_sharding(int suspend);
+/* sf-ablate(specdec): ds4_gpu_tp_suspend_expert_sharding dropped; only the TP spec-dec drafting cycles called it */
 /* No-op when TP is not bound. */
 void ds4_gpu_tp_keepalive_pause(int paused);
 /* GLM attention head ownership; the caller zeros unowned heads and exchanges

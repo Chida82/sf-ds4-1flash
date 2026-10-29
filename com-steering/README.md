@@ -95,8 +95,9 @@ scale of 0 is refused — drop the slot instead.
 
 The engine reads `site`, `layers`, `width`, and each slot's `scale` and `phase`
 (`both`, `think` or `answer`), plus the optional schedule keys of 418
-(`decay_tokens`, `decay_final`, `decay_phase`, `decay_hold`,
-`decay_final_answer`, `ramp_tokens`, `ramp_low`) and the optional top-level
+(`decay_tokens`, `decay_final`, `decay_hold`, `decay_final_answer`; the
+explored `decay_phase`, `ramp_tokens` and `ramp_low` slot keys were not adopted
+and a profile that names them is refused) and the optional top-level
 `closure` object of 419: an additive third direction `h += a(t)·c[layer]` at the
 same site, thinking phase only, with `scale` (small by design), `onset_min`
 (think tokens before any push at reasoning effort ≤ 10), `onset_max` (the same
@@ -104,15 +105,11 @@ at effort 100, linear between; the CLI's `--think-level` sets the level, unknown
 counts as 75) and `ramp_tokens` (smoothstep rise); an optional second stage
 (`scale2`, `after_tokens`, `ramp2_tokens`) raises `a(t)` again from `scale` to
 `scale2` starting `after_tokens` past the onset, so the door is offered gently
-first and firmly later. Two probe switches support
-the 419 work and change no token (the scripts that drove and reduced them are not
-shipped, the investigation being closed): `DS4_V41_CLOSURE_GAP_TRACE=<path>`
-appends, per think-phase forward, `logit[argmax] − logit[</think>]` (a small or
-negative gap means the model wants to exit the reasoning loop but cannot); and
-`DS4_V41_SITE_CAPTURE=<path>` appends, per decode token, the 40 layer rows read
-by attention at the site as raw f32 (plus an index line per token in
-`<path>.idx`). The closure direction was built as the contrastive mean of those
-captured rows between prompts that closed cleanly and prompts that looped.
+first and firmly later. The closure direction was built as the contrastive
+mean of the site rows (the 40 layer rows read by attention, captured per decode
+token) between prompts that closed cleanly and prompts that looped. The two 419
+probes that measured the `</think>` logit gap and captured those rows were
+removed once the closure tuning closed; the shipped profile embeds the result.
 Everything else — the profile name, the
 description, each slot's source filename and the SHA-256 of its matrix bytes —
 is provenance the engine carries without interpreting. The requirements are in
@@ -122,8 +119,10 @@ is provenance the engine carries without interpreting. The requirements are in
 
 The raw `.f32` directions and their `.json` sidecars are **not shipped** — the
 `candor` profile embeds the three it uses, and the investigation that chose them
-is closed. This is the record of what those directions were and how to rebuild
-them, all measured on the `1017` checkpoint.
+is closed. This is the record of what those directions were and how they were
+derived, all measured on the `1017` checkpoint; `v41-closure-satisfied` cannot be
+rebuilt from this tree since the 419 site-capture probe was removed, and the
+profile embeds it.
 
 The profile embeds three directions:
 
@@ -131,17 +130,33 @@ The profile embeds three directions:
 |---|---|---|
 | `v41-q0dwarf-equi` | slot 1, scale 7, both phases | per-layer bisector (equiangular, unit) of `mrfk-q0` and `dwarfstar-wo` |
 | `v41-mrfk-q1` | slot 2, scale 7, think only | `mrfakename` q1 refusal axis |
-| `v41-closure-satisfied` | additive closure channel (419) | contrastive mean of the site rows captured (`DS4_V41_SITE_CAPTURE`) between prompts that closed the reasoning loop cleanly and prompts that looped; raw displacement rows, not unit |
+| `v41-closure-satisfied` | additive closure channel (419) | contrastive mean of the site rows captured by the (removed) 419 probe between prompts that closed the reasoning loop cleanly and prompts that looped; raw displacement rows, not unit |
 
 Their parents and the alternatives that were weighed and dropped:
 
-- `v41-mrfk-q0` / `v41-mrfk-q1` — the `mrfakename` q0/q1 axes, extracted by the
-  (removed) `vectors/mrfk_extract.py`; `q0` alone is the rank-1 reference.
-- `v41-dwarfstar-wo` — DwarfStar weight-diff direction; its derivation script was
-  never in this tree (recorded in the `0cbf547` steering diary and its sidecar).
-- `v41-q0dwarf-interleave` — same two parents as `equi` but alternating by layer;
-  an alternative that lost to the bisector.
+- `v41-mrfk-q0` / `v41-mrfk-q1` — the two columns of `Q` (5120x2, orthonormal) in
+  `abliteration-edit.npz` of the Hugging Face model
+  `mrfakename/DeepSeek-V4.1-Flash-1017-abliterated`: a global rank-2 refusal
+  subspace measured over chat and think. Each is a global direction (the same
+  unit row on layers 1-39, row 0 zero); `q0` is the dominant axis and, alone,
+  the rank-1 reference. The extraction script was a scratch file, never in this
+  tree.
+- `v41-dwarfstar-wo` — the per-layer difference of `attn_output_b` (the tensor
+  that writes into the fold site) between our `1017` IQ2_XXS-Q2_K-imatrix base
+  and `AtomicChat`'s DwarfStar GGUF of the same quant, whose refusal edit is baked
+  into 122 residual-write tensors (`attn_output_b`, `ffn_down_shexp`,
+  `ffn_down_exps` x40 each, `engram_kv` x2; scale 2.0, rank-1). All 40 layers
+  came out edited and mutually parallel (|cos| 1.0), a global direction like
+  `q0`, with `cos(dwarfstar-wo, q0)` 0.71: two independent abliterations of the
+  `1017` agree. Alone it peaked at scale 8 (39.9 /44 non-think, against `q0@7`
+  41.6), failing on prompts disjoint from `q0`'s, which is why the two were
+  bisected. Its derivation script was never in this tree.
+- `v41-q0dwarf-interleave` — same two parents as `equi` but alternating by layer
+  (`q0` on even layers, `dwarfstar-wo` on odd); 10.0 on the 12-id screen against
+  the bisector's 11.0, below both parents.
 - `v41-msuiche-1017` — msuiche's control vector converted to `.f32`; the baseline
   the shipped pair beat (26.7 vs 41.x).
 
-The full search, KPIs and accepting-run ids are in `result.md` and `kpi.md`.
+The accepting runs and standing numbers are in `result.md`, the scoring rule in
+`kpi.md`, and the roads measured and dropped on the way in `investigation.md`,
+"Closed roads".

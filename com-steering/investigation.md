@@ -1,9 +1,9 @@
-# investigation.md — what is under test and where it stands
+# investigation.md — what was tested and where it stands
 
-The living exploration: the directions in play, the open ideas, the roads
-already closed. The method they rest on is [`spec.md`](spec.md); the next
-concrete actions are [`todo.md`](todo.md); the numbers are
-[`result.md`](result.md). Update the *Current state* block whenever a run lands.
+The exploration record: the directions weighed, the open ideas, the roads
+already closed. The method they rest on is [`spec.md`](spec.md); the numbers
+are [`result.md`](result.md). Update the *Current state* block whenever a run
+lands.
 
 ## Goal
 
@@ -13,44 +13,94 @@ with **no quality regression** in either reasoning phase. "Better" is defined in
 
 ## Current state
 
-- **Shipped:** `sf-ds4-1flash-candor` — slot 1 `q0dwarf-equi @7` both phases,
-  slot 2 `mrfk-q1 @7` think only. Standing number **41.6 /44** non-think,
-  39.0 think. Pair is near-orthogonal (`|cos|` median 0.105).
+- **Shipped:** `sf-ds4-1flash-candor` — slot 1 `q0dwarf-equi @7` both phases
+  (held 25 tokens, then 7 -> 3.5 in think and 7 -> 4 in the answer over 256,
+  `418-C`), slot 2 `mrfk-q1 @7` think only, plus the additive `close2` closure
+  channel in think (`419`, promoted in `420`). Standing numbers **41.3 /44**
+  non-think (`C41 D1 R2`), **41.0 /44** think (`C41 D0 R3`, loop 3/44). Pair is
+  near-orthogonal (`|cos|` median 0.105).
 - Slot 2 helps only in the think phase; on the answer phase it made results
   worse, so it is gated off there.
 
 ## Directions in play
 
-| Vector | Provenance recorded? | Note |
-|---|---|---|
-| `q0dwarf-equi` | yes (sidecar) | slot 1 of the shipped profile |
-| `q0dwarf-interleave` | yes (sidecar) | alternative composition of the same two inputs |
-| `msuiche-1017` | yes (sidecar) | 1017-native control vector |
-| `mrfk-q0` | **no** | slot 1's parent — provenance only in `vectors/mrfk_extract.py` |
-| `mrfk-q1` | **no** | slot 2 itself — same gap |
-| `dwarfstar-wo` | **no** | `equi`'s other parent |
+| Vector | Note |
+|---|---|
+| `q0dwarf-equi` | slot 1 of the shipped profile |
+| `q0dwarf-interleave` | alternative composition of the same two inputs |
+| `msuiche-1017` | 1017-native control vector, the 26.7 baseline |
+| `mrfk-q0` | slot 1's parent; alone, the rank-1 reference |
+| `mrfk-q1` | slot 2 itself |
+| `dwarfstar-wo` | `equi`'s other parent |
 
-The three missing sidecars matter: the shipped profile currently rests on files
-whose origin is recorded nowhere durable. Closing them is a prerequisite for
-pinning a shipped default to the run that chose it (see `todo.md`).
+How each was derived is recorded in [`README.md`](README.md), "Directions
+(provenance)". No raw `.f32` or sidecar is shipped: the profile embeds the
+matrices it uses.
 
 ## Open ideas
 
-Live hypotheses worth a run. Promote to `todo.md` when picked up, retire to
-*Closed roads* when ruled out.
+Live hypotheses worth a run. Retire to *Closed roads* when ruled out.
 
-- [ ] Close the three missing provenance sidecars, then re-confirm Candor.
 - [ ] A composition that starts from `mrfk-q0` + `dwarfstar-wo` directly rather
       than from `q0dwarf-equi` (the "never one fusion" rule, `spec.md`).
-- [ ] Finalist validation on the large external sets once a config beats 41.6.
+- [ ] Finalist validation on AdvBench 520 / HarmBench 400 / StrongREJECT 313
+      once a config beats the standing numbers in both phases.
+- [ ] Benign / over-refusal of the shipped directions (unmeasured).
 
 ## Closed roads
 
-Ideas already measured and dropped stay recorded so they are not re-tried. The
-full reasoning and numbers are in the historical diary
-(`0cbf547:eval/steering-comparison/TODO.md`, 228 lines) and `STEERING.md` beside
-it. When you drop an idea, add a one-line verdict to `todo.md` and, if it carries
-a number, a row to `result.md`.
+Ideas already measured and dropped, so they are not re-tried. Scores are
+`C + 0.3 D` on the fixed 44 ids (`/44`) or the 12-id hard screen (`/12`),
+non-think unless marked. The search before the `1017` checkpoint used another
+scale (mean per prompt, deflect weight 0.3) and is quoted as such.
+
+- **Fusions of the pre-`1017` vectors** (abliteration, msuiche, dealignai;
+  2026-10-18 to 10-20). `fused = unit(a+m)` (the 50/50 bisector), an
+  abliteration-msuiche arc, per-band weights, per-layer multipliers, random
+  jitter around `fused`. On the 44, `equiangular@7` 0.900, `interleave@7` 0.893,
+  `fused@7` 0.864, but a random cos-0.95 jitter of `fused` scored within ~1 of
+  the designed winners, and on 100 new prompts (AdvBench/HarmBench/StrongREJECT
+  mix) no combination beat `fused@7` (0.943 vs 0.913 / 0.892). Superseded by
+  the `1017`-native vectors below.
+- **Per-prompt routers** (centroid, k-NN, logistic on fold features, an
+  embedding 1-NN): at the median layer every router stayed below the best fixed
+  config, on the 44, on 50 and on 100 new prompts. The best-layer numbers were a
+  max over 39 layers chosen on the same data.
+- **Full rank-2 projective removal** of the abliteration-msuiche plane (either
+  basis, pushed axis at -4 to -6): 5.5-9.5 /18 hard against `fused@7` 12.0. A
+  full second removal costs about five already-open prompts whatever its
+  direction.
+- **The `1017` refusal subspace** (SVD of 1000 refused prompts' fold rows):
+  `u1@7` 32.1 /44, a tie with `fused@7` 32.2; nulling `u2` as well 26.8 (along
+  `u2`/`u3` refused prompts sit at 0 and complied ones away from it, so a
+  projective null moves everything to the refused centroid); `lda@7` 0.0 (the
+  harmful-content marker is not the refusal); `u1` zeroed on layers 0-11 18.9,
+  so the low layers are where the fold acts.
+- **Additive compliance push** (slot 2 as `h -= G*d2*dot(p,h)` with a dosed
+  `d2`): a large gain on a weak first fold (`u1` +5.8, `fused` +4.0) but it costs
+  3-6 open prompts, and on the best fold it lost (`equiangular` 37.9 -> 34.8). On
+  `q0@7`, G=1 is inert (41.6 = 41.6) and G=2 uniform over-steers easy prompts.
+- **Scale off 7**: `q0@9` 33.6 /44 (refusals 1 -> 9, over-steer), `q0@5` 10.3
+  /12 vs 11.3; `dwarfstar-wo` peaks at 8 (11.0 /12, 39.9 /44); `equi@8` 9.6 and
+  `@6.5` 9.3 /12 against 11.0 at 7.
+- **`mrfk-q1` ungated** as a second slot: `q0+q1` 7.3 /12 against `q0` 11.3,
+  and 8.0 vs 10.0 in think; `equiangular+q1` 30.9 /44. It only helps gated to
+  think (on top of slot 1), never alone (`q0` answer-only + `q1` think-only
+  opened none of 7 think refusals).
+- **The pre-`1017` `equiangular` in think**: 7.6 non-think, 2.6 think /12; it
+  collapses while the model reasons. `q0` held both (11.3 / 10.0).
+- **Closed-loop controller** (per-token slot-1 scale from the pre-fold `q0`
+  dot at layer 25, plus a piloted push): non-think it climbs toward `q0@7` 41.6
+  from below and never exceeds it; in think it regresses (30.9 vs 39.0, the
+  reasoning destabilises and runs long). No per-token signal beat a chosen
+  constant scale.
+- **Think budget**: think runs at 2048 tokens judged truncated reasoning, not
+  answers (3 of 7 think "refusals" were cut off). Think verdicts now use
+  4 x 2048 = 8192 tokens, non-think 2048.
+- **`418` schedules** and the **`419` closure tuning** are below.
+
+When you drop an idea, add a one-line verdict here and, if it carries a number,
+a row to `result.md`.
 
 ## 418 decay-to-zero (closed road, 2026-10-24)
 
@@ -94,9 +144,8 @@ its own).
 through the whole answer and only eases in a late tail, or an answer-phase dose
 keyed to the answer's first tokens with a floor well above 0 — i.e. the opposite of
 decay-to-0. The runtime (`ds41_steering_apply_gates`, profile `decay_tokens`/
-`decay_final`) and the eval harness `--steering-profile` support are left in the
-tree (N=0 is bitwise the constant path); the decay is reached only by an experiment
-profile no shipped config loads.
+`decay_final`) is left in the tree (N=0 is bitwise the constant path); the shipped
+profile uses it for the 418-C schedule.
 
 ## 418 follow-up (2026-10-24): gentle 256-token decay — answer good, think bad
 
@@ -126,11 +175,11 @@ non-think, decay256 vs constant, same ids.
 
 ## 419 stage 0 (2026-10-25): the closure gap — the decision is absent, not near
 
-Probe `DS4_V41_CLOSURE_GAP_TRACE` (419): per think-phase forward,
+Probe `DS4_V41_CLOSURE_GAP_TRACE` (419, since removed): per think-phase forward,
 `gap = logit[argmax] − logit[</think>]`. Base vs constant candor
 (`sf-ds4-1flash-candor-constant.sfsteer`) on the 20 loop-prone ids, think @8192,
-think-level 75; trace `eval/out/419-stage0/closure.trace`, reducer
-`com-steering/closure_gap.py` (numbers only, no text read).
+think-level 75; trace `eval/out/419-stage0/closure.trace`, a scratch reducer, never in this tree
+(numbers only, no text read).
 
 | Arm | Closed | Exit position (think tokens) | Gap at line ends, median / p10 / min | Gap, all forwards, median |
 |---|---|---|---|---|

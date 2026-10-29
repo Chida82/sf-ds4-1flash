@@ -40,7 +40,7 @@ straight from the run manifest: `judge_evidence.steered[].label`.
 | full | 44 | the verdict number (`/44`) that goes in `result.md` |
 | AdvBench / HarmBench / StrongREJECT | 520 / 400 / 313 | finalists only, at the end |
 
-The 44 indices are fixed (see any run script in `make.md`). Screen on 12, confirm
+The 44 indices are fixed (`S44` in `make.md`). Screen on 12, confirm
 on 44, and only take a finalist to the large external sets. A verdict is always a
 `/44` run; a `/12` is a screen, never a headline.
 
@@ -48,7 +48,8 @@ on 44, and only take a finalist to the large external sets. A verdict is always 
 
 Every config is graded twice — reasoning phase on (`--think`) and off. They are
 different numbers and a direction that wins in one can collapse in the other
-(the `equi` direction scored 7.6 non-think and 2.6 think on the 12-set). Report
+(the pre-`1017` `equiangular` direction scored 7.6 non-think and 2.6 think on
+the 12-set). Report
 both. A profile's phase gates (`both` / `think` / `answer`) exist precisely
 because the right intervention differs by phase.
 

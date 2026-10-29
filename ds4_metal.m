@@ -384,30 +384,24 @@ static id<MTLComputePipelineState> g_set_rows_f32_i32_pipeline;
 static id<MTLComputePipelineState> g_get_rows_f32_pipeline;
 static id<MTLComputePipelineState> g_get_rows_f16_pipeline;
 static id<MTLComputePipelineState> g_get_rows_i32_pipeline;
-static id<MTLComputePipelineState> g_get_rows_q8_0_pipeline;
-static id<MTLComputePipelineState> g_get_rows_q4_0_pipeline;
-static id<MTLComputePipelineState> g_get_rows_q4_K_pipeline;
+/* sf-ablate(metal): get_rows q8_0/q4_0/q4_K, cpy f16->f16, swiglu, add3, add_rms_norm and the hc producer pre-norm pipelines dropped; created and freed but never dispatched on the V4.1 graph */
 static id<MTLComputePipelineState> g_repeat_f32_pipeline;
 static id<MTLComputePipelineState> g_concat_pipeline;
 static id<MTLComputePipelineState> g_cpy_f32_f32_pipeline;
 static id<MTLComputePipelineState> g_cpy_f32_f16_pipeline;
 static id<MTLComputePipelineState> g_cpy_contig_f32_f16_pipeline;
 static id<MTLComputePipelineState> g_cpy_f16_f32_pipeline;
-static id<MTLComputePipelineState> g_cpy_f16_f16_pipeline;
 static id<MTLComputePipelineState> g_cpy_contig_f16_f32_pipeline;
 static id<MTLComputePipelineState> g_cpy_contig_f16_f16_pipeline;
 static id<MTLComputePipelineState> g_flash_kv_stage_f16_pipeline;
-static id<MTLComputePipelineState> g_swiglu_pipeline;
 static id<MTLComputePipelineState> g_swiglu_flat_pipeline;
 static id<MTLComputePipelineState> g_add_pipeline;
 static id<MTLComputePipelineState> g_add2_pipeline;
-static id<MTLComputePipelineState> g_add3_pipeline;
 static id<MTLComputePipelineState> g_moe_sum6_pipeline;
 static id<MTLComputePipelineState> g_moe_sum8_pipeline;
 static id<MTLComputePipelineState> g_mul_pipeline;
 static id<MTLComputePipelineState> g_rms_norm_pipeline;
 static id<MTLComputePipelineState> g_rms_norm_plain_pipeline;
-static id<MTLComputePipelineState> g_add_rms_norm_pipeline;
 static id<MTLComputePipelineState> g_rms_norm_scale_pipeline;
 static id<MTLComputePipelineState> g_dsv4_qkv_rms_norm_pipeline;
 static id<MTLComputePipelineState> g_dsv4_head_rms_norm_rope_tail_pipeline;
@@ -415,8 +409,6 @@ static bool g_use_dsv4_head_rms_norm_rope_tail_pipeline;
 static id<MTLComputePipelineState> g_hc_split_sinkhorn_pipeline;
 static id<MTLComputePipelineState> g_hc_split_weighted_sum_pipeline;
 static id<MTLComputePipelineState> g_hc_split_weighted_sum_norm_pipeline;
-static id<MTLComputePipelineState> g_dsv4_hc_producer_pre_norm_pipeline;
-static id<MTLComputePipelineState> g_dsv4_hc_expand_producer_pre_norm_pipeline;
 static NSMutableDictionary<NSString *, id<MTLBuffer>> *g_dsv4_hc_barrier_cache;
 static NSMutableDictionary<NSString *, NSNumber *> *g_dsv4_hc_barrier_gen;
 static id<MTLComputePipelineState> g_hc_weighted_sum_pipeline;
@@ -6680,57 +6672,7 @@ int ds4_gpu_init(void) {
             return 0;
         }
 
-        fn = [library newFunctionWithName:@"kernel_get_rows_q8_0_f32"];
-        if (!fn) {
-            fprintf(stderr, "ds4: Metal kernel_get_rows_q8_0_f32 function not found\n");
-            g_queue = nil;
-            g_device = nil;
-            return 0;
-        }
-
-        g_get_rows_q8_0_pipeline = [g_device newComputePipelineStateWithFunction:fn error:&error];
-        if (!g_get_rows_q8_0_pipeline) {
-            fprintf(stderr, "ds4: Metal kernel_get_rows_q8_0_f32 pipeline failed: %s\n",
-                    [[error localizedDescription] UTF8String]);
-            g_queue = nil;
-            g_device = nil;
-            return 0;
-        }
-
-        fn = [library newFunctionWithName:@"kernel_get_rows_q4_0_f32"];
-        if (!fn) {
-            fprintf(stderr, "ds4: Metal kernel_get_rows_q4_0_f32 function not found\n");
-            g_queue = nil;
-            g_device = nil;
-            return 0;
-        }
-
-        g_get_rows_q4_0_pipeline = [g_device newComputePipelineStateWithFunction:fn error:&error];
-        if (!g_get_rows_q4_0_pipeline) {
-            fprintf(stderr, "ds4: Metal kernel_get_rows_q4_0_f32 pipeline failed: %s\n",
-                    [[error localizedDescription] UTF8String]);
-            g_queue = nil;
-            g_device = nil;
-            return 0;
-        }
-
-        fn = [library newFunctionWithName:@"kernel_get_rows_q4_K_f32"];
-        if (!fn) {
-            fprintf(stderr, "ds4: Metal kernel_get_rows_q4_K_f32 function not found\n");
-            g_queue = nil;
-            g_device = nil;
-            return 0;
-        }
-
-        g_get_rows_q4_K_pipeline = [g_device newComputePipelineStateWithFunction:fn error:&error];
-        if (!g_get_rows_q4_K_pipeline) {
-            fprintf(stderr, "ds4: Metal kernel_get_rows_q4_K_f32 pipeline failed: %s\n",
-                    [[error localizedDescription] UTF8String]);
-            g_queue = nil;
-            g_device = nil;
-            return 0;
-        }
-
+        /* sf-ablate(metal): init of the never-dispatched get_rows q*, cpy f16->f16, swiglu, add3 and add_rms_norm pipelines dropped here and below */
         fn = [library newFunctionWithName:@"kernel_repeat_f32"];
         if (!fn) {
             fprintf(stderr, "ds4: Metal kernel_repeat_f32 function not found\n");
@@ -6844,23 +6786,6 @@ int ds4_gpu_init(void) {
         g_cpy_f16_f32_pipeline = [g_device newComputePipelineStateWithFunction:fn error:&error];
         if (!g_cpy_f16_f32_pipeline) {
             fprintf(stderr, "ds4: Metal kernel_cpy_f16_f32 pipeline failed: %s\n",
-                    [[error localizedDescription] UTF8String]);
-            g_queue = nil;
-            g_device = nil;
-            return 0;
-        }
-
-        fn = [library newFunctionWithName:@"kernel_cpy_f16_f16"];
-        if (!fn) {
-            fprintf(stderr, "ds4: Metal kernel_cpy_f16_f16 function not found\n");
-            g_queue = nil;
-            g_device = nil;
-            return 0;
-        }
-
-        g_cpy_f16_f16_pipeline = [g_device newComputePipelineStateWithFunction:fn error:&error];
-        if (!g_cpy_f16_f16_pipeline) {
-            fprintf(stderr, "ds4: Metal kernel_cpy_f16_f16 pipeline failed: %s\n",
                     [[error localizedDescription] UTF8String]);
             g_queue = nil;
             g_device = nil;
@@ -6997,23 +6922,6 @@ int ds4_gpu_init(void) {
             return 0;
         }
 
-        fn = [library newFunctionWithName:@"kernel_swiglu_f32"];
-        if (!fn) {
-            fprintf(stderr, "ds4: Metal kernel_swiglu_f32 function not found\n");
-            g_queue = nil;
-            g_device = nil;
-            return 0;
-        }
-
-        g_swiglu_pipeline = [g_device newComputePipelineStateWithFunction:fn error:&error];
-        if (!g_swiglu_pipeline) {
-            fprintf(stderr, "ds4: Metal kernel_swiglu_f32 pipeline failed: %s\n",
-                    [[error localizedDescription] UTF8String]);
-            g_queue = nil;
-            g_device = nil;
-            return 0;
-        }
-
         fn = [library newFunctionWithName:@"kernel_swiglu_flat_f32"];
         if (!fn) {
             fprintf(stderr, "ds4: Metal kernel_swiglu_flat_f32 function not found\n");
@@ -7109,24 +7017,6 @@ int ds4_gpu_init(void) {
         g_add2_pipeline = [g_device newComputePipelineStateWithFunction:fn error:&error];
         if (!g_add2_pipeline) {
             fprintf(stderr, "ds4: Metal kernel_add2_f32 pipeline failed: %s\n",
-                    [[error localizedDescription] UTF8String]);
-            g_queue = nil;
-            g_device = nil;
-            return 0;
-        }
-
-        fn = [library newFunctionWithName:@"kernel_add3_f32"];
-        if (!fn) {
-            fprintf(stderr, "ds4: Metal kernel_add3_f32 function not found\n");
-            g_queue = nil;
-            g_device = nil;
-            return 0;
-        }
-
-        error = nil;
-        g_add3_pipeline = [g_device newComputePipelineStateWithFunction:fn error:&error];
-        if (!g_add3_pipeline) {
-            fprintf(stderr, "ds4: Metal kernel_add3_f32 pipeline failed: %s\n",
                     [[error localizedDescription] UTF8String]);
             g_queue = nil;
             g_device = nil;
@@ -7252,22 +7142,6 @@ int ds4_gpu_init(void) {
         g_rms_norm_plain_pipeline = [g_device newComputePipelineStateWithFunction:fn error:&error];
         if (!g_rms_norm_plain_pipeline) {
             fprintf(stderr, "ds4: Metal kernel_rms_norm_f32_4 pipeline failed: %s\n",
-                    [[error localizedDescription] UTF8String]);
-            g_queue = nil;
-            g_device = nil;
-            return 0;
-        }
-
-        fn = [library newFunctionWithName:@"kernel_add_rms_norm_mul_f32_4"];
-        if (!fn) {
-            fprintf(stderr, "ds4: Metal kernel_add_rms_norm_mul_f32_4 function not found\n");
-            g_queue = nil;
-            g_device = nil;
-            return 0;
-        }
-        g_add_rms_norm_pipeline = [g_device newComputePipelineStateWithFunction:fn error:&error];
-        if (!g_add_rms_norm_pipeline) {
-            fprintf(stderr, "ds4: Metal kernel_add_rms_norm_mul_f32_4 pipeline failed: %s\n",
                     [[error localizedDescription] UTF8String]);
             g_queue = nil;
             g_device = nil;
@@ -10585,10 +10459,7 @@ void ds4_gpu_tp_shutdown(void) {
     g_tp_poll_status = NULL;
 }
 
-void ds4_gpu_tp_suspend_expert_sharding(int suspend) {
-    if (!g_tp_thread_running) return;
-    g_tp_split_world = suspend ? 1 : 2;
-}
+/* sf-ablate(specdec): ds4_gpu_tp_suspend_expert_sharding dropped; only the TP spec-dec drafting cycles called it */
 
 /* Fold request for producers that write the TP partial with a generic matvec
  * (the attention output K-slice): the layer code registers (layer, gate)
@@ -11263,24 +11134,19 @@ void ds4_gpu_cleanup(void) {
         g_get_rows_f32_pipeline = nil;
         g_get_rows_f16_pipeline = nil;
         g_get_rows_i32_pipeline = nil;
-        g_get_rows_q8_0_pipeline = nil;
-        g_get_rows_q4_0_pipeline = nil;
-        g_get_rows_q4_K_pipeline = nil;
+        /* sf-ablate(metal): the dropped never-dispatched pipelines have nothing to release here */
         g_repeat_f32_pipeline = nil;
         g_concat_pipeline = nil;
         g_cpy_f32_f32_pipeline = nil;
         g_cpy_f32_f16_pipeline = nil;
         g_cpy_contig_f32_f16_pipeline = nil;
         g_cpy_f16_f32_pipeline = nil;
-        g_cpy_f16_f16_pipeline = nil;
         g_cpy_contig_f16_f32_pipeline = nil;
         g_cpy_contig_f16_f16_pipeline = nil;
         g_flash_kv_stage_f16_pipeline = nil;
-        g_swiglu_pipeline = nil;
         g_swiglu_flat_pipeline = nil;
         g_add_pipeline = nil;
         g_add2_pipeline = nil;
-        g_add3_pipeline = nil;
         g_moe_sum6_pipeline = nil;
         g_moe_sum8_pipeline = nil;
         g_mul_pipeline = nil;
@@ -11296,7 +11162,6 @@ void ds4_gpu_cleanup(void) {
         g_unary_fill_f16_pipeline = nil;
         g_rms_norm_pipeline = nil;
         g_rms_norm_plain_pipeline = nil;
-        g_add_rms_norm_pipeline = nil;
         g_rms_norm_scale_pipeline = nil;
         g_dsv4_qkv_rms_norm_pipeline = nil;
         g_dsv4_head_rms_norm_rope_tail_pipeline = nil;
@@ -11304,7 +11169,6 @@ void ds4_gpu_cleanup(void) {
         g_hc_split_sinkhorn_pipeline = nil;
         g_hc_split_weighted_sum_pipeline = nil;
         g_hc_split_weighted_sum_norm_pipeline = nil;
-        g_dsv4_hc_producer_pre_norm_pipeline = nil;
         g_hc_weighted_sum_pipeline = nil;
         g_output_hc_weights4_pipeline = nil;
         g_hc_expand_pipeline = nil;

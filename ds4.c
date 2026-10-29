@@ -672,21 +672,7 @@ static bool ds4_streq(ds4_str s, const char *z) {
     size_t n = strlen(z);
     return s.len == n && memcmp(s.ptr, z, n) == 0;
 }
-
-static bool ds4_str_starts_with(ds4_str s, const char *prefix) {
-    size_t n = strlen(prefix);
-    return s.len >= n && memcmp(s.ptr, prefix, n) == 0;
-}
-
-static bool ds4_str_contains(ds4_str s, const char *needle) {
-    size_t n = strlen(needle);
-    if (n == 0) return true;
-    if (s.len < n) return false;
-    for (uint64_t i = 0; i <= s.len - n; i++) {
-        if (memcmp(s.ptr + i, needle, n) == 0) return true;
-    }
-    return false;
-}
+/* sf-ablate(specdec): ds4_str_starts_with/ds4_str_contains dropped; only the DSpark GGUF summary used them */
 
 static bool ds4_str_eq(ds4_str a, ds4_str b) {
     return a.len == b.len && memcmp(a.ptr, b.ptr, a.len) == 0;
@@ -2095,183 +2081,10 @@ static void print_size(uint64_t bytes) {
     printf("%.2f GiB", (double)bytes / gib);
 }
 
-#define DS4_DSPARK_MAX_TARGET_LAYERS 8
-#define DS4_DSPARK_MAX_STAGES 8
-#define DS4_DSPARK_MAX_BLOCK_SIZE 16
 /* Seed plus five drafts needs five intermediate compressor frontiers. */
 #define DS4_SPEC_PREFIX_SLOTS 5
 
-typedef struct {
-    uint32_t stages;
-    uint32_t block_size;
-    uint32_t markov_rank;
-    uint32_t noise_token_id;
-    uint32_t target_layer_count;
-    uint32_t target_layers[DS4_DSPARK_MAX_TARGET_LAYERS];
-    bool has_metadata;
-    bool has_main_proj;
-    bool has_main_norm;
-    bool has_markov_head;
-    bool has_confidence_head;
-    bool has_final_head;
-    bool has_block_size;
-    bool has_markov_rank;
-    bool has_noise_token_id;
-    bool has_target_layers;
-} ds4_dspark_summary;
-
-typedef enum {
-    DS4_SUPPORT_NONE = 0,
-    DS4_SUPPORT_MTP_LEGACY,
-    DS4_SUPPORT_DSPARK,
-} ds4_support_kind;
-
-static bool model_get_u32_any(const ds4_model *m, const char *const *keys,
-                              size_t nkeys, uint32_t *out) {
-    for (size_t i = 0; i < nkeys; i++) {
-        if (model_get_u32(m, keys[i], out)) return true;
-    }
-    return false;
-}
-
-static bool model_get_u32_array_any(const ds4_model *m, const char *const *keys,
-                                    size_t nkeys, uint32_t *out,
-                                    uint32_t cap, uint32_t *n_out) {
-    for (size_t ik = 0; ik < nkeys; ik++) {
-        ds4_array_ref arr = {0};
-        if (!model_get_array(m, keys[ik], &arr)) continue;
-        if (arr.type != GGUF_VALUE_UINT32 && arr.type != GGUF_VALUE_INT32) continue;
-
-        ds4_cursor c = cursor_at(m, arr.data_pos);
-        uint32_t n = arr.len < cap ? (uint32_t)arr.len : cap;
-        for (uint32_t i = 0; i < n; i++) {
-            if (arr.type == GGUF_VALUE_UINT32) {
-                if (!cursor_u32(&c, &out[i])) return false;
-            } else {
-                int32_t v = 0;
-                if (!cursor_read(&c, &v, sizeof(v))) return false;
-                if (v < 0) return false;
-                out[i] = (uint32_t)v;
-            }
-        }
-        *n_out = n;
-        return true;
-    }
-    return false;
-}
-
-static bool ds4_tensor_mtp_stage(ds4_str name, uint32_t *stage) {
-    if (!ds4_str_starts_with(name, "mtp.")) return false;
-    uint64_t pos = 4;
-    if (pos >= name.len || !isdigit((unsigned char)name.ptr[pos])) return false;
-
-    uint32_t value = 0;
-    while (pos < name.len && isdigit((unsigned char)name.ptr[pos])) {
-        uint32_t digit = (uint32_t)(name.ptr[pos] - '0');
-        if (value > (UINT32_MAX - digit) / 10u) return false;
-        value = value * 10u + digit;
-        pos++;
-    }
-    if (pos >= name.len || name.ptr[pos] != '.') return false;
-    *stage = value;
-    return true;
-}
-
-static ds4_dspark_summary model_dspark_summary(const ds4_model *m) {
-    static const char *const block_keys[] = {
-        "deepseek4.dspark.block_size",
-        "deepseek4.dspark_block_size",
-        "dspark.block_size",
-    };
-    static const char *const markov_keys[] = {
-        "deepseek4.dspark.markov_rank",
-        "deepseek4.dspark_markov_rank",
-        "dspark.markov_rank",
-    };
-    static const char *const noise_keys[] = {
-        "deepseek4.dspark.noise_token_id",
-        "deepseek4.dspark_noise_token_id",
-        "dspark.noise_token_id",
-    };
-    static const char *const target_keys[] = {
-        "deepseek4.dspark.target_layer_ids",
-        "deepseek4.dspark_target_layer_ids",
-        "dspark.target_layer_ids",
-    };
-
-    ds4_dspark_summary s = {0};
-    if (model_get_u32_any(m, block_keys, sizeof(block_keys) / sizeof(block_keys[0]),
-                          &s.block_size)) {
-        s.has_metadata = true;
-        s.has_block_size = true;
-    }
-    if (model_get_u32_any(m, markov_keys, sizeof(markov_keys) / sizeof(markov_keys[0]),
-                          &s.markov_rank)) {
-        s.has_metadata = true;
-        s.has_markov_rank = true;
-    }
-    if (model_get_u32_any(m, noise_keys, sizeof(noise_keys) / sizeof(noise_keys[0]),
-                          &s.noise_token_id)) {
-        s.has_metadata = true;
-        s.has_noise_token_id = true;
-    }
-    if (model_get_u32_array_any(m,
-                                target_keys,
-                                sizeof(target_keys) / sizeof(target_keys[0]),
-                                s.target_layers,
-                                DS4_DSPARK_MAX_TARGET_LAYERS,
-                                &s.target_layer_count)) {
-        s.has_metadata = true;
-        s.has_target_layers = true;
-    }
-
-    uint32_t max_stage = 0;
-    bool have_stage = false;
-    for (uint64_t i = 0; i < m->n_tensors; i++) {
-        ds4_str name = m->tensors[i].name;
-        uint32_t stage = 0;
-        if (!ds4_tensor_mtp_stage(name, &stage)) continue;
-        if (!have_stage || stage > max_stage) max_stage = stage;
-        have_stage = true;
-
-        if (ds4_str_contains(name, ".main_proj.")) s.has_main_proj = true;
-        if (ds4_str_contains(name, ".main_norm.")) s.has_main_norm = true;
-        if (ds4_str_contains(name, ".markov_head.")) s.has_markov_head = true;
-        if (ds4_str_contains(name, ".confidence_head.")) s.has_confidence_head = true;
-        if (ds4_str_contains(name, ".hc_head_") ||
-            ds4_str_contains(name, ".norm.weight")) {
-            s.has_final_head = true;
-        }
-    }
-    if (have_stage) s.stages = max_stage + 1u;
-    return s;
-}
-
-static void model_print_dspark_summary(const ds4_model *m) {
-    ds4_dspark_summary s = model_dspark_summary(m);
-    if (!s.stages && !s.has_metadata) return;
-
-    printf("mtp/dspark: stages=%u", s.stages);
-    if (s.block_size) printf(" block=%u", s.block_size);
-    if (s.markov_rank) printf(" markov_rank=%u", s.markov_rank);
-    if (s.noise_token_id) printf(" noise_token=%u", s.noise_token_id);
-    if (s.target_layer_count) {
-        printf(" target_layers=");
-        for (uint32_t i = 0; i < s.target_layer_count; i++) {
-            printf("%s%u", i == 0 ? "" : ",", s.target_layers[i]);
-        }
-    }
-    printf("\n");
-    if (s.has_main_proj || s.has_main_norm || s.has_markov_head ||
-        s.has_confidence_head || s.has_final_head) {
-        printf("mtp/dspark tensors: main_proj=%s main_norm=%s markov=%s confidence=%s final_head=%s\n",
-               s.has_main_proj ? "yes" : "no",
-               s.has_main_norm ? "yes" : "no",
-               s.has_markov_head ? "yes" : "no",
-               s.has_confidence_head ? "yes" : "no",
-               s.has_final_head ? "yes" : "no");
-    }
-}
+/* sf-ablate(specdec): the MTP/DSpark GGUF summary, its metadata readers and the support-kind enum are gone; no V4.1 GGUF carries draft tensors and this child has no speculative decoding */
 
 static void model_summary(const ds4_model *m) {
     ds4_str name = {0};
@@ -2373,7 +2186,6 @@ static void model_summary(const ds4_model *m) {
         printf("experts: count=%u used=%u groups=%u groups_used=%u\n",
                n_expert, n_expert_used, n_expert_groups, n_group_used);
     }
-    model_print_dspark_summary(m);
     printf("file size: ");
     print_size(m->file_size ? m->file_size : m->size);
     printf("\n");
@@ -3763,7 +3575,6 @@ static uint64_t ds4_streaming_manual_cache_safe_bytes(
         int         ctx_size,
         uint32_t    prefill_chunk,
         bool        ssd_streaming) {
-    (void)ssd_streaming;
 #ifdef DS4_NO_GPU
     (void)backend;
     (void)ctx_size;
@@ -4444,8 +4255,6 @@ static void weights_bind(
     for (uint32_t il = start; il <= end; il++) {
         weights_bind_layer(&w->layer[il], m, il);
     }
-    /* GLM nextn/MTP block(s): excluded from the executable pass but bound
-     * so the drafter can run them. Only when the full model is loaded. */
     weights_validate_layout(w, start, end, require_token_embd, require_output);
 }
 
@@ -12009,16 +11818,6 @@ static bool sample_build_probabilities(const float *logits,
                                        float min_p,
                                        float *probs);
 #endif
-#ifdef DS4_NO_GPU
-static int sample_probabilities(const float *probs, uint32_t n_vocab,
-                                uint64_t *rng);
-#endif
-#ifdef DS4_TEST_HOOKS
-static int sample_residual_probabilities(float *target_probs,
-                                         const float *draft_probs,
-                                         uint32_t n_vocab,
-                                         uint64_t *rng);
-#endif
 
 /* =========================================================================
  * Metal Reference Comparison Helpers.
@@ -12196,19 +11995,8 @@ typedef struct {
     ds4_gpu_tensor *logits_by_tier[DS4_MAX_GPUS];
     int head_tier;
 
-    /* DSpark target features.  The proposer consumes mean-over-HC rows from
-     * selected target layers; keeping them on-GPU avoids adding readbacks to
-     * the target path. */
-    ds4_gpu_tensor *dspark_draft_tokens;
-    uint32_t dspark_block_size;
-    uint32_t dspark_capture_checkpoint_len;
-    int dspark_exec_tier;
     bool ssd_streaming; /* glm-branch SSD streaming; always false here */
-
-    /* Optional MTP model state.  It has its own raw cache because the drafter
-     * runs on speculative future tokens; target KV state is updated only after
-     * verification accepts draft tokens. */
-    uint32_t mtp_n_raw;
+    /* sf-ablate(specdec): DSpark draft/capture fields and the MTP raw-row count are gone; this child has no speculative decoding */
     uint32_t prefill_cap;
     uint32_t raw_window;
     uint32_t batch_token_offset;
@@ -22203,7 +21991,6 @@ static bool metal_graph_seed_streaming_expert_cache_from_hotlist(
 static bool metal_graph_reset_prefill_state(ds4_gpu_graph *g) {
     memset(g->layer_n_comp, 0, sizeof(g->layer_n_comp));
     memset(g->layer_n_index_comp, 0, sizeof(g->layer_n_index_comp));
-    g->mtp_n_raw = 0;
     for (uint32_t il = 0; il < DS4_N_LAYER; il++) {
         if (!g->layer_raw_cache[il]) continue;
         const uint32_t ratio = ds4_layer_compress_ratio(il);
@@ -23174,7 +22961,6 @@ typedef struct {
     float residual_scale2;          /* sf: rank-2 second constant scale (0 = off) */
     ds4_gpu_tensor *closure_dirs;   /* sf: 419 additive closure direction (40x5120 f32), NULL when off */
     float closure_scale;            /* sf: 419 this token's additive scale a(t) (0 = nothing dispatched) */
-    ds4_gpu_tensor *site_capture;   /* sf: 419 per-layer copy of x at the steering site (40x5120 f32), NULL unless DS4_V41_SITE_CAPTURE */
     ds41_prefill_row batch, *rows_view;
     ds41_prefill_row carry;
     ds4_gpu_tensor *prefill_tokens;
@@ -23213,7 +22999,6 @@ static void ds41_graph_free(ds41_gpu_graph *g) {
     ds4_gpu_tensor_free(g->residual_dirs);  /* sf: 401 */
     ds4_gpu_tensor_free(g->residual_dirs2); /* sf: rank-2 */
     ds4_gpu_tensor_free(g->closure_dirs);   /* sf: 419 */
-    ds4_gpu_tensor_free(g->site_capture);   /* sf: 419 */
     for (uint32_t i = 0; i < 40; i++) ds4_gpu_tensor_free(g->window[i]);
     for (uint32_t i = 0; i < 4; i++) {
         ds4_gpu_tensor_free(g->compressed[i]);
@@ -23586,9 +23371,7 @@ static bool ds41_hc_block_input_off(void) {
  * runs in f32 and the attention norm follows with no second rounding. Decode,
  * batch prefill and the decoder suffix's reconstructed rows all come through
  * here, so no route can skip the edit or order it differently. Off (scale 0,
- * no file, or the disable switch) dispatches nothing. The row counter is read
- * by tests to show which route steered how many rows. */
-static uint64_t ds41_steered_rows_total;
+ * no file, or the disable switch) dispatches nothing. */
 
 static bool ds41_steering_active(const ds41_gpu_graph *g) {
     return g->residual_scale != 0.0f && g->residual_dirs &&
@@ -23598,7 +23381,6 @@ static bool ds41_steering_active(const ds41_gpu_graph *g) {
 static bool ds41_steer_attention_input(const ds41_gpu_graph *g, ds4_gpu_tensor *x,
                                        uint32_t il, uint32_t rows) {
     if (!ds41_steering_active(g)) return true;
-    ds41_steered_rows_total += rows;
     return ds4_gpu_directional_steering_project_tensor(x, g->residual_dirs, il,
                DS4_N_EMBD, rows, g->residual_scale) != 0;
 }
@@ -23615,7 +23397,6 @@ static bool ds41_steering2_active(const ds41_gpu_graph *g) {
 static bool ds41_steer_attention_input2(const ds41_gpu_graph *g, ds4_gpu_tensor *x,
                                         uint32_t il, uint32_t rows) {
     if (!ds41_steering2_active(g)) return true;
-    ds41_steered_rows_total += rows;
     return ds4_gpu_directional_steering_project_tensor(x, g->residual_dirs2,
                il, DS4_N_EMBD, rows, g->residual_scale2) != 0;
 }
@@ -23636,18 +23417,6 @@ static bool ds41_closure_add(const ds41_gpu_graph *g, ds4_gpu_tensor *x, uint32_
                                                   g->closure_scale) != 0;
 }
 
-/* sf: 419 DS4_V41_SITE_CAPTURE=<path>: copy x at the steering site, after the
- * edits, into the per-layer capture tensor; ds4_session_eval appends the 40
- * rows per decode token to <path> (raw f32) and one index line to <path>.idx. */
-static bool ds41_site_capture_on(void) {
-    static int cache = -1;
-    if (cache < 0) {
-        const char *p = getenv("DS4_V41_SITE_CAPTURE");
-        cache = p && *p;
-    }
-    return cache > 0;
-}
-
 /* One block's HC input: the mixer projection, then split, weighted sum with
  * the previous block's pre weights and norm; each half fused where the fused
  * kernel reproduces the separate ones. */
@@ -23665,9 +23434,9 @@ static bool ds41_hc_mix(ds41_gpu_graph *g, const ds4_model *m,
      * fold with the rms-norm), so a steered layer skips the two fused paths:
      * weighted sum rounded to BF16, projection, norm. Off (scale 0, ffn side,
      * or the disable env) keeps the fast paths, bitwise. */
-    /* sf: 419 the closure channel and the site capture need the unfused path
-     * too (bitwise the same x), so they count as steering for the route. */
-    const bool hook = !ffn && ((g->closure_scale != 0.0f && g->closure_dirs) || g->site_capture);
+    /* sf: 419 the closure channel needs the unfused path too (bitwise the
+     * same x), so it counts as steering for the route. */
+    const bool hook = !ffn && g->closure_scale != 0.0f && g->closure_dirs;
     const bool steer = (!ffn && (ds41_steering_active(g) || ds41_steering2_active(g))) || hook;
     if (!steer && fn->type == DS4_TENSOR_F16 && !ds41_hc_block_input_off() &&
         ds4_gpu_dsv41_hc_block_input_rows(g->mix, g->x, g->norm, split, residual, pre, m->map, m->size,
@@ -23690,9 +23459,6 @@ static bool ds41_hc_mix(ds41_gpu_graph *g, const ds4_model *m,
         return false;
     if (steer && !ds41_steer_attention_input_both(g, g->x, il, 1u)) return false;
     if (hook && !ds41_closure_add(g, g->x, il, 1u)) return false;  /* sf: 419 */
-    if (hook && g->site_capture &&
-        !ds4_gpu_tensor_copy(g->site_capture, (uint64_t)il * DS4_N_EMBD * sizeof(float),
-                             g->x, 0, (uint64_t)DS4_N_EMBD * sizeof(float))) return false;  /* sf: 419 */
     return ds41_norm(g->norm, g->x, m, norm);
 }
 
@@ -24056,8 +23822,8 @@ static bool ds41_before_attention_batch(ds41_gpu_graph *g, ds41_prefill_row *b,
         ds4_gpu_hc_weighted_sum_tensor(b->x, b->residual, b->pre, DS4_N_EMBD, DS4_N_HC);
     if (!mixed) return false;
     /* sf: 401 the fold is rounded first, as the decode path stores it, then
-     * steered in f32 with no second rounding before the norm (route agreement:
-     * tests/test_deepseek41_graph.c --steering-fold). Off, the quantize and
+     * steered in f32 with no second rounding before the norm, so every route
+     * folds the same bits. Off, the quantize and
      * the norm run as before, bitwise. */
     if (!ds4_gpu_dsv41_quantize(b->x, DS4_N_EMBD, count, DS4_V41_BF16)) return false;
     return ds41_steer_attention_input_both(g, b->x, il, count) &&
@@ -24732,8 +24498,8 @@ static bool ds41_decoder_prepare(ds41_gpu_graph *g, const ds4_model *m,
                 /* sf: 401 every layer after the first folds with the previous
                  * sublayer's split: this row's carried one, not the decode
                  * scratch the graph copy points at, which folded warm and
-                 * published rows with stale weights (--decoder-suffix and
-                 * --steering-routes at 8192 under fixed arithmetic). */
+                 * published rows with stale weights (--decoder-suffix at 8192
+                 * under fixed arithmetic). */
                 row.ffn_split = g->rows_view[t].ffn_split;
                 ok = ds41_graph_before_attention(&row, m, l, il);
             }
@@ -25823,8 +25589,6 @@ struct ds4_engine {
     int vision_start_token;
     int vision_end_token;
     ds4_backend backend;
-    ds4_support_kind support_kind;
-    int dspark_exec_tier;
     char *directional_steering_file;
     float *directional_steering_dirs;
     float directional_steering_attn_scale;
@@ -25837,9 +25601,6 @@ struct ds4_engine {
     uint64_t directional_steering_offset[2];     /* sf: per-slot matrix offset inside a steering profile; 0 = a plain .f32 file */
     float directional_steering_decay_tokens[2];  /* sf: 418 per-slot decay window N in in-phase tokens; 0 = constant scale */
     float directional_steering_decay_final[2];   /* sf: 418 per-slot decay final scale F (0 <= F <= scale), reached at token N */
-    int directional_steering_decay_phase[2];     /* sf: 418 phase where the decay applies (ds41_steering_think_phase); BOTH = both */
-    float directional_steering_ramp_tokens[2];   /* sf: 418-B cyclic ramp segment length in think tokens; 0 = off. Think-only: S->low over N, hold low N, low->S over N, repeat (period 3N) */
-    float directional_steering_ramp_low[2];      /* sf: 418-B cyclic ramp low scale (0 <= low <= scale) */
     float directional_steering_decay_hold[2];    /* sf: 418-C hold S for the first H in-phase tokens before the decay smoothstep (0 = decay from token 0) */
     float directional_steering_decay_final_answer[2]; /* sf: 418-C answer-phase final override (-1 = use decay_final in both phases) */
     /* sf: 419 additive closure channel from the profile's "closure" object:
@@ -25866,11 +25627,6 @@ struct ds4_engine {
     uint64_t startup_model_span_bytes;
     ds4_ssd_memory_lock simulated_memory;
     bool quality;
-    bool glm_mtp;
-    bool glm_mtp_timing;
-    bool dspark;
-    bool dspark_strict;
-    bool dspark_exact_sampling;
     bool cuda_tensor_parallel;
     bool ssd_streaming;
     bool ssd_streaming_cold;
@@ -26039,27 +25795,6 @@ static void cpu_directional_steering_project_rows(
 #define DS41_STEERING_SITE "v41_attn_input_weighted_fold_post_engram"
 #define DS41_STEERING_REVISION 2u
 #define DS41_STEERING_NORM_TOL 1e-2
-
-static float ds41_bf16_round(float value) {
-    uint32_t bits;
-    memcpy(&bits, &value, sizeof(bits));
-    if ((bits & 0x7f800000u) != 0x7f800000u) bits += 0x7fffu + ((bits >> 16) & 1u);
-    bits &= 0xffff0000u;
-    memcpy(&value, &bits, sizeof(value));
-    return value;
-}
-
-/* The enabled fold edit in plain C: the fold rounded to BF16 as the graph
- * stores it, then h -= scale*d*dot(d,h) in f32; the attention norm follows
- * with no second rounding. Every Metal route agrees with this within f32
- * reduction tolerance (tests/test_deepseek41_graph.c --steering-fold). It is
- * a reference for synthetic rows; CPU V4.1 inference stays refused. The
- * graph test is its only caller. */
-static DS4_MAYBE_UNUSED void ds41_steer_fold_reference(float *x, const float *dirs, uint32_t il,
-                                                       uint32_t rows, float scale) {
-    for (uint64_t i = 0; i < (uint64_t)rows * DS4_N_EMBD; i++) x[i] = ds41_bf16_round(x[i]);
-    cpu_directional_steering_project_rows(x, dirs, il, rows, scale);
-}
 
 /* A direction matrix usable at the V4.1 site: finite, row 0 zero, every other
  * row zero (a masked layer) or unit within DS41_STEERING_NORM_TOL. Nothing is
@@ -26376,9 +26111,6 @@ static bool ds41_steering_profile_open(ds4_engine *e, const char *arg) {
     int phase[2] = {0};
     float decay_tok[2] = {0};  /* sf: 418 optional per-slot decay window and final scale */
     float decay_fin[2] = {0};
-    int decay_phase[2] = {0};  /* sf: 418 phase the decay applies in (BOTH default) */
-    float ramp_tok[2] = {0};   /* sf: 418-B optional per-slot cyclic ramp (think) segment length and low scale */
-    float ramp_low[2] = {0};
     float decay_hold[2] = {0};              /* sf: 418-C optional plateau before the decay */
     float decay_fin_ans[2] = {-1.0f, -1.0f}; /* sf: 418-C answer-phase final override; -1 = unset */
     uint32_t slots = 0;
@@ -26400,22 +26132,17 @@ static bool ds41_steering_profile_open(ds4_engine *e, const char *arg) {
         if (dt < 0.0 || dt != (double)(long)dt || df < 0.0 || df > sc) goto bad_slots;
         decay_tok[slots] = (float)dt;
         decay_fin[slots] = (float)df;
-        const char *dphk = sfp_key(p, "decay_phase");  /* sf: 418 default both */
-        if (dphk && *dphk == '"') {
-            const char *dphk_end = sfp_skip_string(dphk);
-            if (!dphk_end) goto bad_slots;
-            decay_phase[slots] = ds41_steering_phase_parse(dphk + 1, (size_t)(dphk_end - dphk - 2));
-            if (decay_phase[slots] < 0) goto bad_slots;
+        /* sf: the 418 decay_phase and 418-B cyclic ramp were explored and not
+         * adopted; a profile that still names them is refused, not run differently. */
+        static const char *retired[] = {"decay_phase", "ramp_tokens", "ramp_low"};
+        for (size_t r = 0; r < sizeof(retired) / sizeof(retired[0]); r++) {
+            if (sfp_key(p, retired[r])) {
+                fprintf(stderr, "ds4: %s: slot %u: \"%s\" is no longer supported "
+                                "(the decay_phase and cyclic ramp schedules were removed); "
+                                "rebuild the profile without it\n", path, slots + 1, retired[r]);
+                goto done;
+            }
         }
-        /* sf: 418-B optional cyclic ramp in think: ramp_tokens (>=0 integer
-         * segment length) and ramp_low (0 <= low <= scale); absent means off. */
-        const char *rtk = sfp_key(p, "ramp_tokens");
-        const char *rlk = sfp_key(p, "ramp_low");
-        double rt = 0.0, rl = 0.0;
-        if ((rtk && !sfp_number(rtk, &rt)) || (rlk && !sfp_number(rlk, &rl))) goto bad_slots;
-        if (rt < 0.0 || rt != (double)(long)rt || rl < 0.0 || rl > sc) goto bad_slots;
-        ramp_tok[slots] = (float)rt;
-        ramp_low[slots] = (float)rl;
         /* sf: 418-C optional decay_hold (plateau, >=0 integer) and
          * decay_final_answer (answer-phase final override, 0..scale). */
         const char *dhk = sfp_key(p, "decay_hold");
@@ -26492,9 +26219,6 @@ static bool ds41_steering_profile_open(ds4_engine *e, const char *arg) {
     e->directional_steering_phase[0] = phase[0];
     e->directional_steering_decay_tokens[0] = decay_tok[0];
     e->directional_steering_decay_final[0] = decay_fin[0];
-    e->directional_steering_decay_phase[0] = decay_phase[0];
-    e->directional_steering_ramp_tokens[0] = ramp_tok[0];
-    e->directional_steering_ramp_low[0] = ramp_low[0];
     e->directional_steering_decay_hold[0] = decay_hold[0];
     e->directional_steering_decay_final_answer[0] = decay_fin_ans[0];
     if (slots == 2) {
@@ -26504,9 +26228,6 @@ static bool ds41_steering_profile_open(ds4_engine *e, const char *arg) {
         e->directional_steering_phase[1] = phase[1];
         e->directional_steering_decay_tokens[1] = decay_tok[1];
         e->directional_steering_decay_final[1] = decay_fin[1];
-        e->directional_steering_decay_phase[1] = decay_phase[1];
-        e->directional_steering_ramp_tokens[1] = ramp_tok[1];
-        e->directional_steering_ramp_low[1] = ramp_low[1];
         e->directional_steering_decay_hold[1] = decay_hold[1];
         e->directional_steering_decay_final_answer[1] = decay_fin_ans[1];
     }
@@ -26522,8 +26243,6 @@ static bool ds41_steering_profile_open(ds4_engine *e, const char *arg) {
             if (decay_hold[0] > 0.0f) fprintf(stderr, " hold%gt", (double)decay_hold[0]);
             if (decay_fin_ans[0] >= 0.0f) fprintf(stderr, " ans->%g", (double)decay_fin_ans[0]);
         }
-        if (ramp_tok[0] > 0.0f)
-            fprintf(stderr, " ramp %g<->%g/%gt(think)", (double)scale[0], (double)ramp_low[0], (double)ramp_tok[0]);
         if (slots == 2) {
             fprintf(stderr, ", slot 2 scale %g %s", (double)scale[1], pn[phase[1]]);
             if (decay_tok[1] > 0.0f) {
@@ -26531,8 +26250,6 @@ static bool ds41_steering_profile_open(ds4_engine *e, const char *arg) {
                 if (decay_hold[1] > 0.0f) fprintf(stderr, " hold%gt", (double)decay_hold[1]);
                 if (decay_fin_ans[1] >= 0.0f) fprintf(stderr, " ans->%g", (double)decay_fin_ans[1]);
             }
-            if (ramp_tok[1] > 0.0f)
-                fprintf(stderr, " ramp %g<->%g/%gt(think)", (double)scale[1], (double)ramp_low[1], (double)ramp_tok[1]);
         }
         fputc('\n', stderr);
     }
@@ -27678,59 +27395,7 @@ static bool sample_build_probabilities(
 }
 #endif
 
-#ifdef DS4_NO_GPU
-static int sample_probabilities(const float *probs, uint32_t n_vocab,
-                                uint64_t *rng) {
-    if (!probs || !rng || n_vocab == 0) return -1;
-    float sum = 0.0f;
-    int best = 0;
-    float best_p = probs[0];
-    for (uint32_t i = 0; i < n_vocab; i++) {
-        const float p = probs[i];
-        if (p > 0.0f && isfinite(p)) sum += p;
-        if (p > best_p) {
-            best_p = p;
-            best = (int)i;
-        }
-    }
-    if (sum <= 0.0f || !isfinite(sum)) return best;
-    float r = sample_rng_f32(rng) * sum;
-    for (uint32_t i = 0; i < n_vocab; i++) {
-        const float p = probs[i];
-        if (p <= 0.0f || !isfinite(p)) continue;
-        r -= p;
-        if (r <= 0.0f) return (int)i;
-    }
-    return best;
-}
-#endif
-
-/* Replace target_probs with normalized max(0, p-q) and sample it. This is the
- * correction that keeps speculative decoding distributed exactly as p after
- * a rejected draft token. */
-#ifdef DS4_TEST_HOOKS
-static int sample_residual_probabilities(float *target_probs,
-                                         const float *draft_probs,
-                                         uint32_t n_vocab,
-                                         uint64_t *rng) {
-    if (!target_probs || !draft_probs || !rng || n_vocab == 0) return -1;
-    int target_best = 0;
-    float target_best_p = target_probs[0];
-    float sum = 0.0f;
-    for (uint32_t i = 0; i < n_vocab; i++) {
-        if (target_probs[i] > target_best_p) {
-            target_best_p = target_probs[i];
-            target_best = (int)i;
-        }
-        float residual = target_probs[i] - draft_probs[i];
-        if (!(residual > 0.0f) || !isfinite(residual)) residual = 0.0f;
-        target_probs[i] = residual;
-        sum += residual;
-    }
-    if (sum <= 0.0f || !isfinite(sum)) return target_best;
-    return sample_probabilities(target_probs, n_vocab, rng);
-}
-#endif
+/* sf-ablate(specdec): the draft-residual sampler (max(0, p-q) after a rejected draft token) and sample_probabilities, left without a caller, are gone; no speculative decoding here */
 
 static bool sample_fast_top_p(
         const float *logits,
@@ -28341,19 +28006,6 @@ enum { DS4_GLM_STREAM_PREFILL_FULL_LAYER_MIN_TOKENS = 64 };
     X(indexer_k) X(indexer_q) X(indexer_weights) X(indexer_scores) \
     X(indexer_selected) X(qk_low)
 
-#define DS4_GLM_VERIFY_WS_FIELDS(X) \
-    X(batch_cur) X(batch_next) X(batch_attn_norm) X(batch_q_rank) \
-    X(batch_q_rank_norm) X(batch_q) X(batch_indexer_k) X(batch_kv_raw) \
-    X(batch_kv_norm) X(batch_qk_low) X(batch_attn_lora) \
-    X(batch_indexer_selected) X(batch_heads) X(batch_attn_out) \
-    X(batch_after_attn) X(batch_ffn_norm) X(batch_ffn_gate) X(batch_ffn_up) \
-    X(batch_shared_mid) X(batch_ffn_mid) X(batch_routed_gate) \
-    X(batch_routed_up) X(batch_routed_down) X(batch_ffn_out) \
-    X(batch_router_logits) X(batch_router_probs) X(batch_router_selected) \
-    X(batch_router_weights)
-
-#undef DS4_GLM_VERIFY_WS_FIELDS
-
 /* Timing-only skip-ablation for the GLM decode layer (comma list in
  * DS4_GLM_DECODE_ABLATE): the skipped stage's output buffer keeps stale
  * contents, so the run produces garbage text but every remaining dispatch
@@ -28607,54 +28259,6 @@ static void ds4_acquire_instance_lock(void) {
     atexit(ds4_release_instance_lock);
 }
 
-#ifndef DS4_NO_GPU
-
-typedef struct ds4_dspark_spec_stats {
-    uint64_t cycles;
-    uint64_t first_tokens;
-    uint64_t seed_batches;
-    uint64_t proposed_tokens;
-    uint64_t accepted_draft_tokens;
-    uint64_t full_accepts;
-    uint64_t partial_accepts;
-    uint64_t direct_full_commits;
-    uint64_t direct_partial_commits;
-    uint64_t replay_fallbacks;
-    uint64_t first_misses;
-    uint64_t no_draft;
-    uint64_t no_room;
-    uint64_t invalid_draft;
-    uint64_t draft_len_hist[DS4_DSPARK_MAX_BLOCK_SIZE + 1u];
-    uint64_t accepted_len_hist[DS4_DSPARK_MAX_BLOCK_SIZE + 1u];
-    uint64_t scheduler_skips;
-    uint64_t tail_skips;
-    uint64_t verifier_unavailable;
-    uint64_t verifier_errors;
-    double target_ms;
-    double saved_ms;
-    double propose_ms;
-    double propose_stage0_ms;
-    double propose_setup_ms;
-    double propose_cache_ms;
-    double propose_chain_ms;
-    double propose_hidden_ms;
-    double propose_conf0_ms;
-    double propose_logits_ms;
-    double propose_markov_ms;
-    double propose_confidence_ms;
-    double snapshot_ms;
-    double verify_ms;
-    double verify_upload_ms;
-    double verify_layer_ms;
-    double verify_head_ms;
-    double verify_read_ms;
-    uint64_t verifier_fused_head;
-    double replay_ms;
-    double total_ms;
-} ds4_dspark_spec_stats;
-
-#endif
-
 typedef struct {
     uint32_t token_start;
     uint32_t token_count;
@@ -28682,30 +28286,7 @@ struct ds4_session {
     token_vec greedy_splitkv_segment;
     float *logits;
     float *sample_probs;
-    float *mtp_logits;
-#ifndef DS4_NO_GPU
-    float *spec_row_logits;
-    float *dspark_markov_bias;
-    float *dspark_conf_features;
-#endif
-#ifndef DS4_NO_GPU
-    int dspark_draft_tokens[DS4_DSPARK_MAX_BLOCK_SIZE];
-    uint32_t dspark_draft_len;
-    uint32_t dspark_sched_cycles;
-    uint32_t dspark_sched_accepted;
-    uint32_t dspark_sched_no_draft;
-    uint32_t dspark_sched_skip;
-    uint32_t dspark_sched_lifetime_accepted;
-    double dspark_sched_life_extra_ms;
-    double dspark_sched_life_saved_ms;
-    double dspark_sched_extra_ms;
-    double dspark_sched_saved_ms;
-    bool dspark_draft_valid;
-    bool dspark_sched_skipped_cycle;
-    bool dspark_sched_long_accept_seen;
-    bool dspark_sched_bypass;
-    ds4_dspark_spec_stats dspark_stats;
-#endif
+    /* sf-ablate(specdec): MTP/DSpark draft logits, scheduler and stats fields are gone; this child has no speculative decoding */
     ds4_session_progress_fn progress;
     void *progress_ud;
     ds4_session_progress_fn display_progress;
@@ -28715,7 +28296,6 @@ struct ds4_session {
     uint32_t prefill_cap;
     int ctx_size;
     bool checkpoint_valid;
-    bool mtp_draft_valid;
     bool greedy_splitkv_anchor_valid;
     /* sf: think/answer phase of the generation, tracked while a steering slot
      * is gated to one phase or carries a decay schedule (418). */
@@ -28742,36 +28322,10 @@ static void ds41_steering_apply_gates(ds4_session *s) {
         if ((e->directional_steering_phase[i] == DS41_STEER_TP_THINK && !s->steering_in_think) ||
             (e->directional_steering_phase[i] == DS41_STEER_TP_ANSWER && s->steering_in_think))
             sc[i] = 0.0f;
-        /* sf: 418-B cyclic ramp, think only: scale rides S->low over N tokens
-         * with a smoothstep, holds low for N, rises low->S over N, then repeats
-         * (period 3N). Keeps full strength at the phase start (compliance is
-         * decided there) and adds dynamism later to break reasoning loops. The
-         * answer decay below still runs in answer. N=0 leaves the scale. */
-        const float Nr = e->directional_steering_ramp_tokens[i];
-        if (Nr > 0.0f && sc[i] != 0.0f && s->steering_in_think) {
-            const float S = sc[i], L = e->directional_steering_ramp_low[i];
-            const int per = (int)(3.0f * Nr);
-            int q = per > 0 ? s->steering_phase_tok % per : 0;
-            if (q < 0) q += per;
-            if ((float)q < Nr) {
-                const float t = (float)q / Nr, f = t * t * (3.0f - 2.0f * t);
-                sc[i] = S - (S - L) * f;
-            } else if ((float)q < 2.0f * Nr) {
-                sc[i] = L;
-            } else {
-                const float t = ((float)q - 2.0f * Nr) / Nr, f = t * t * (3.0f - 2.0f * t);
-                sc[i] = L + (S - L) * f;
-            }
-        }
         /* sf: 418 decay the surviving scale from S to F over N in-phase tokens
-         * with a cubic smoothstep; N=0 (or a gated-off slot, S=0) leaves it.
-         * decay_phase scopes where the curve runs (BOTH, or only think/answer). */
-        const int dph = e->directional_steering_decay_phase[i];
-        const bool decay_here = dph == DS41_STEER_TP_BOTH ||
-            (dph == DS41_STEER_TP_THINK && s->steering_in_think) ||
-            (dph == DS41_STEER_TP_ANSWER && !s->steering_in_think);
+         * with a cubic smoothstep; N=0 (or a gated-off slot, S=0) leaves it. */
         const float N = e->directional_steering_decay_tokens[i];
-        if (N > 0.0f && sc[i] != 0.0f && decay_here) {
+        if (N > 0.0f && sc[i] != 0.0f) {
             /* sf: 418-C optional hold: keep S for the first H in-phase tokens,
              * then smoothstep to the final over N. The answer phase may use a
              * different final (decay_final_answer >= 0). */
@@ -28826,75 +28380,25 @@ static bool ds41_steering_gated(const ds4_session *s) {
 static bool ds41_steering_scheduled(const ds4_engine *e) {
     return e && (e->directional_steering_decay_tokens[0] > 0.0f ||
                  e->directional_steering_decay_tokens[1] > 0.0f ||
-                 e->directional_steering_ramp_tokens[0] > 0.0f ||
-                 e->directional_steering_ramp_tokens[1] > 0.0f ||
                  e->closure_scale != 0.0f);  /* sf: 419 a(t) is per token too */
-}
-
-/* sf: 419 stage-0 probe. DS4_V41_CLOSURE_GAP_TRACE=<path> appends, for every
- * think-phase forward, the margin the </think> exit has to cross:
- *   gap t=<in-phase tok> argmax=<id> gap=<logit[argmax]-logit[</think>]> para=<0|1>
- * (para: the fed token's text ends a line), framed by a `begin` line per
- * prompt and an `exit` line when </think> is emitted. It only reads s->logits;
- * the phase bookkeeping below runs for unsteered sessions too while it is on. */
-static FILE *ds41_closure_trace(void) {
-    static FILE *fp;
-    static bool checked;
-    if (!checked) {
-        checked = true;
-        const char *path = getenv("DS4_V41_CLOSURE_GAP_TRACE");
-        if (path && *path) fp = fopen(path, "a");
-    }
-    return fp;
-}
-
-static void ds41_closure_probe(ds4_session *s, int fed) {
-    FILE *fp = ds41_closure_trace();
-    if (!fp) return;
-    ds4_engine *e = s->engine;
-    const int te = e->vocab.think_end_id;
-    if (fed < 0) {
-        fprintf(fp, "begin pid=%d n_prompt=%d steer=%d think=%d\n", (int)getpid(),
-                s->checkpoint.len, e->directional_steering_residual_scale != 0.0f,
-                (int)s->steering_in_think);
-    } else if (te >= 0 && fed == te) {
-        fprintf(fp, "exit\n");
-    }
-    if (!s->steering_in_think || te < 0) {
-        fflush(fp);
-        return;
-    }
-    const int am = sample_argmax(s->logits, DS4_N_VOCAB);
-    int para = 0;
-    if (fed >= 0) {
-        size_t len = 0;
-        char *txt = ds4_token_text(e, fed, &len);
-        para = len > 0 && txt[len - 1] == '\n';
-        free(txt);
-    }
-    fprintf(fp, "gap t=%d argmax=%d gap=%.4f para=%d\n", s->steering_phase_tok, am,
-            (double)(s->logits[am] - s->logits[te]), para);
-    fflush(fp);
 }
 
 /* The chat template ends the prompt with <think> when thinking is on and
  * </think> when it is off, so the opening phase follows the last prompt token;
  * the prefill forward that produces the first generated token uses it. */
 static void ds41_steering_on_prompt(ds4_session *s, const ds4_tokens *prompt) {
-    const bool live = ds41_steering_gated(s) || ds41_steering_scheduled(s->engine);
-    if (!live && !ds41_closure_trace() && !ds41_site_capture_on()) return;
+    if (!ds41_steering_gated(s) && !ds41_steering_scheduled(s->engine)) return;
     const int think_start = s->engine->vocab.think_start_id;
     s->steering_in_think = prompt && prompt->len > 0 && think_start >= 0 &&
         prompt->v[prompt->len - 1] == think_start;
     s->steering_phase_tok = 0;  /* sf: 418 first answer logits are in-phase position 0 */
-    if (live) ds41_steering_apply_gates(s);
+    ds41_steering_apply_gates(s);
 }
 
 /* Before a decode forward: token is the just-sampled token being fed; when it
  * is </think> the next token opens the answer phase. */
 static void ds41_steering_on_decode(ds4_session *s, int token) {
-    const bool live = ds41_steering_gated(s) || ds41_steering_scheduled(s->engine);
-    if (!live && !ds41_closure_trace() && !ds41_site_capture_on()) return;
+    if (!ds41_steering_gated(s) && !ds41_steering_scheduled(s->engine)) return;
     const int think_end = s->engine->vocab.think_end_id;
     if (s->steering_in_think && think_end >= 0 && token == think_end) {
         s->steering_in_think = false;
@@ -28902,33 +28406,8 @@ static void ds41_steering_on_decode(ds4_session *s, int token) {
     } else {
         s->steering_phase_tok++;    /* sf: 418 advance the in-phase decay position */
     }
-    if (live) ds41_steering_apply_gates(s);
+    ds41_steering_apply_gates(s);
 }
-#endif
-
-#ifndef DS4_NO_GPU
-
-static void ds4_session_dspark_scheduler_reset(ds4_session *s) {
-    if (!s) return;
-    s->dspark_sched_cycles = 0;
-    s->dspark_sched_accepted = 0;
-    s->dspark_sched_no_draft = 0;
-    s->dspark_sched_extra_ms = 0.0;
-    s->dspark_sched_saved_ms = 0.0;
-}
-
-static void ds4_session_dspark_scheduler_begin_request(ds4_session *s) {
-    if (!s) return;
-    ds4_session_dspark_scheduler_reset(s);
-    s->dspark_sched_skip = 0;
-    s->dspark_sched_lifetime_accepted = 0;
-    s->dspark_sched_life_extra_ms = 0.0;
-    s->dspark_sched_life_saved_ms = 0.0;
-    s->dspark_sched_skipped_cycle = false;
-    s->dspark_sched_long_accept_seen = false;
-    s->dspark_sched_bypass = false;
-}
-
 #endif
 
 /* =========================================================================
@@ -29249,30 +28728,6 @@ static DS4_MAYBE_UNUSED int payload_read_tensor_span_f32_as_f16(FILE *fp, ds4_gp
 
 static bool ds4_session_is_cpu(const ds4_session *s) {
     return s && s->engine && s->engine->backend == DS4_BACKEND_CPU;
-}
-
-static void ds4_session_dspark_capture_invalidate(ds4_session *s) {
-#ifndef DS4_NO_GPU
-    if (!s) return;
-    s->dspark_draft_valid = false;
-    s->dspark_draft_len = 0;
-#else
-    (void)s;
-#endif
-}
-
-static void ds4_session_dspark_capture_note_checkpoint(ds4_session *s) {
-#ifndef DS4_NO_GPU
-    if (!s || ds4_session_is_cpu(s)) return;
-    ds4_gpu_graph *g = &s->graph;
-    return;
-    {
-        return;
-    }
-    g->dspark_capture_checkpoint_len = (uint32_t)s->checkpoint.len;
-#else
-    (void)s;
-#endif
 }
 
 static uint32_t ds4_model_normal_layer_count(void) {
@@ -29600,9 +29055,6 @@ int ds4_session_load_layer_payload(ds4_session *s, FILE *fp,
         return 1;
     }
     s->checkpoint_valid = false;
-    s->mtp_draft_valid = false;
-    ds4_session_dspark_capture_invalidate(s);
-    g->mtp_n_raw = 0;
 
     uint8_t *buf = xmalloc(DS4_SESSION_IO_CHUNK);
     int rc = 0;
@@ -29712,9 +29164,6 @@ int ds4_session_load_layer_payload(ds4_session *s, FILE *fp,
             g->layer_n_index_comp[il] = n_index_comp[i];
         }
         s->checkpoint_valid = true;
-        s->mtp_draft_valid = false;
-        ds4_session_dspark_capture_invalidate(s);
-        g->mtp_n_raw = 0;
     }
     free(n_comp);
     free(n_index_comp);
@@ -30166,8 +29615,6 @@ int ds4_session_load_payload(ds4_session *s, FILE *fp, uint64_t payload_bytes, c
         }
 
         s->checkpoint_valid = false;
-        s->mtp_draft_valid = false;
-        ds4_session_dspark_capture_invalidate(s);
         session_cpu_reset_cache(s);
         for (uint32_t il = 0; il < DS4_N_LAYER; il++) {
             ds4_layer_cache *layer = &s->cpu_cache.layer[il];
@@ -30221,8 +29668,6 @@ int ds4_session_load_payload(ds4_session *s, FILE *fp, uint64_t payload_bytes, c
         token_vec_free(&s->checkpoint);
         s->checkpoint = new_checkpoint;
         s->checkpoint_valid = true;
-        s->mtp_draft_valid = false;
-        ds4_session_dspark_capture_invalidate(s);
         return 0;
     }
     payload_set_err(err, errlen, "graph backend support is not compiled in");
@@ -30371,14 +29816,6 @@ int ds4_session_eval_argmax(ds4_session *s, int token, char *err, size_t errlen)
         return ds4_session_argmax(s);
     }
 }
-
-/* Speculative decode state machine:
- * 1. commit the normal target token and use its logits to validate draft[0];
- * 2. let MTP recursively draft a tiny suffix from its own raw-cache frontier;
- * 3. verify the suffix with the target graph, committing only the accepted
- *    prefix and rolling back speculative Metal state on miss;
- * 4. fall back to ordinary one-token decode if the fast verifier cannot prove
- *    the target stream. */
 
 int ds4_engine_generate_argmax(
         ds4_engine        *e,
@@ -30905,12 +30342,7 @@ static int ds4_engine_open_internal(ds4_engine **out,
     e->vision_model.fd = -1;
     e->backend = opt->backend;
     e->quality = opt->quality;
-    /* sf-ablate(specdec): V4.1 Flash has no speculative decoding and --mtp* and --dspark* are gone; pinned false so guards fold */
-    e->glm_mtp = false;
-    e->glm_mtp_timing = false;
-    e->dspark = false;
-    e->dspark_strict = false;
-    e->dspark_exact_sampling = false;
+    /* sf-ablate(specdec): V4.1 Flash has no speculative decoding; --mtp*, --dspark* and their engine fields are gone */
     e->cuda_tensor_parallel = false;
     e->ssd_streaming = opt->ssd_streaming;
     e->ssd_streaming_cold = opt->ssd_streaming_cold;
@@ -32246,116 +31678,6 @@ void ds4_engine_close(ds4_engine *e) {
     free(e);
 }
 
-#ifndef DS4_NO_GPU
-static void ds4_format_len_hist(
-        char           *buf,
-        size_t          buflen,
-        const uint64_t *hist) {
-    if (!buf || buflen == 0 || !hist) return;
-    size_t off = 0;
-    buf[0] = '\0';
-    for (uint32_t i = 0; i <= DS4_DSPARK_MAX_BLOCK_SIZE; i++) {
-        if (hist[i] == 0) continue;
-        const int n = snprintf(buf + off,
-                               off < buflen ? buflen - off : 0,
-                               "%s%u:%llu",
-                               off ? "," : "",
-                               i,
-                               (unsigned long long)hist[i]);
-        if (n < 0) break;
-        if ((size_t)n >= (off < buflen ? buflen - off : 0)) {
-            off = buflen - 1u;
-            break;
-        }
-        off += (size_t)n;
-    }
-    if (off == 0) {
-        snprintf(buf, buflen, "none");
-    }
-}
-
-static void ds4_session_print_dspark_stats(const ds4_session *s) {
-    return;
-    const ds4_dspark_spec_stats *st = &s->dspark_stats;
-    if (st->cycles == 0 && st->propose_ms == 0.0) return;
-    char draft_hist[192];
-    char accept_hist[192];
-    ds4_format_len_hist(draft_hist, sizeof(draft_hist), st->draft_len_hist);
-    ds4_format_len_hist(accept_hist, sizeof(accept_hist), st->accepted_len_hist);
-    const double accept_rate =
-        st->proposed_tokens ?
-            (100.0 * (double)st->accepted_draft_tokens /
-             (double)st->proposed_tokens) : 0.0;
-    const double avg_accept =
-        st->cycles ?
-            (double)st->accepted_draft_tokens / (double)st->cycles : 0.0;
-    const double extra_ms = st->propose_ms + st->total_ms;
-    char net_saved[48];
-    /* Seed batches include an ordinary target step, often without any timed
-     * standalone step to estimate its cost. Do not print a fictitious saving. */
-    if (st->seed_batches) snprintf(net_saved, sizeof(net_saved), "n/a");
-    else snprintf(net_saved, sizeof(net_saved), "%.3f", st->saved_ms - extra_ms);
-    fprintf(stderr,
-            "ds4: DSpark stats cycles=%llu first_tokens=%llu proposed=%llu "
-            "accepted_draft=%llu accept_rate=%.2f%% avg_accept=%.3f seed_batches=%llu "
-            "full=%llu partial=%llu direct_full=%llu direct_partial=%llu "
-            "replay_fallbacks=%llu miss_first=%llu no_draft=%llu "
-            "no_room=%llu invalid=%llu scheduler_skips=%llu "
-            "tail_skips=%llu verifier_unavailable=%llu errors=%llu time_ms propose=%.3f "
-            "prop_stage0=%.3f prop_setup=%.3f prop_cache=%.3f "
-            "prop_chain=%.3f prop_hidden=%.3f prop_conf0=%.3f "
-            "prop_logits=%.3f prop_markov=%.3f prop_confidence=%.3f "
-            "snapshot=%.3f verify=%.3f verify_upload=%.3f "
-            "verify_layer=%.3f verify_head=%.3f verify_read=%.3f "
-            "verify_fused_head=%llu replay=%.3f spec_total=%.3f "
-            "target=%.3f saved=%.3f net_saved=%s "
-            "draft_len_hist=%s accepted_len_hist=%s\n",
-            (unsigned long long)st->cycles,
-            (unsigned long long)st->first_tokens,
-            (unsigned long long)st->proposed_tokens,
-            (unsigned long long)st->accepted_draft_tokens,
-            accept_rate,
-            avg_accept,
-            (unsigned long long)st->seed_batches,
-            (unsigned long long)st->full_accepts,
-            (unsigned long long)st->partial_accepts,
-            (unsigned long long)st->direct_full_commits,
-            (unsigned long long)st->direct_partial_commits,
-            (unsigned long long)st->replay_fallbacks,
-            (unsigned long long)st->first_misses,
-            (unsigned long long)st->no_draft,
-            (unsigned long long)st->no_room,
-            (unsigned long long)st->invalid_draft,
-            (unsigned long long)st->scheduler_skips,
-            (unsigned long long)st->tail_skips,
-            (unsigned long long)st->verifier_unavailable,
-            (unsigned long long)st->verifier_errors,
-            st->propose_ms,
-            st->propose_stage0_ms,
-            st->propose_setup_ms,
-            st->propose_cache_ms,
-            st->propose_chain_ms,
-            st->propose_hidden_ms,
-            st->propose_conf0_ms,
-            st->propose_logits_ms,
-            st->propose_markov_ms,
-            st->propose_confidence_ms,
-            st->snapshot_ms,
-            st->verify_ms,
-            st->verify_upload_ms,
-            st->verify_layer_ms,
-            st->verify_head_ms,
-            st->verify_read_ms,
-            (unsigned long long)st->verifier_fused_head,
-            st->replay_ms,
-            st->total_ms,
-            st->target_ms,
-            st->saved_ms,
-            net_saved,
-            draft_hist,
-            accept_hist);
-}
-#endif
 
 static bool ds4_session_tp_leader(const ds4_session *s) {
     return s && s->engine && s->engine->tp.active && s->engine->tp.rank == 0;
@@ -32449,21 +31771,12 @@ int ds4_session_create(ds4_session **out, ds4_engine *e, int ctx_size) {
             }
             s->ds41_graph.residual_scale2 = e->directional_steering_residual2_scale;
         }
-        /* sf: 419 additive closure direction (scale set per token by the gates)
-         * and the optional site-capture tensor. */
+        /* sf: 419 additive closure direction (scale set per token by the gates). */
         if (e->closure_scale != 0.0f && e->closure_dirs) {
             const uint64_t cb = (uint64_t)directional_steering_layer_count() * DS4_N_EMBD * 4u;
             s->ds41_graph.closure_dirs = ds4_gpu_tensor_alloc(cb);
             if (!s->ds41_graph.closure_dirs ||
                 !ds4_gpu_tensor_write(s->ds41_graph.closure_dirs, 0, e->closure_dirs, cb)) {
-                ds41_graph_free(&s->ds41_graph);
-                free(s);
-                return 1;
-            }
-        }
-        if (ds41_site_capture_on()) {
-            s->ds41_graph.site_capture = ds4_gpu_tensor_alloc((uint64_t)40 * DS4_N_EMBD * sizeof(float));
-            if (!s->ds41_graph.site_capture) {
                 ds41_graph_free(&s->ds41_graph);
                 free(s);
                 return 1;
@@ -32517,9 +31830,6 @@ void ds4_session_free(ds4_session *s) {
         }
         s->tp_session_id = 0;
     }
-#ifndef DS4_NO_GPU
-    ds4_session_print_dspark_stats(s);
-#endif
     ds4_dist_session_free(s->distributed);
     if (ds4_session_is_cpu(s)) {
         kv_cache_free(&s->cpu_cache);
@@ -32540,14 +31850,6 @@ void ds4_session_free(ds4_session *s) {
     free(s->checkpoint_images);
     free(s->logits);
     free(s->sample_probs);
-#ifndef DS4_NO_GPU
-#endif
-    free(s->mtp_logits);
-#ifndef DS4_NO_GPU
-    free(s->spec_row_logits);
-    free(s->dspark_markov_bias);
-    free(s->dspark_conf_features);
-#endif
     free(s);
 }
 
@@ -32632,11 +31934,9 @@ int ds4_session_set_directional_steering_ffn(ds4_session *s, float scale) {
     if (!ds4_session_is_cpu(s)) {
         {
             s->graph.directional_steering_ffn_scale = scale;
-            ds4_session_dspark_capture_invalidate(s);
         }
     }
 #endif
-    s->mtp_draft_valid = false;
     s->greedy_splitkv_segment.len = 0;
     s->greedy_splitkv_anchor_valid = false;
     return 0;
@@ -32688,7 +31988,6 @@ int ds4_session_layer_slice_reset(ds4_session *s, char *err, size_t errlen) {
                              ds4_backend_name(s->engine->backend));
         return 1;
     }
-    s->graph.mtp_n_raw = 0;
     return 0;
 #endif
 }
@@ -32748,7 +32047,7 @@ int ds4_session_eval_output_head_from_hc(ds4_session *s,
 #endif
 }
 
-static int ds4_session_eval_internal(ds4_session *s, int token, bool probe_mtp,
+static int ds4_session_eval_internal(ds4_session *s, int token,
                                      char *err, size_t errlen);
 
 static int ds4_session_slice_check_timeline(
@@ -32786,8 +32085,6 @@ static int ds4_session_slice_check_timeline(
 static DS4_MAYBE_UNUSED void ds4_session_slice_commit_timeline(ds4_session *s, const int *tokens, uint32_t n_tokens) {
     for (uint32_t i = 0; i < n_tokens; i++) token_vec_push(&s->checkpoint, tokens[i]);
     s->checkpoint_valid = true;
-    s->mtp_draft_valid = false;
-    ds4_session_dspark_capture_note_checkpoint(s);
 }
 
 int ds4_session_eval_layer_slice(ds4_session *s,
@@ -33327,9 +32624,6 @@ int ds4_session_sync(ds4_session *s, const ds4_tokens *prompt, char *err, size_t
                      s, s->sync_images, s->sync_image_count)) {
         ds4_session_invalidate(s);
     }
-#ifndef DS4_NO_GPU
-    ds4_session_dspark_scheduler_begin_request(s);
-#endif
     const bool mirror = ds4_session_tp_leader(s);
     if (mirror && (!prompt || prompt->len <= 0))
         return ds4_session_sync_internal(s, prompt, err, errlen);
@@ -33478,12 +32772,10 @@ static int ds4_session_sync_internal(ds4_session *s, const ds4_tokens *prompt, c
             prompt->len >= s->checkpoint.len &&
             ds4_tokens_starts_with(prompt, &s->checkpoint))
         {
-            s->mtp_draft_valid = false;
             for (int i = s->checkpoint.len; i < prompt->len; i++) {
                 if (ds4_session_cancelled(s)) {
                     snprintf(err, errlen, "interrupted");
                     s->checkpoint_valid = true;
-                    s->mtp_draft_valid = false;
                     return DS4_SESSION_SYNC_INTERRUPTED;
                 }
                 forward_token_raw_swa_cpu_decode_scratch(s->logits,
@@ -33516,8 +32808,6 @@ static int ds4_session_sync_internal(ds4_session *s, const ds4_tokens *prompt, c
                                 e->directional_steering_ffn_scale);
         ds4_tokens_copy(&s->checkpoint, prompt);
         s->checkpoint_valid = true;
-        s->mtp_draft_valid = false;
-        ds4_session_dspark_capture_note_checkpoint(s);
         if (s->progress) s->progress(s->progress_ud, "prefill_chunk", prompt->len, prompt->len);
         return 0;
     }
@@ -33612,7 +32902,6 @@ static int ds4_session_sync_internal(ds4_session *s, const ds4_tokens *prompt, c
                 return 1;
             }
             s->checkpoint_valid = true;
-            ds41_closure_probe(s, -1);  /* sf: 419 frame the generation, first logits */
             if (s->progress)
                 s->progress(s->progress_ud, "prefill_chunk", s->checkpoint.len, prompt->len);
         }
@@ -33852,7 +33141,7 @@ void ds4_session_gpu_warmup(ds4_session *s) {
 #endif
 }
 
-static int ds4_session_eval_internal(ds4_session *s, int token, bool probe_mtp,
+static int ds4_session_eval_internal(ds4_session *s, int token,
                                      char *err, size_t errlen) {
     if (!s) return 1;
     if (s->distributed) {
@@ -33860,7 +33149,6 @@ static int ds4_session_eval_internal(ds4_session *s, int token, bool probe_mtp,
             if (errlen) snprintf(err, errlen, "distributed decode requires a valid checkpoint");
             return 1;
         }
-        (void)probe_mtp;
         return ds4_dist_session_eval(s->distributed,
                                      s,
                                      &s->checkpoint,
@@ -33883,15 +33171,11 @@ static int ds4_session_eval_internal(ds4_session *s, int token, bool probe_mtp,
                                                  &s->cpu_scratch);
         token_vec_push(&s->checkpoint, token);
         s->checkpoint_valid = true;
-        s->mtp_draft_valid = false;
-        ds4_session_dspark_capture_note_checkpoint(s);
-        (void)probe_mtp;
         return 0;
     }
 #ifdef DS4_NO_GPU
     (void)s;
     (void)token;
-    (void)probe_mtp;
     snprintf(err, errlen, "GPU support is not compiled in");
     return 1;
 #else
@@ -33909,38 +33193,15 @@ static int ds4_session_eval_internal(ds4_session *s, int token, bool probe_mtp,
         }
         token_vec_push(&s->checkpoint, token);
         s->checkpoint_valid = true;
-        ds41_closure_probe(s, token);  /* sf: 419 think-phase closure gap */
-        if (s->ds41_graph.site_capture) {  /* sf: 419 append this token's 40 site rows */
-            static FILE *raw, *idx;
-            if (!raw) {
-                const char *path = getenv("DS4_V41_SITE_CAPTURE");
-                char ipath[PATH_MAX];
-                snprintf(ipath, sizeof(ipath), "%s.idx", path);
-                raw = fopen(path, "ab");
-                idx = fopen(ipath, "a");
-            }
-            const uint64_t bytes = (uint64_t)40 * DS4_N_EMBD * sizeof(float);
-            float *rows = xmalloc(bytes);
-            if (raw && idx && ds4_gpu_tensor_read(s->ds41_graph.site_capture, 0, rows, bytes)) {
-                fwrite(rows, 1, bytes, raw);
-                fprintf(idx, "t=%d think=%d fed=%d\n", s->steering_phase_tok,
-                        (int)s->steering_in_think, token);
-                fflush(raw);
-                fflush(idx);
-            }
-            free(rows);
-        }
         return 0;
     }
 #endif
 #endif
 }
 
-/* TP-aware eval: mirrors the eval to the worker, runs it locally with the
- * requested draft-probe flag, then merges the vocab-split logits halves.
- * Both ds4_session_eval and the speculative driver funnel through here so
- * the leader/worker lockstep survives every eval entry point. */
-static int ds4_session_eval_probe_tp(ds4_session *s, int token, bool probe_mtp,
+/* TP-aware eval: mirrors the eval to the worker, runs it locally, then
+ * merges the vocab-split logits halves. */
+static int ds4_session_eval_probe_tp(ds4_session *s, int token,
                                      char *err, size_t errlen) {
     if (!s || !s->checkpoint_valid) {
         payload_set_err(err, errlen, "decode requires a synchronized checkpoint");
@@ -33954,7 +33215,7 @@ static int ds4_session_eval_probe_tp(ds4_session *s, int token, bool probe_mtp,
             return 1;
         }
     }
-    int rc = ds4_session_eval_internal(s, token, probe_mtp, err, errlen);
+    int rc = ds4_session_eval_internal(s, token, err, errlen);
     if (rc != 0 && ds4_session_tp_leader(s)) {
         ds4_session_invalidate(s);
         return rc;
@@ -33986,13 +33247,8 @@ static int ds4_session_eval_probe_tp(ds4_session *s, int token, bool probe_mtp,
 }
 
 int ds4_session_eval(ds4_session *s, int token, char *err, size_t errlen) {
-    bool probe_mtp = true;
-#ifndef DS4_NO_GPU
-    if (s && s->engine && s->engine->support_kind == DS4_SUPPORT_DSPARK) {
-        probe_mtp = false;
-    }
-#endif
-    return ds4_session_eval_probe_tp(s, token, probe_mtp, err, errlen);
+    /* sf-ablate(specdec): the MTP draft-probe flag and its DSpark opt-out are gone; this child has no speculative decoding */
+    return ds4_session_eval_probe_tp(s, token, err, errlen);
 }
 
 #ifndef DS4_NO_GPU
@@ -34168,13 +33424,11 @@ static int ds4_sessions_eval_batch_native(
     if (prefill) {
         ds4_tokens_copy(&prefill->checkpoint, prefill_prompt);
         prefill->checkpoint_valid = true;
-        prefill->mtp_draft_valid = false;
     }
     for (int i = 0; i < count; i++) {
         ds4_session *s = items[i].session;
         token_vec_push(&s->checkpoint, items[i].token);
         s->checkpoint_valid = true;
-        s->mtp_draft_valid = false;
     }
     if (prefill && prefill->progress)
         prefill->progress(prefill->progress_ud, "prefill_chunk",
@@ -34344,11 +33598,9 @@ void ds4_session_invalidate(ds4_session *s) {
     }
     s->checkpoint_valid = false;
     s->checkpoint.len = 0;
-    s->mtp_draft_valid = false;
     free(s->checkpoint_images);
     s->checkpoint_images = NULL;
     s->checkpoint_image_count = 0;
-    ds4_session_dspark_capture_invalidate(s);
 #ifndef DS4_NO_GPU
 #ifdef DS4_HAS_DEEPSEEK41_GPU
     if (s->ds41_graph_ready) ds41_graph_reset(&s->ds41_graph);
@@ -34369,8 +33621,6 @@ void ds4_session_rewind(ds4_session *s, int pos) {
     /* DeepSeek compressors cannot be rolled back by truncating their row
      * counts. Without a saved frontier the caller must rebuild this prefix. */
     s->checkpoint_valid = false;
-    s->mtp_draft_valid = false;
-    ds4_session_dspark_capture_invalidate(s);
 }
 
 int ds4_session_pos(ds4_session *s) {

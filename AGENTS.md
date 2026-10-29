@@ -111,7 +111,7 @@ wired until it exits: a test that opened three 32 GiB engines in turn measured
 47, 72 and 98 GB wired (`vm_stat`, 2026-10-13), each open locking its full
 24.9 GiB, and the same test with 64 GiB froze the machine at its second open.
 Until `ds4_engine_close` releases the cache, a test that reopens the engine in
-one process uses 32 GiB at most (`--prefill-replica`, `--steering-admission`);
+one process uses 32 GiB at most (`--prefill-replica`);
 anything larger runs each engine in its own process.
 
 The time to first token is set by the prefill schedule (`ds41_prefill_count`).
@@ -323,12 +323,14 @@ four where that is true. `--mtp`, `--mtp-model`, `--mtp-draft`, `--mtp-margin`,
 
 Do not reintroduce them, and do not infer a mechanism from an identifier's
 name: `glm_mtp` was the built-in-MTP switch every MTP model shared, not a GLM
-thing, and it is pinned false here.
+thing, and it is gone here (engine fields `glm_mtp`/`glm_mtp_timing`/`dspark*`
+and the support-kind enum were removed).
 
 The DSpark draft/verify engine, the support-GGUF loader, the DSpark hidden-state
 capture in the Metal graph and the speculative API
 (`ds4_session_eval_speculative*`, `ds4_sessions_eval_batch_speculative_argmax`,
-the TP spec cycles) are gone. The server batches every pending decode as one
+the TP spec cycles, the TP RDMA verify-block window and the session-level
+capture/scheduler stubs) are gone. The server batches every pending decode as one
 plain batch, `session_concurrency_bench` has no `--spec` mode, and a TP worker
 refuses VERIFY and GLM_MTP frames, which only a drafting leader sends. What remains of the generic
 `ds4_gpu_graph` (`s->graph`, `metal_graph_*`) is either shared with the V4.1
@@ -356,7 +358,7 @@ child has established:
 | `glm53_vision_dispatch_*`, `ds4_gpu_glm53_matmul_bf16` (in `ds4_metal.m`) | helpers of `ds4_gpu_deepseek4_vision_encode` | its only callers; `nm` keeps them |
 | `ds4_gpu_glm_indexer_score_one_tensor` | the V4.1 indexer scorer | called from the `ds41_*` graph and `tests/test_deepseek41_metal.c` |
 | `append_glm_tag_body_text` (`ds4_server.c`, under `DS4_SERVER_TEST`) | test fixture that exercises the live `ds4_tool_text_unescape` and stream-safe length helpers | only the server unit tests call it |
-| `sample_probabilities`, `sample_build_probabilities` (under `DS4_NO_GPU`) | CPU and test-hook sampling; the Metal build samples elsewhere | removing them breaks `make cpu` and the sampling tests |
+| `sample_build_probabilities` (under `DS4_NO_GPU`) | CPU and test-hook sampling; the Metal build samples elsewhere | removing it breaks `make cpu` and the sampling tests |
 | `tests/vision-fixtures/glm53/` | plain PNG/JPEG test data read by four kept tests | see that directory's README |
 | `tests/test-vectors/flash-0731/` | a **prompt index** for `--metal-tensor-equivalence` and `--streaming-decode-prefill-correctness`, which compare two compute paths on *this* model. The expected logprobs inside `official.vec` are DeepSeek V4 Flash's and are never read by those tests | restored verbatim from upstream after deleting the tree broke both tests with `fp != NULL` |
 

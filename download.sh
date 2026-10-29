@@ -4,7 +4,7 @@
 # this script creates under gguf/ is a symlink into the cache (SPEC.md §C).
 #
 #   ./download.sh            list the components
-#   ./download.sh q2         the main model, and the default -m target
+#   ./download.sh main       the main model (1017 release), and the default -m target
 #   ./download.sh vision     the vision encoder, for --vision FILE
 set -eu
 
@@ -16,10 +16,11 @@ usage() {
     cat <<EOF
 Components of $REPO:
 
-  q2       DeepSeek-V4.1-Flash-Q2.gguf       main model (default for -m)
+  main     DeepSeek-V4.1-Flash-1017-IQ2_XXS-Q2_K-imatrix.gguf
+           main model, 1017 release (default for -m)
   vision   DeepSeek-V4.1-Flash-Vision.gguf   vision encoder, pass with --vision
 
-  ./download.sh q2
+  ./download.sh main
   ./download.sh vision
 
 Files live once in the Hugging Face cache (\$HUGGINGFACE_HUB_CACHE, else
@@ -29,7 +30,7 @@ Files live once in the Hugging Face cache (\$HUGGINGFACE_HUB_CACHE, else
 Not offered here: the Q4 release, which upstream ships as two .part files that
 have to be joined into one multi-gigabyte file.  The join produces a real file
 rather than a link, and this repository does not hold model data (SPEC.md §C).
-Use Q2, or join the parts yourself outside the repository and pass the result
+Use main, or join the parts yourself outside the repository and pass the result
 with -m.
 EOF
 }
@@ -40,7 +41,7 @@ if [ $# -eq 0 ]; then
 fi
 
 case "$1" in
-    q2)     FILE="DeepSeek-V4.1-Flash-Q2.gguf";     LINK_DEFAULT=1 ;;
+    main)   FILE="DeepSeek-V4.1-Flash-1017-IQ2_XXS-Q2_K-imatrix.gguf"; LINK_DEFAULT=1 ;;
     vision) FILE="DeepSeek-V4.1-Flash-Vision.gguf"; LINK_DEFAULT=0 ;;
     -h|--help|help) usage; exit 0 ;;
     *)

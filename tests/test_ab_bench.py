@@ -463,9 +463,10 @@ class CacheSim(unittest.TestCase):
 
     def test_trace_layers(self):
         import struct
-        with tempfile.NamedTemporaryFile(suffix='.bin', delete=False) as f:
-            f.write(struct.pack('<12i', *range(12)))
-        accesses = sim.read_trace(f.name, 2)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'trace.bin'
+            path.write_bytes(struct.pack('<12i', *range(12)))
+            accesses = sim.read_trace(str(path), 2)
         self.assertEqual(accesses[:6], [(0, e) for e in range(6)])
         self.assertEqual(accesses[6:], [(1, e) for e in range(6, 12)])
 

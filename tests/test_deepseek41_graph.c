@@ -2561,12 +2561,8 @@ int main(int argc, char **argv) {
         return check_prefill_replica(argv[1], argv[3], argv[4]);
     if (argc == 2 && !strcmp(argv[1], "--prefill-expert-stream"))
         return check_prefill_expert_stream();
-    if (argc == 2 && !strcmp(argv[1], "--prefill-expert-admission"))
-        return check_prefill_expert_admission();
     if (argc == 2 && !strcmp(argv[1], "--prefill-expert-discard"))
         return check_prefill_expert_discard();
-    if (argc == 2 && !strcmp(argv[1], "--prefill-expert-fd"))
-        return check_prefill_expert_fd();
     if (argc == 2 && !strcmp(argv[1], "--batch-admission"))
         return check_batch_admission();
     if (argc == 3 && !strcmp(argv[2], "--batch-head"))

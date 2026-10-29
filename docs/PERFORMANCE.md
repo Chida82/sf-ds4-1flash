@@ -61,8 +61,6 @@ decode; the chip peaks at 92-94 °C, against 101 °C without it. The same
 session measured the second-drive copy (README, "A second drive"). The
 2026-10-10 sweep (two runs per build, no cool-down) is in
 [speed-bench/v41-q2-vs-ds4-20261010](../speed-bench/v41-q2-vs-ds4-20261010).
-The 2026-10-05 sweep at `132-gpu-all-hit-continuation` is in
-[speed-bench/v41-q2-vs-ds4-20261005](../speed-bench/v41-q2-vs-ds4-20261005).
 
 ## What to compare next
 

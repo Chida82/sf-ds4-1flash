@@ -74,8 +74,8 @@ intervention revision 2, and prints both at startup. Row N of the file is
 applied before the attention of layer N (a direct index; row 0 is zero). The
 edit is `h -= F*d*dot(d,h)` on the fold rounded to BF16, in f32, with no second
 rounding before the norm, on every route that produces an attention input:
-decode, batch prefill and the rows the wide-sweep decoder suffix reconstructs
-(`make test-deepseek41-steering-routes`). With a unit `d`, F=1 removes the
+decode, batch prefill and the rows the wide-sweep decoder suffix reconstructs.
+With a unit `d`, F=1 removes the
 component along `d`, 2 reflects it, 4 and 8 multiply it by -3 and -7.
 
 **Rank-2 (`--dir-steering-file-2 FILE2 --dir-steering-residual-2 G`).** A second
@@ -107,8 +107,10 @@ refused and the server does not open `--kv-disk-dir` (cache entries record no
 steering identity; existing entries are left untouched). `/steer` and the live
 FFN setter refuse a nonzero value on V4.1. `DS4_METAL_DISABLE_V41_RESIDUAL_STEERING=1`
 turns the edit off, and a zero vector at any scale exercises the steered path
-without changing anything: both are bitwise the unsteered run
-(`make test-deepseek41-steering-admission`).
+without changing anything: both are meant to be bitwise the unsteered run. Only
+the switch's inertness without a direction file is checked
+(`make test-deepseek41-decode-switch SWITCH=DS4_METAL_DISABLE_V41_RESIDUAL_STEERING`);
+the zero-vector and switch-over-a-loaded-direction checks were removed by `416`.
 
 **Think/answer gates.** Each slot can be gated to one reasoning phase, keyed on
 the `<think>`/`</think>` boundary: it runs at its constant scale in that phase
@@ -175,13 +177,11 @@ the single fold the open also prints `warning: the two folds over-dose`; 0.22 at
 the 2x2 composition of the two rank-1 folds in their shared plane, fixed by the
 per-layer cosine and the two scales.
 
-Off-path guarantee, checked by `make test-deepseek41-steering-rank2` (model
-backed, 3 engine opens): the single-direction run, the same run with a second
-file named at scale 0, and the same run with the second fold active on an
-all-zero direction give bitwise equal logits, Engram history and KV state. The
-model-less `make test` runs `test_deepseek41_graph --steering-rank2` (orthogonal
-pair nulls both coordinates, `|dot|` under 1e-4, in either order; the 0.72 pair
-is order dependent).
+Off-path guarantee: the single-direction run, the same run with a second file
+named at scale 0, and the same run with the second fold active on an all-zero
+direction are meant to give bitwise equal logits, Engram history and KV state.
+No test checks it any more: the model-backed rank-2 test and the model-less
+geometry check were removed by `416`.
 
 ## Verbosity Example
 

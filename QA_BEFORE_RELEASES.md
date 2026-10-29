@@ -241,7 +241,7 @@ checks: the model can change the text before the parser sees it.
 - Run `python3 tests/test_model_download.py`: it stubs the Hugging Face CLI and
   checks the property that matters, that `download.sh` only ever creates
   symlinks into the shared cache and never materialises a GGUF here.
-- Run `./download.sh q2` and `./download.sh vision` for real once, and confirm
+- Run `./download.sh main` and `./download.sh vision` for real once, and confirm
   `gguf/` plus `./deepseek-v4.1-flash.gguf` are symlinks into the cache.
 - Verify an unknown component name fails clearly with exit 2.
 - Verify README component names match the script and the Hugging Face repository.
@@ -371,7 +371,7 @@ the long sparse-boundary tests; neither substitutes for the other.
   `./ds4_test --server`.
   Run `make test-download-model` to check that `download.sh` only creates
   symlinks into the Hugging Face cache and the default model link. Check the
-  published artifacts with `./download.sh q2` and `./download.sh vision` on a
+  published artifacts with `./download.sh main` and `./download.sh vision` on a
   runtime host.
 - With real weights, run `tests/test_deepseek41_graph MODEL --session-fixture`
   and `tests/test_deepseek41_graph MODEL --partitions` under Metal API validation.

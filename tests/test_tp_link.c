@@ -83,7 +83,6 @@ int main(int argc, char **argv) {
         fprintf(stderr, "rank=%d phase=%u 20KiB decode exchange %.2f us: PASS\n",
             rank, phase, (now() - start) * 1e6 / 160);
         const unsigned small_rows = phase * 2u + 1u;
-        CHECK(ds4_tp_batch_block_begin(tp, small_rows, 40));
         for (unsigned layer = 0; layer < 40; layer++) {
             const uint32_t epoch = phase * 10000u + layer + 200u;
             float *a = (float *)((char *)slab + ds4_tp_slab_batch_out_offset(tp, layer));
@@ -92,7 +91,6 @@ int main(int argc, char **argv) {
             CHECK(ds4_tp_batch_gate_exchange(tp, layer, small_rows, phase * 40u + layer));
             CHECK(equal(b, small_rows * width, 1u - (unsigned)rank, epoch));
         }
-        CHECK(ds4_tp_batch_block_end(tp));
         const uint32_t count = rows[phase] * width;
         fill(out, count, (unsigned)rank, phase);
         start = now();

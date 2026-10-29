@@ -228,9 +228,9 @@ from the same temperature:
 
 ```sh
 python3 speed-bench/readme_bench.py sweep --ds4 <ds4 tree at the merge-base> \
-  --replica /Volumes/<drive>/sf-ds4-1flash/DeepSeek-V4.1-Flash-Q2.gguf
+  --replica /Volumes/<drive>/sf-ds4-1flash/DeepSeek-V4.1-Flash-1017-IQ2_XXS-Q2_K-imatrix.gguf
 python3 speed-bench/readme_bench.py shapes \
-  --replica /Volumes/<drive>/sf-ds4-1flash/DeepSeek-V4.1-Flash-Q2.gguf
+  --replica /Volumes/<drive>/sf-ds4-1flash/DeepSeek-V4.1-Flash-1017-IQ2_XXS-Q2_K-imatrix.gguf
 ```
 
 - `sweep` is "Against ds4": the bench sweep above (`--ctx-start 2048

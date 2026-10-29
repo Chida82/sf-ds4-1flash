@@ -263,7 +263,7 @@ token after each prefill is 0.14-0.20 s in all three columns. The CSVs are in
 Both together:
 
 ```sh
-DS4_METAL_PREFILL_REPLICA=/Volumes/<drive>/sf-ds4-1flash/DeepSeek-V4.1-Flash-Q2.gguf \
+DS4_METAL_PREFILL_REPLICA=/Volumes/<drive>/sf-ds4-1flash/DeepSeek-V4.1-Flash-1017-IQ2_XXS-Q2_K-imatrix.gguf \
   ./sf-ds4-1flash-server --ssd-streaming --ctx 32768 \
   --kv-disk-dir /Volumes/<drive>/sf-ds4-1flash/kv --kv-disk-space-mb 4096
 ```
@@ -297,7 +297,7 @@ machine, with `fanboost` running, macOS at thermal pressure Nominal and
 nothing else running.
 
 ```sh
-DS4_METAL_PREFILL_REPLICA=/Volumes/<drive>/sf-ds4-1flash/DeepSeek-V4.1-Flash-Q2.gguf \
+DS4_METAL_PREFILL_REPLICA=/Volumes/<drive>/sf-ds4-1flash/DeepSeek-V4.1-Flash-1017-IQ2_XXS-Q2_K-imatrix.gguf \
   ./sf-ds4-1flash-bench -m deepseek-v4.1-flash.gguf \
   --prompt-file speed-bench/promessi_sposi.txt \
   --ssd-streaming --ssd-streaming-cache-experts 82GB --boost \
@@ -413,10 +413,10 @@ and hardware-specific setups:
 | --- | --- |
 | [Metal on Apple Silicon](docs/METAL.md) | `make` |
 
-Download the Q2 release, the only one offered here:
+Download the 1017 release (IQ2_XXS/Q2_K imatrix), the only one offered here:
 
 ```sh
-./download.sh q2
+./download.sh main
 ```
 
 The model itself lives once in the shared Hugging Face cache; `gguf/` holds
@@ -439,7 +439,7 @@ These use the automatic expert cache; every figure in [Speed](#speed) adds
 `--ssd-streaming-cache-experts 82GB`.
 
 The default model is `deepseek-v4.1-flash.gguf`, a link updated by
-`./download.sh q2`. Pass `-m FILE` to choose explicitly. Commands normally run
+`./download.sh main`. Pass `-m FILE` to choose explicitly. Commands normally run
 from the repository root; use `--chdir /path/to/sf-ds4-1flash` when launching
 elsewhere.
 

@@ -495,7 +495,6 @@ DS4_ENV(DS4_TP_DISABLE_FLAG_FOLD, disable, unset, "TP: turn off folding the gate
 DS4_ENV(DS4_TP_DISABLE_GATE_PREFETCH, disable, unset, "TP: turn off weight prefetch during gate exchange waits")
 DS4_ENV(DS4_TP_DISABLE_POLL_GATES, disable, unset, "TP: turn off polled flag gates and use the shared-event wait")
 DS4_ENV(DS4_TP_DISABLE_RDMA_WARMUP, disable, unset, "TP RDMA: skip the link warm-up after the ready barrier")
-DS4_ENV(DS4_TP_DISABLE_VERIFY_WINDOW, disable, unset, "TP RDMA: turn off the pre-posted batch block window, keeping per-gate handshakes")
 DS4_ENV(DS4_TP_EVENT_GATES, disable, unset, "TP: turn off slab-flag gate arrival and use the shared-event arrival path")
 DS4_ENV(DS4_TP_FOLD_DEBUG, probe, unset, "TP: log the first 8 flag-fold requests and takes with their eligibility to stderr")
 DS4_ENV(DS4_TP_GATE_PROFILE, probe, unset, "TP: gate exchange and service-thread timing statistics")
@@ -511,5 +510,3 @@ DS4_ENV(DS4_TP_SHARED_SPLIT_SHIFT_Q16, tuning, unset, "TP decode: shared-expert 
 DS4_ENV(DS4_TP_STATIC_SHARED_SPLIT, disable, unset, "TP decode: keep fixed shared-expert halves instead of the measured GPU-decided split")
 DS4_ENV(DS4_TP_TIMEOUT_SEC, tuning, unset, "TP control and data socket timeout in seconds (default built in)")
 DS4_ENV(DS4_TRACE_TOP, probe, unset, "CPU generate loop: print the top 10 logits at each step to stderr")
-DS4_ENV(DS4_V41_CLOSURE_GAP_TRACE, probe, unset, "V4.1 closure probe (419): append per think-phase forward the logit gap argmax minus </think> to this path; tokens unchanged")
-DS4_ENV(DS4_V41_SITE_CAPTURE, probe, unset, "V4.1 steering-site capture (419): append per decode token the 40 layer rows of x at the attention-input site as raw f32 to this path, with an index line per token in <path>.idx; tokens unchanged")

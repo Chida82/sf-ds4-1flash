@@ -390,7 +390,6 @@ static int check_rope_stride(void) {
     return 1;
 }
 
-#ifdef __APPLE__
 /* The fused RoPE, quantize and store kernel against the three separate steps. */
 static int check_rope_quantize(void) {
     enum { WIDTH = 512, TRIALS = 300 };
@@ -418,9 +417,6 @@ static int check_rope_quantize(void) {
     fprintf(stderr, "V4.1 fused RoPE quantize: bitwise match with the separate steps PASS\n");
     return 1;
 }
-#else
-static int check_rope_quantize(void) { return 1; }
-#endif
 
 static int check_pool(void) {
     enum { D = 512, ROWS = 257, PAIRS = ROWS / 2 };

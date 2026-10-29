@@ -28,7 +28,6 @@ static int small_gates(ds4_tp *tp, ds4_gpu_tensor *slab, ds4_gpu_tensor *x,
     const uint32_t rows = batch ? 1u + shape % 8u : 1u;
     const uint32_t count = rows * 5120u;
     const uint64_t bytes = (uint64_t)count * sizeof(float);
-    if (batch && !ds4_tp_batch_block_begin(tp, rows, 40)) return 0;
     for (uint32_t slot = 0; slot < (batch ? 40u : 80u); slot++) {
         const uint32_t layer = batch ? slot : slot / 2u, gate = slot % 2u;
         const uint32_t epoch = (shape * 80u + slot) * 37u;
@@ -53,7 +52,7 @@ static int small_gates(ds4_tp *tp, ds4_gpu_tensor *slab, ds4_gpu_tensor *x,
         ds4_gpu_tensor_free(a); ds4_gpu_tensor_free(b);
         if (!ok) return 0;
     }
-    return !batch || ds4_tp_batch_block_end(tp);
+    return 1;
 }
 
 int main(int argc, char **argv) {

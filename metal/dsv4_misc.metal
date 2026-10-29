@@ -519,11 +519,7 @@ kernel void kernel_dsv4_router_weights_one(
     w[tid] = p[s[tid]] / sum * 1.5f;
 }
 
-static inline float glm_quant_weight_at(
-        uint weight_type,
-        device const char *row,
-        uint col);
-
+/* sf-ablate(glm): glm_*_weight_at quant helpers and DS4_METAL_GGUF_* dropped; no remaining kernel calls them */
 static inline float glm_cache_load_f32_or_f16(
         device const char *base,
         uint64_t index,
@@ -532,65 +528,6 @@ static inline float glm_cache_load_f32_or_f16(
         return (float)((device const half *)base)[index];
     }
     return ((device const float *)base)[index];
-}
-
-static inline float glm_q8_0_weight_at(
-        device const char *row,
-        uint col) {
-    const uint block = col >> 5;
-    const uint qi = col & 31u;
-    device const char *block_base = row + (uint64_t)block * 34u;
-    const float d = (float)(*((device const half *)block_base));
-    device const int8_t *qs = (device const int8_t *)(block_base + 2u);
-    return d * (float)qs[qi];
-}
-
-#define DS4_METAL_GGUF_Q4_0 2u
-#define DS4_METAL_GGUF_Q8_0 8u
-#define DS4_METAL_GGUF_Q4_K 12u
-
-static inline uchar2 glm_q4_K_scale_min(int j, int k, device const uchar *q) {
-    return j < 4 ? uchar2{uchar(q[j + 0 + k] & 63), uchar(q[j + 4 + k] & 63)}
-                 : uchar2{uchar((q[j + 4 + k] & 0x0f) | ((q[j - 4 + k] & 0xc0) >> 2)),
-                          uchar((q[j + 4 + k] >> 4) | ((q[j - 0 + k] & 0xc0) >> 2))};
-}
-
-static inline float glm_q4_0_weight_at(device const char *row, uint col) {
-    const uint block = col >> 5;
-    const uint qi = col & 31u;
-    device const char *block_base = row + (uint64_t)block * 18u;
-    const float d = (float)(*((device const half *)block_base));
-    device const uchar *qs = (device const uchar *)(block_base + 2u);
-    /* ggml Q4_0: elems 0..15 = low nibbles of qs[0..15], 16..31 = high. */
-    const uchar packed = qs[qi & 15u];
-    const uchar q = (qi < 16u) ? (packed & 0x0f) : (packed >> 4);
-    return d * ((float)q - 8.0f);
-}
-
-static inline float glm_q4_K_weight_at(device const char *row, uint col) {
-    const uint block = col >> 8u;
-    const uint idx = col & 255u;
-    device const char *block_base = row + (uint64_t)block * 144u;
-    const float d = (float)(*((device const half *)(block_base + 0u)));
-    const float dmin = (float)(*((device const half *)(block_base + 2u)));
-    device const uchar *scales = (device const uchar *)(block_base + 4u);
-    device const uchar *qs = (device const uchar *)(block_base + 16u);
-    const uint group = idx >> 5u;
-    const uint l = idx & 31u;
-    const uchar2 sm = glm_q4_K_scale_min((int)group, 0, scales);
-    const uint byte_off = (group >> 1u) * 32u + l;
-    const uint shift = (group & 1u) * 4u;
-    const uint q = ((uint)qs[byte_off] >> shift) & 0x0fu;
-    return d * (float)sm.x * (float)q - dmin * (float)sm.y;
-}
-
-static inline float glm_quant_weight_at(
-        uint weight_type,
-        device const char *row,
-        uint col) {
-    if (weight_type == DS4_METAL_GGUF_Q4_0) return glm_q4_0_weight_at(row, col);
-    if (weight_type == DS4_METAL_GGUF_Q4_K) return glm_q4_K_weight_at(row, col);
-    return glm_q8_0_weight_at(row, col);
 }
 
 kernel void kernel_glm_indexer_score_one(

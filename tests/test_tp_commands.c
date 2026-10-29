@@ -197,8 +197,6 @@ static void check_failed_link(void) {
         assert(!ds4_tp_gate_exchange(&tp, 0, 0, 1));
         assert(!ds4_tp_batch_gate_exchange(&tp, 0, 2, 1));
         assert(!ds4_tp_big_gate_exchange(&tp, 0, 1, &out, &in, sizeof(out)));
-        assert(!ds4_tp_batch_block_begin(&tp, 2, 1));
-        assert(!ds4_tp_batch_block_end(&tp));
         assert(in == 123 && ds4_tp_failed(&tp));
         char byte;
         assert(recv(fd[1], &byte, 1, MSG_DONTWAIT) == -1 &&

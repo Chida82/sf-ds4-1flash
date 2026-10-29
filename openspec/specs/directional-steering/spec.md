@@ -318,10 +318,9 @@ SHALL leave the shipped constant profile as the release behavior.
 - **THEN** the findings are recorded and the shipped `sf-ds4-1flash-candor` profile stays
   the release configuration
 
-### Requirement: Profile-carried hold, per-phase answer final, and cyclic ramp (418-C)
+### Requirement: Profile-carried hold and per-phase answer final (418-C)
 A residual steering slot loaded from a profile MAY additionally declare a plateau
-`decay_hold` (H), an answer-phase final override `decay_final_answer` (Fa), and a
-think-only cyclic ramp `ramp_tokens`/`ramp_low`. These SHALL be optional profile metadata
+`decay_hold` (H) and an answer-phase final override `decay_final_answer` (Fa). These SHALL be optional profile metadata
 carried only through the profile, SHALL bind the V4.1 residual site only, and SHALL leave
 a profile that declares none of them bitwise identical to its pre-change behavior.
 
@@ -336,15 +335,15 @@ a profile that declares none of them bitwise identical to its pre-change behavio
 - **THEN** the decay eases toward Fa in the answer while the thinking phase still eases
   toward `decay_final`; a slot that omits `decay_final_answer` uses `decay_final` in both
 
-#### Scenario: Cyclic ramp in thinking only
-- **WHEN** a slot declares `ramp_tokens` N and `ramp_low` L with the ramp active
-- **THEN** inside the thinking phase the scale rides S→L over N tokens, holds L for N,
-  rises L→S over N and repeats (period 3N), and stays at the plain scale in the answer
-
 #### Scenario: Validation of the 418-C fields
-- **WHEN** a slot declares `decay_hold` < 0, `decay_final_answer` outside `0 ≤ Fa ≤ scale`,
-  or `ramp_tokens` < 0 or `ramp_low` outside `0 ≤ L ≤ scale`
+- **WHEN** a slot declares `decay_hold` < 0 or `decay_final_answer` outside `0 ≤ Fa ≤ scale`
 - **THEN** the engine refuses to start, naming the slot and the offending field
+
+#### Scenario: Retired slot keys are refused
+- **WHEN** a slot declares `decay_phase`, `ramp_tokens` or `ramp_low` (the 418 decay phase
+  and 418-B cyclic ramp, explored and not adopted)
+- **THEN** the engine refuses to start, naming the file, the slot and the key, instead of
+  running the profile without it
 
 ### Requirement: Shipped candor schedule (418-C)
 The shipped `sf-ds4-1flash-candor` profile SHALL carry the 418-C schedule that satisfied
@@ -355,7 +354,7 @@ thinking phase only, `scale` 0.4 with `onset_min` 2700 / `onset_max` 3100 and
 `ramp_tokens` 256, and a second stage `scale2` 0.9 with `after_tokens` 2000 and
 `ramp2_tokens` 512. The closure channel SHALL be inert outside the thinking phase, so the
 non-think and answer-phase output SHALL be bitwise identical to the pre-promotion candor.
-The selection and its accepting runs SHALL be recorded in `sf-ds4-1flash-candor.json`.
+The selection and its accepting runs SHALL be recorded in `com-steering/README.md` ("Directions (provenance)") and `com-steering/result.md`.
 
 #### Scenario: Default profile breaks the think loop at held compliance
 - **WHEN** the shipped candor profile runs the fixed 44 harmful-axis-a ids at the think
@@ -370,43 +369,6 @@ The selection and its accepting runs SHALL be recorded in `sf-ds4-1flash-candor.
 - **THEN** every completion is byte-identical to the pre-promotion candor profile run on
   the same prompts, because the closure channel dispatches nothing outside the thinking
   phase
-
-### Requirement: Closure-gap probe
-The engine SHALL offer a probe-category environment switch that, when set to a
-path, appends to that file for every think-phase forward of a V4.1 session the
-logit margin the `</think>` exit has to cross, `gap = logit[argmax] −
-logit[</think>]`, with the in-phase token position and whether the token just fed
-ended a line. The probe SHALL leave the generated tokens unchanged and SHALL frame
-each generation so base and steered traces can be told apart offline.
-
-#### Scenario: Think-phase trace
-- **WHEN** `DS4_V41_CLOSURE_GAP_TRACE=<path>` is set and a session generates in the
-  thinking phase, steered or not
-- **THEN** the file gains one `gap` line per think-phase forward with the in-phase
-  position, the argmax id, the gap in logits and the line-end flag, framed by a
-  `begin` line (prompt length, steered flag, opening phase) and an `exit` line when
-  `</think>` is emitted
-
-#### Scenario: Probe is silent by default
-- **WHEN** the switch is unset
-- **THEN** nothing is written and the decode path is the pre-change one
-
-#### Scenario: Output unchanged
-- **WHEN** the same prompt runs with and without the switch
-- **THEN** the generated tokens are identical: the probe only reads the logits
-
-### Requirement: Steering-site capture probe
-The engine SHALL offer a probe-category environment switch that, when set to a path,
-records for every decode forward the state read by each layer's attention at the V4.1
-steering site, after any steering edits, as raw per-layer rows appended to that file,
-with one index line per token (in-phase position, phase, fed token) beside it. The
-capture SHALL leave the generated tokens unchanged.
-
-#### Scenario: Capture on a benign reasoning prompt
-- **WHEN** `DS4_V41_SITE_CAPTURE=<path>` is set and a session decodes
-- **THEN** `<path>` grows by one block of 40 rows of 5120 float32 per decode token and
-  `<path>.idx` by one line `t=<pos> think=<0|1> fed=<id>`, and the output tokens match
-  the run without the switch
 
 ### Requirement: Additive closure channel
 A steering profile MAY declare a `closure` object: a third per-layer direction, applied
