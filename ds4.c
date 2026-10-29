@@ -25557,8 +25557,7 @@ typedef struct {
     void *host_slab;             /* CUDA's registered network staging */
     ds4_gpu_tensor **out_views;
     ds4_gpu_tensor **in_views;
-    ds4_gpu_tensor **batch_out_views;   /* [layer] verify-block row partials */
-    ds4_gpu_tensor **batch_in_views;
+    /* sf-ablate(specdec): batch_out_views/batch_in_views fed the generic ds4_gpu_graph TP binding (dropped in 1537b5a: V4.1 never TP-binds s->graph) and upstream's V4.1 DSpark verify_prefix; the live batch gate addresses the slab by offset */
     ds4_gpu_tensor *zero_vec;
     uint64_t eval_seq;          /* leader: mirrored eval counter */
     uint64_t next_session_id;   /* leader: stable worker-session handle */
@@ -31658,12 +31657,6 @@ int ds4_engine_tp_bind(ds4_engine *e, struct ds4_tp *tp, char *err, size_t errle
     e->tp.zero_vec = ds4_gpu_tensor_alloc(vec_bytes);
     e->tp.out_views = calloc(slots, sizeof(*e->tp.out_views));
     e->tp.in_views = calloc(slots, sizeof(*e->tp.in_views));
-    e->tp.batch_out_views = calloc((size_t)DS4_N_LAYER, sizeof(*e->tp.batch_out_views));
-    e->tp.batch_in_views = calloc((size_t)DS4_N_LAYER, sizeof(*e->tp.batch_in_views));
-    if (!e->tp.batch_out_views || !e->tp.batch_in_views) {
-        snprintf(err, errlen, "tp: batch view table allocation failed");
-        goto fail;
-    }
     if (!e->tp.slab || !e->tp.zero_vec || !e->tp.out_views || !e->tp.in_views) {
         snprintf(err, errlen, "tp: slab allocation failed (%llu bytes)",
                  (unsigned long long)slab_bytes);
@@ -31691,16 +31684,6 @@ int ds4_engine_tp_bind(ds4_engine *e, struct ds4_tp *tp, char *err, size_t errle
                 snprintf(err, errlen, "tp: slab view creation failed");
                 goto fail;
             }
-        }
-        e->tp.batch_out_views[l] = ds4_gpu_tensor_view(
-                e->tp.slab, ds4_tp_slab_batch_out_offset(tp, l),
-                (uint64_t)DS4_TP_BATCH_MAX_ROWS * vec_bytes);
-        e->tp.batch_in_views[l] = ds4_gpu_tensor_view(
-                e->tp.slab, ds4_tp_slab_batch_in_offset(tp, l),
-                (uint64_t)DS4_TP_BATCH_MAX_ROWS * vec_bytes);
-        if (!e->tp.batch_out_views[l] || !e->tp.batch_in_views[l]) {
-            snprintf(err, errlen, "tp: batch slab view creation failed");
-            goto fail;
         }
     }
     if (!ds4_gpu_tp_init((uint32_t)ds4_tp_rank(tp),
@@ -31740,12 +31723,6 @@ void ds4_engine_tp_unbind(ds4_engine *e) {
         if (e->tp.out_views) ds4_gpu_tensor_free(e->tp.out_views[i]);
         if (e->tp.in_views) ds4_gpu_tensor_free(e->tp.in_views[i]);
     }
-    for (uint32_t i = 0; i < (uint32_t)DS4_N_LAYER; i++) {
-        if (e->tp.batch_out_views) ds4_gpu_tensor_free(e->tp.batch_out_views[i]);
-        if (e->tp.batch_in_views) ds4_gpu_tensor_free(e->tp.batch_in_views[i]);
-    }
-    free(e->tp.batch_out_views);
-    free(e->tp.batch_in_views);
     free(e->tp.out_views);
     free(e->tp.in_views);
     ds4_gpu_tensor_free(e->tp.zero_vec);
