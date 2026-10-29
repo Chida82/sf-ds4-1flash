@@ -43,6 +43,16 @@ returned separately from visible text in each API's native form. Standard
 sampling and output-budget fields are supported; explicit request parameters
 take precedence over defaults.
 
+Message content is literal text. System, user and tool text, the assistant's
+reasoning and content, and tool-call names and arguments are encoded as
+ordinary tokens even when they spell a chat marker such as `<｜User｜>`,
+`</think>` or `｜DSML｜`. Only the markers the chat template writes are control
+tokens. A tool that reads this repository's sources, which contain those
+markers, therefore cannot forge a turn or end the model's reasoning. Prompts
+whose content spells no marker tokenize exactly as before. The CLI is
+different: a prompt it receives already rendered as a chat keeps every marker
+as a control token.
+
 The default sampling settings are temperature 1, top-p 1, and min-p 0.05.
 For DeepSeek, thinking is on by default. `reasoning_effort=max` selects Think
 Max only with sufficient context; otherwise it falls back to normal thinking.
@@ -119,6 +129,10 @@ directory cannot be created, for example because the drive is not mounted, the
 server logs it and runs without a disk cache.
 Cache files contain prompt text and model state: treat the directory as
 private. It is disposable; stop the server before clearing it.
+
+Files written before content became literal text (payload ABI 2) may hold
+control tokens taken from content, so this build does not read them: the
+cache starts cold once. They stay on disk and can be deleted by hand.
 
 ## Tool history and debugging
 

@@ -380,6 +380,13 @@ tests/test_prompt_prefix.o: tests/test_prompt_prefix.c ds4_prompt_prefix.h
 tests/test_prompt_prefix: tests/test_prompt_prefix.o ds4_prompt_prefix.o
 	$(CC) $(CFLAGS) -o $@ $^
 
+# The real V4.1 renderer and rendered-chat tokenizer in one unit, model-less.
+tests/test_server_text_encoding.o: tests/test_server_text_encoding.c ds4.c ds4.h ds4_server.c ds4_tool_text.h ds4_kvstore.h rax.h
+	$(CC) $(CFLAGS) -Wno-unused-function -Wno-unused-parameter -DDS4_NO_GPU -I. -c -o $@ $<
+
+tests/test_server_text_encoding: tests/test_server_text_encoding.o ds4_help.o ds4_kvstore.o rax.o $(filter-out ds4_cpu.o,$(CPU_CORE_OBJS))
+	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
+
 q4k-dot-test: tests/test_q4k_dot.c
 	$(CC) -O2 -Wall -Wextra -std=c99 -o tests/test_q4k_dot tests/test_q4k_dot.c -lm -pthread
 	./tests/test_q4k_dot
@@ -399,12 +406,13 @@ env-check:
 # with DS4_TEST_MODEL set.
 test: env-check ds4_test $(BIN)-eval q4k-dot-test mxfp4-dot-test test-session-state test-engram \
 	tests/test_deepseek4_vision_image tests/test_image_decode \
-	tests/test_prompt_prefix $(SAMPLING_TEST) $(BIN) $(BIN)-server $(BIN)-bench \
+	tests/test_prompt_prefix tests/test_server_text_encoding $(SAMPLING_TEST) $(BIN) $(BIN)-server $(BIN)-bench \
 	tests/test_metal_slab_residency tests/test_deepseek41_prefill tests/test_deepseek41_graph
 	./$(BIN)-eval --validate-cases
 	./$(BIN)-eval --self-test-extractors
 	./ds4_test --server
 	./tests/test_prompt_prefix
+	./tests/test_server_text_encoding
 	./tests/test_sampling
 	./tests/test_deepseek4_vision_image
 	./tests/test_image_decode
@@ -445,7 +453,7 @@ clean:
 	      tests/test_deepseek41_metal tests/test_deepseek41_gguf tests/test_deepseek41_graph \
 	      tests/test_deepseek41_cli tests/test_deepseek41_prefill \
 	      tests/test_deepseek4_vision_image tests/test_image_decode tests/test_prompt_prefix \
-	      tests/test_sampling tests/test_quality_api \
+	      tests/test_server_text_encoding tests/test_sampling tests/test_quality_api \
 	      tests/test_ssd_cache tests/test_engram \
 	      tests/test_session_state tests/test_session_state_gpu \
 	      tests/test_tp_commands tests/test_tp_rdma tests/test_tp_link tests/test_tp_tcp \

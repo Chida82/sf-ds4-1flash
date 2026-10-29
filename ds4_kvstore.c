@@ -28,7 +28,9 @@
 /* Header byte 20 carries the graph-payload ABI.  It is separate from the outer
  * file version because the KVC envelope can remain stable while the serialized
  * ds4_session internals become unsafe to restore across runtime changes. */
-#define KV_CACHE_PAYLOAD_ABI 2u
+/* 3: server prompts encode content marker strings as text, so a token history
+ * stored by an older build may hold control tokens taken from content. */
+#define KV_CACHE_PAYLOAD_ABI 3u
 #define KV_CACHE_DEFAULT_MIN_TOKENS 512
 #define KV_CACHE_DEFAULT_COLD_MAX_TOKENS 30000
 /* Tokenizers may merge text across the prompt boundary. Trimming a small tail
@@ -690,13 +692,17 @@ void ds4_kvstore_build_prompt_from_exact_prefix_and_text_suffix(
         ds4_engine *engine,
         const ds4_tokens *exact_prefix,
         const char *suffix_text,
+        size_t suffix_offset,
+        const ds4_text_range *content,
+        int n_content,
         ds4_tokens *out) {
     ds4_tokens_copy(out, exact_prefix);
 
     ds4_tokens suffix = {0};
     /* The suffix may start with DS4 chat markers such as <｜User｜> or
      * </think>, so use the rendered-chat tokenizer, not plain text BPE. */
-    ds4_tokenize_rendered_chat(engine, suffix_text ? suffix_text : "", &suffix);
+    ds4_tokenize_rendered_chat_ranges(engine, suffix_text ? suffix_text : "", suffix_offset,
+                                      content, n_content, &suffix);
     tokens_append(out, &suffix);
     ds4_tokens_free(&suffix);
 }
@@ -1220,6 +1226,8 @@ int ds4_kvstore_try_load_text(ds4_kvstore *kc,
                               ds4_engine *engine,
                               ds4_session *session,
                               const char *prompt_text,
+                              const ds4_text_range *content,
+                              int n_content,
                               ds4_tokens *effective_prompt,
                               ds4_kvstore_load_result *result,
                               const ds4_kvstore_trailer_hooks *hooks,
@@ -1289,8 +1297,8 @@ int ds4_kvstore_try_load_text(ds4_kvstore *kc,
                  * prompt from that exact history and tokenize only the text
                  * suffix after the byte prefix. */
                 ds4_kvstore_build_prompt_from_exact_prefix_and_text_suffix(
-                    engine, loaded_tokens, prompt_text + text_bytes,
-                    effective_prompt);
+                    engine, loaded_tokens, prompt_text + text_bytes, text_bytes,
+                    content, n_content, effective_prompt);
             }
             if (hooks && hooks->load && (hdr.ext_flags & hooks->ext_flag)) {
                 hooks->load(hooks->ud, fp, hooks->load_wanted);

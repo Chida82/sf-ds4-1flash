@@ -322,6 +322,18 @@ bool ds4_tokens_starts_with(const ds4_tokens *tokens, const ds4_tokens *prefix);
 
 void ds4_tokenize_text(ds4_engine *e, const char *text, ds4_tokens *out);
 void ds4_tokenize_rendered_chat(ds4_engine *e, const char *text, ds4_tokens *out);
+/* A byte range [begin, end) of a rendered chat that came from message content. */
+typedef struct {
+    size_t begin;
+    size_t end;
+} ds4_text_range;
+/* As ds4_tokenize_rendered_chat, but a marker string is a control token only
+ * when its bytes lie wholly outside every content range. `text` starts at byte
+ * `offset` of the rendered chat the ranges refer to; ranges are ascending and
+ * disjoint. With no ranges it is ds4_tokenize_rendered_chat. */
+void ds4_tokenize_rendered_chat_ranges(ds4_engine *e, const char *text, size_t offset,
+                                       const ds4_text_range *content, int n_content,
+                                       ds4_tokens *out);
 void ds4_chat_begin(ds4_engine *e, ds4_tokens *tokens);
 void ds4_encode_chat_prompt(
         ds4_engine *e,

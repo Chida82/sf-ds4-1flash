@@ -27084,16 +27084,25 @@ static void tokenize_span(const ds4_vocab *vocab, const char *p, size_t n, token
     free(tmp);
 }
 
-static void tokenize_rendered_chat_vocab(const ds4_vocab *vocab, const char *text,
-                                         token_vec *out) {
+static void tokenize_rendered_chat_ranges_vocab(const ds4_vocab *vocab, const char *text,
+                                                size_t offset,
+                                                const ds4_text_range *content,
+                                                int n_content, token_vec *out) {
     if (!text) text = "";
 
     const char *span = text;
     const char *p = text;
+    int next = 0;
     while (*p) {
         int token = -1;
         size_t len = 0;
         if (special_token_at(vocab, p, &token, &len)) {
+            const size_t at = offset + (size_t)(p - text);
+            while (next < n_content && content[next].end <= at) next++;
+            if (next < n_content && content[next].begin < at + len) {
+                p++; /* a marker spelled by content stays text */
+                continue;
+            }
             tokenize_span(vocab, span, (size_t)(p - span), out);
             token_vec_push(out, token);
             p += len;
@@ -27105,8 +27114,19 @@ static void tokenize_rendered_chat_vocab(const ds4_vocab *vocab, const char *tex
     tokenize_span(vocab, span, (size_t)(p - span), out);
 }
 
+static void tokenize_rendered_chat_vocab(const ds4_vocab *vocab, const char *text,
+                                         token_vec *out) {
+    tokenize_rendered_chat_ranges_vocab(vocab, text, 0, NULL, 0, out);
+}
+
 void ds4_tokenize_rendered_chat(ds4_engine *e, const char *text, ds4_tokens *out) {
     tokenize_rendered_chat_vocab(&e->vocab, text, out);
+}
+
+void ds4_tokenize_rendered_chat_ranges(ds4_engine *e, const char *text, size_t offset,
+                                       const ds4_text_range *content, int n_content,
+                                       ds4_tokens *out) {
+    tokenize_rendered_chat_ranges_vocab(&e->vocab, text, offset, content, n_content, out);
 }
 
 void ds4_chat_begin(ds4_engine *e, ds4_tokens *tokens) {

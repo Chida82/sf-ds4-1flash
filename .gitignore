@@ -27,6 +27,7 @@
 /tests/test_sampling
 /tests/test_ssd_cache
 /tests/test_prompt_prefix
+/tests/test_server_text_encoding
 /tests/test_quality_api
 /tests/test_session_state
 /tests/test_session_state_gpu

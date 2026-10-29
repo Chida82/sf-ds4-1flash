@@ -12,6 +12,7 @@
 - **Stream encoders.** The Anthropic, OpenAI chat and Responses live updaters (`anthropic_sse_stream_update`, `openai_sse_stream_update`, `responses_sse_stream_update`) each find `<think>`/`</think>` with `strstr` on the raw text, holding back `strlen("</think>") - 1` bytes.
 - **Final parse.** `split_reasoning_content` uses `strstr("</think>")`. `parse_deepseek_generated_message_ex` searches `DS41_TOOL_CALLS_START` and uses `find_tool_structural_text(..., "</think>")`. The tool-block parser uses `raw_full_lit(DS41_TOOL_CALLS_START)`.
 - **Text with no token record.** The same parsers also read client-supplied assistant history. After `510`, that history's content is encoded as literal text in the prompt.
+- **The prompt-side caller.** `thinking_state_from_prompt` also calls `thinking_state_feed`, on the rendered prompt text. Since `510` it feeds only the bytes outside content ranges. When the feed becomes a test on token ids, that caller can read `r->prompt`'s ids instead, which already carry the same decision.
 - **Marker tokens.** The V4.1 vocabulary has control tokens for `<think>`, `</think>`, `｜DSML｜` and end of sentence. `special_token_at`'s list includes them, and `ds4_token_is_thinking_control` already tests the think pair by id.
 
 ## Goals / Non-Goals

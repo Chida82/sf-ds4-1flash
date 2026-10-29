@@ -127,10 +127,15 @@ char *ds4_kvstore_render_tokens_text(ds4_engine *engine,
 bool ds4_kvstore_byte_prefix_match(const char *text, size_t text_len,
                                    const char *prefix, size_t prefix_len);
 void ds4_kvstore_tokens_copy_prefix(ds4_tokens *dst, const ds4_tokens *src, int n);
+/* `suffix_text` starts at byte `suffix_offset` of the render whose content
+ * ranges are `content` (none: every marker string is a control token). */
 void ds4_kvstore_build_prompt_from_exact_prefix_and_text_suffix(
         ds4_engine *engine,
         const ds4_tokens *exact_prefix,
         const char *suffix_text,
+        size_t suffix_offset,
+        const ds4_text_range *content,
+        int n_content,
         ds4_tokens *out);
 
 int ds4_kvstore_store_len(const ds4_kvstore *kc, int tokens);
@@ -192,6 +197,8 @@ int ds4_kvstore_try_load_text(ds4_kvstore *kc,
                               ds4_engine *engine,
                               ds4_session *session,
                               const char *prompt_text,
+                              const ds4_text_range *content,
+                              int n_content,
                               ds4_tokens *effective_prompt,
                               ds4_kvstore_load_result *result,
                               const ds4_kvstore_trailer_hooks *hooks,

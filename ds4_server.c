@@ -175,6 +175,44 @@ static void buf_free(buf *b) {
     memset(b, 0, sizeof(*b));
 }
 
+/* Byte ranges of a rendered chat that came from message content: the
+ * rendered-chat tokenizer keeps marker strings inside them as text. */
+typedef struct {
+    ds4_text_range *v;
+    int len;
+    int cap;
+} text_ranges;
+
+static void text_ranges_add(text_ranges *r, size_t begin, size_t end) {
+    if (!r || begin >= end) return;
+    if (r->len && r->v[r->len - 1].end == begin) {
+        r->v[r->len - 1].end = end;
+        return;
+    }
+    if (r->len == r->cap) {
+        r->cap = r->cap ? r->cap * 2 : 16;
+        r->v = xrealloc(r->v, (size_t)r->cap * sizeof(r->v[0]));
+    }
+    r->v[r->len++] = (ds4_text_range){begin, end};
+}
+
+static void text_ranges_free(text_ranges *r) {
+    free(r->v);
+    memset(r, 0, sizeof(*r));
+}
+
+static void buf_puts_content(buf *b, text_ranges *r, const char *s) {
+    const size_t at = b->len;
+    buf_puts(b, s);
+    text_ranges_add(r, at, b->len);
+}
+
+/* Tokenize `text`, which starts at byte `offset` of the render `r` describes. */
+static void tokenize_rendered(ds4_engine *e, const char *text, size_t offset,
+                              const text_ranges *r, ds4_tokens *out) {
+    ds4_tokenize_rendered_chat_ranges(e, text, offset, r ? r->v : NULL, r ? r->len : 0, out);
+}
+
 static void json_ws(const char **p) {
     while (**p && isspace((unsigned char)**p)) (*p)++;
 }
@@ -805,6 +843,7 @@ typedef struct {
     stop_list stops;
     char *raw_body;
     char *prompt_text;
+    text_ranges prompt_ranges; /* content bytes of prompt_text */
     tool_schema_orders tool_orders;
     int max_tokens;
     int top_k;
@@ -849,9 +888,11 @@ typedef struct {
     bool responses_requires_live_reasoning;
     stop_list responses_live_call_ids;
     char *responses_live_suffix_text;
+    text_ranges responses_live_suffix_ranges;
     bool anthropic_requires_live_tool_state;
     stop_list anthropic_live_call_ids;
     char *anthropic_live_suffix_text;
+    text_ranges anthropic_live_suffix_ranges;
     tool_replay_stats tool_replay;
 } request;
 
@@ -1016,12 +1057,15 @@ static void request_free(request *r) {
     free(r->stops.v);
     free(r->raw_body);
     free(r->prompt_text);
+    text_ranges_free(&r->prompt_ranges);
     stop_list_clear(&r->responses_live_call_ids);
     free(r->responses_live_call_ids.v);
     free(r->responses_live_suffix_text);
+    text_ranges_free(&r->responses_live_suffix_ranges);
     stop_list_clear(&r->anthropic_live_call_ids);
     free(r->anthropic_live_call_ids.v);
     free(r->anthropic_live_suffix_text);
+    text_ranges_free(&r->anthropic_live_suffix_ranges);
     tool_schema_orders_free(&r->tool_orders);
     memset(r, 0, sizeof(*r));
 }
@@ -2697,31 +2741,36 @@ static void append_dsml_json_literal(buf *b, const char *s, bool v41) {
     }
 }
 
-static void append_dsml_arg(buf *b, const json_arg *arg, bool v41) {
+static void append_dsml_arg(buf *b, const json_arg *arg, bool v41, text_ranges *ranges) {
     buf_puts(b, v41 ? DS41_PARAM_START " name=\"" : "<｜DSML｜parameter name=\"");
+    size_t at = b->len;
     append_dsml_attr_escaped(b, arg->key);
+    text_ranges_add(ranges, at, b->len);
     buf_puts(b, "\" string=\"");
     buf_puts(b, arg->is_string ? "true" : "false");
     buf_puts(b, "\">");
+    at = b->len;
     if (arg->is_string) append_dsml_parameter_text(b, arg->value, v41);
     else append_dsml_json_literal(b, arg->value, v41);
+    text_ranges_add(ranges, at, b->len);
     buf_puts(b, v41 ? DS41_PARAM_END "\n" : "</｜DSML｜parameter>\n");
 }
 
-static bool append_dsml_arguments_from_json(buf *b, const char *json, const tool_schema_order *order, bool v41) {
+static bool append_dsml_arguments_from_json(buf *b, const char *json, const tool_schema_order *order,
+                                            bool v41, text_ranges *ranges) {
     json_args args = {0};
     if (!json_args_parse(json, &args)) return false;
     if (order) {
         for (int i = 0; i < order->len; i++) {
             int idx = json_args_find_unused(&args, order->prop[i]);
             if (idx < 0) continue;
-            append_dsml_arg(b, &args.v[idx], v41);
+            append_dsml_arg(b, &args.v[idx], v41, ranges);
             args.v[idx].used = true;
         }
     }
     for (int i = 0; i < args.len; i++) {
         if (args.v[i].used) continue;
-        append_dsml_arg(b, &args.v[i], v41);
+        append_dsml_arg(b, &args.v[i], v41, ranges);
     }
     json_args_free(&args);
     return true;
@@ -2751,7 +2800,10 @@ static void append_json_object_or_empty(buf *b, const char *json) {
     json_args_free(&args);
 }
 
-static void append_dsml_tool_calls_text(buf *b, const tool_calls *calls, bool v41) {
+/* Tool names and argument keys and values are content; the tags are template,
+ * and so is raw_tool_text, the model's own generated block. */
+static void append_dsml_tool_calls_text_ranges(buf *b, const tool_calls *calls, bool v41,
+                                               text_ranges *ranges) {
     if (!calls || calls->len == 0) return;
     if (calls->raw_tool_text && calls->raw_tool_text[0]) {
         buf_puts(b, calls->raw_tool_text);
@@ -2761,12 +2813,16 @@ static void append_dsml_tool_calls_text(buf *b, const tool_calls *calls, bool v4
     for (int i = 0; i < calls->len; i++) {
         const tool_call *tc = &calls->v[i];
         buf_puts(b, v41 ? DS41_INVOKE_START " name=\"" : "<｜DSML｜invoke name=\"");
+        size_t at = b->len;
         append_dsml_attr_escaped(b, tc->name);
+        text_ranges_add(ranges, at, b->len);
         buf_puts(b, "\">\n");
-        if (!append_dsml_arguments_from_json(b, tc->arguments, NULL, v41)) {
+        if (!append_dsml_arguments_from_json(b, tc->arguments, NULL, v41, ranges)) {
             buf_puts(b, v41 ? DS41_PARAM_START " name=\"arguments\" string=\"true\">" :
                             "<｜DSML｜parameter name=\"arguments\" string=\"true\">");
+            at = b->len;
             append_dsml_parameter_text(b, tc->arguments, v41);
+            text_ranges_add(ranges, at, b->len);
             buf_puts(b, v41 ? DS41_PARAM_END "\n" : "</｜DSML｜parameter>\n");
         }
         buf_puts(b, v41 ? DS41_INVOKE_END "\n" : "</｜DSML｜invoke>\n");
@@ -2774,13 +2830,18 @@ static void append_dsml_tool_calls_text(buf *b, const tool_calls *calls, bool v4
     buf_puts(b, v41 ? DS41_TOOL_CALLS_END : "</｜DSML｜tool_calls>");
 }
 
+static void append_dsml_tool_calls_text(buf *b, const tool_calls *calls, bool v41) {
+    append_dsml_tool_calls_text_ranges(b, calls, v41, NULL);
+}
+
 static void append_tool_calls_text_for_syntax(buf *b,
                                               server_model_syntax syntax,
                                               const tool_calls *calls,
-                                              const tool_schema_orders *tool_orders) {
+                                              const tool_schema_orders *tool_orders,
+                                              text_ranges *ranges) {
     (void)tool_orders;
     {
-        append_dsml_tool_calls_text(b, calls, syntax == SERVER_MODEL_SYNTAX_DEEPSEEK41);
+        append_dsml_tool_calls_text_ranges(b, calls, syntax == SERVER_MODEL_SYNTAX_DEEPSEEK41, ranges);
     }
 }
 
@@ -2983,10 +3044,13 @@ static const chat_msg **ds41_order_messages(const chat_msgs *msgs, const stop_li
 
 /* The same renderer owns full requests and live tool-result tails, so their
  * separators and role transitions cannot disagree at the cache boundary. */
+/* `ranges`, when given, receives the byte ranges of the result that came from
+ * message content. */
 static char *render_deepseek41_chat_ordered(const chat_msgs *msgs, int start,
                                            const char *tool_schemas,
                                            ds4_think_mode mode, bool live_tail,
-                                           const stop_list *initial_order) {
+                                           const stop_list *initial_order,
+                                           text_ranges *ranges) {
     buf out = {0};
     chat_msgs fragments = {0};
     chat_msgs views = ds41_message_views(msgs, &fragments, &start);
@@ -3019,28 +3083,30 @@ static char *render_deepseek41_chat_ordered(const chat_msgs *msgs, int start,
             if (i == 0 && initial_system) {
                 if (tool_schemas && tool_schemas[0]) buf_puts(&out, "\n\n");
             } else buf_puts(&out, "<｜System｜>");
-            buf_puts(&out, m->content ? m->content : "");
+            buf_puts_content(&out, ranges, m->content ? m->content : "");
             pending = i > 0 || live_tail;
             user_open = false;
         } else if (role_is_user_like(m->role)) {
             buf_puts(&out, user_open ? "\n\n" : "<｜User｜>");
             if (strcmp(m->role, "user")) {
                 buf_puts(&out, "<tool_result>");
+                const size_t at = out.len;
                 append_tool_result_text(&out, m->content);
+                text_ranges_add(ranges, at, out.len);
                 buf_puts(&out, "</tool_result>");
-            } else buf_puts(&out, m->content ? m->content : "");
+            } else buf_puts_content(&out, ranges, m->content ? m->content : "");
             pending = user_open = true;
         } else if (!strcmp(m->role, "assistant")) {
             if (pending) {
                 buf_puts(&out, "<｜Assistant｜>");
                 if (think && (keep_reasoning || i > last_user)) {
                     buf_puts(&out, "<think>");
-                    buf_puts(&out, m->reasoning ? m->reasoning : "");
+                    buf_puts_content(&out, ranges, m->reasoning ? m->reasoning : "");
                 }
                 buf_puts(&out, "</think>");
             }
-            buf_puts(&out, m->content ? m->content : "");
-            append_dsml_tool_calls_text(&out, &m->calls, true);
+            buf_puts_content(&out, ranges, m->content ? m->content : "");
+            append_dsml_tool_calls_text_ranges(&out, &m->calls, true, ranges);
             buf_puts(&out, "<｜end▁of▁sentence｜>");
             pending = user_open = false;
         }
@@ -3058,16 +3124,17 @@ static char *render_deepseek41_chat_ordered(const chat_msgs *msgs, int start,
 static char *render_deepseek41_chat(const chat_msgs *msgs, int start,
                                    const char *tool_schemas,
                                    ds4_think_mode mode, bool live_tail) {
-    return render_deepseek41_chat_ordered(msgs, start, tool_schemas, mode, live_tail, NULL);
+    return render_deepseek41_chat_ordered(msgs, start, tool_schemas, mode, live_tail, NULL, NULL);
 }
 
 static char *render_chat_prompt_text_for_syntax(server_model_syntax syntax,
                                                 const chat_msgs *msgs,
                                                 const char *tool_schemas,
                                                 const tool_schema_orders *tool_orders,
-                                                ds4_think_mode think_mode) {
+                                                ds4_think_mode think_mode,
+                                                text_ranges *ranges) {
     if (syntax == SERVER_MODEL_SYNTAX_DEEPSEEK41)
-        return render_deepseek41_chat(msgs, 0, tool_schemas, think_mode, false);
+        return render_deepseek41_chat_ordered(msgs, 0, tool_schemas, think_mode, false, NULL, ranges);
     return render_deepseek_chat_prompt_text(msgs, tool_schemas,
                                             tool_orders, think_mode);
 }
@@ -3079,7 +3146,7 @@ static DS4_SERVER_MAYBE_UNUSED char *render_chat_prompt_text(
         ds4_think_mode think_mode) {
     return render_chat_prompt_text_for_syntax(SERVER_MODEL_SYNTAX_DEEPSEEK,
                                               msgs, tool_schemas,
-                                              tool_orders, think_mode);
+                                              tool_orders, think_mode, NULL);
 }
 
 static bool request_tokenize_multimodal_prompt(ds4_engine *e, server *s,
@@ -3089,7 +3156,7 @@ static bool request_tokenize_multimodal_prompt(ds4_engine *e, server *s,
     size_t count = 0;
     for (int i = 0; msgs && i < msgs->len; i++) count += msgs->v[i].images.len;
     if (count == 0) {
-        ds4_tokenize_rendered_chat(e, r->prompt_text, &r->prompt);
+        tokenize_rendered(e, r->prompt_text, 0, &r->prompt_ranges, &r->prompt);
         return true;
     }
     if (count > 16) {
@@ -3133,7 +3200,8 @@ static bool request_tokenize_multimodal_prompt(ds4_engine *e, server *s,
             break;
         }
         char *prefix = xstrndup(cursor, (size_t)(marker - cursor));
-        ds4_tokenize_rendered_chat(e, prefix, &r->prompt);
+        tokenize_rendered(e, prefix, (size_t)(cursor - r->prompt_text), &r->prompt_ranges,
+                          &r->prompt);
         free(prefix);
         if (!ds4_prompt_append_vision(e, &r->prompt, &r->images[i],
                                       &embeddings[i], err, errlen)) {
@@ -3144,7 +3212,8 @@ static bool request_tokenize_multimodal_prompt(ds4_engine *e, server *s,
         memcpy(r->image_markers[i], inputs[i]->marker, sizeof(r->image_markers[i]));
         cursor = marker + strlen(inputs[i]->marker);
     }
-    if (ok) ds4_tokenize_rendered_chat(e, cursor, &r->prompt);
+    if (ok) tokenize_rendered(e, cursor, (size_t)(cursor - r->prompt_text), &r->prompt_ranges,
+                              &r->prompt);
 
 done:
     for (size_t i = 0; i < count; i++)
@@ -3249,14 +3318,14 @@ static DS4_SERVER_MAYBE_UNUSED char *render_live_tool_tail(
 
 static char *render_request_live_tool_tail(server *s, const request *r,
                                            const chat_msgs *msgs, int start,
-                                           const stop_list *ids) {
+                                           const stop_list *ids, text_ranges *ranges) {
     if (r->model_syntax != SERVER_MODEL_SYNTAX_DEEPSEEK41)
         return render_live_tool_tail_for_syntax(r->model_syntax, msgs, start,
                                                  &r->tool_orders, r->think_mode);
     /* Output-only requests omit the assistant message which declares order.
      * Copy the remembered order under its mutex, never borrow mutable IDs. */
     stop_list order = live_tool_call_order(s, r->api, ids);
-    char *text = render_deepseek41_chat_ordered(msgs, start, NULL, r->think_mode, true, &order);
+    char *text = render_deepseek41_chat_ordered(msgs, start, NULL, r->think_mode, true, &order, ranges);
     id_list_free(&order);
     return text;
 }
@@ -3379,8 +3448,10 @@ static void responses_prepare_live_continuation(server *s, request *r,
     if (r->responses_live_call_ids.len == 0) return;
 
     free(r->responses_live_suffix_text);
+    text_ranges_free(&r->responses_live_suffix_ranges);
     r->responses_live_suffix_text =
-        render_request_live_tool_tail(s, r, msgs, tail_start, &r->responses_live_call_ids);
+        render_request_live_tool_tail(s, r, msgs, tail_start, &r->responses_live_call_ids,
+                                      &r->responses_live_suffix_ranges);
 }
 
 static bool anthropic_msg_is_tool_result_tail(const chat_msg *m) {
@@ -3473,8 +3544,10 @@ static void anthropic_prepare_live_continuation(server *s, request *r,
     if (r->anthropic_live_call_ids.len == 0) return;
 
     free(r->anthropic_live_suffix_text);
+    text_ranges_free(&r->anthropic_live_suffix_ranges);
     r->anthropic_live_suffix_text =
-        render_request_live_tool_tail(s, r, msgs, tail_start, &r->anthropic_live_call_ids);
+        render_request_live_tool_tail(s, r, msgs, tail_start, &r->anthropic_live_call_ids,
+                                      &r->anthropic_live_suffix_ranges);
 }
 
 /* The API parsers are intentionally selective JSON parsers: they keep only
@@ -3660,7 +3733,7 @@ static bool parse_chat_request(ds4_engine *e, server *s, const char *body, int d
         chat_history_uses_tool_context(&msgs, active_tool_schemas);
     r->prompt_text = render_chat_prompt_text_for_syntax(
         r->model_syntax, &msgs, active_tool_schemas,
-        &r->tool_orders, r->think_mode);
+        &r->tool_orders, r->think_mode, &r->prompt_ranges);
     if (!request_tokenize_multimodal_prompt(e, s, r, &msgs, err, errlen)) {
         chat_msgs_free(&msgs);
         free(tool_schemas);
@@ -3887,7 +3960,7 @@ static bool parse_anthropic_request(ds4_engine *e, server *s, const char *body, 
         chat_history_uses_tool_context(&msgs, active_tool_schemas);
     r->prompt_text = render_chat_prompt_text_for_syntax(
         r->model_syntax, &msgs, active_tool_schemas,
-        &r->tool_orders, r->think_mode);
+        &r->tool_orders, r->think_mode, &r->prompt_ranges);
     if (!request_tokenize_multimodal_prompt(e, s, r, &msgs, err, errlen)) {
         chat_msgs_free(&msgs);
         free(system);
@@ -4917,7 +4990,7 @@ static bool parse_responses_request(ds4_engine *e, server *s, const char *body, 
     responses_prepare_live_continuation(s, r, &msgs);
     r->prompt_text = render_chat_prompt_text_for_syntax(
         r->model_syntax, &msgs, active_tool_schemas,
-        &r->tool_orders, r->think_mode);
+        &r->tool_orders, r->think_mode, &r->prompt_ranges);
     if (!request_tokenize_multimodal_prompt(e, s, r, &msgs, err, errlen)) {
         chat_msgs_free(&msgs);
         buf_free(&combined_tool_schemas);
@@ -5115,8 +5188,8 @@ static bool parse_completion_request(ds4_engine *e, const char *body, int def_to
     prompt = NULL;
     chat_msgs_push(&msgs, user_msg);
     r->prompt_text = render_chat_prompt_text_for_syntax(
-        r->model_syntax, &msgs, NULL, NULL, r->think_mode);
-    ds4_tokenize_rendered_chat(e, r->prompt_text, &r->prompt);
+        r->model_syntax, &msgs, NULL, NULL, r->think_mode, &r->prompt_ranges);
+    tokenize_rendered(e, r->prompt_text, 0, &r->prompt_ranges, &r->prompt);
     chat_msgs_free(&msgs);
     free(prompt);
     return true;
@@ -10248,7 +10321,7 @@ static void build_prompt_from_exact_prefix_and_text_suffix(
         ds4_tokens *out)
 {
     ds4_kvstore_build_prompt_from_exact_prefix_and_text_suffix(
-        engine, exact_prefix, suffix_text, out);
+        engine, exact_prefix, suffix_text, 0, NULL, 0, out);
 }
 
 static int kv_cache_store_len(const kv_disk_cache *kc, int tokens) {
@@ -10483,6 +10556,7 @@ static int kv_cache_find_text_prefix(kv_disk_cache *kc, const char *prompt_text,
 
 static int kv_cache_try_load_text(server *s, server_slot *slot,
                                   const char *prompt_text,
+                                  const text_ranges *ranges,
                                   ds4_tokens *effective_prompt,
                                   char **loaded_path_out,
                                   uint8_t *loaded_ext_flags_out,
@@ -10501,7 +10575,8 @@ static int kv_cache_try_load_text(server *s, server_slot *slot,
     }
     pthread_mutex_lock(&s->kv_mu);
     int loaded = ds4_kvstore_try_load_text(&s->kv, s->engine, slot->session,
-                                           prompt_text, effective_prompt, &lr,
+                                           prompt_text, ranges ? ranges->v : NULL,
+                                           ranges ? ranges->len : 0, effective_prompt, &lr,
                                            &hooks, responses_protocol);
     pthread_mutex_unlock(&s->kv_mu);
     pthread_mutex_unlock(&s->inference_mu);
@@ -10518,7 +10593,7 @@ static int kv_cache_try_load(server *s, server_slot *slot, const request *req,
                              char **loaded_path_out,
                              uint8_t *loaded_ext_flags_out) {
     return kv_cache_try_load_text(s, slot, req ? req->prompt_text : NULL,
-                                  effective_prompt,
+                                  req ? &req->prompt_ranges : NULL, effective_prompt,
                                   loaded_path_out,
                                   loaded_ext_flags_out,
                                   req && req->api == API_RESPONSES);
@@ -10528,8 +10603,10 @@ static int kv_cache_try_load(server *s, server_slot *slot, const request *req,
  * Keep the exact live tokens and splice each new image's already-built token
  * block into the suffix. Historical image positions follow the live frontier,
  * which may retain reasoning omitted from a client's visible replay. */
+/* `suffix` starts at byte `offset` of the render `ranges` describes. */
 static bool build_live_prompt_suffix(server *s, server_slot *slot,
                                       const request *req, const char *suffix,
+                                      const text_ranges *ranges, size_t offset,
                                       ds4_tokens *out) {
     const ds4_tokens *live = ds4_session_tokens(slot->session);
     if (!live || !suffix || req->image_count > 16) return false;
@@ -10556,14 +10633,14 @@ static bool build_live_prompt_suffix(server *s, server_slot *slot,
             return false;
         }
         char *text = xstrndup(cursor, (size_t)(marker - cursor));
-        ds4_tokenize_rendered_chat(s->engine, text, &prompt);
+        tokenize_rendered(s->engine, text, offset + (size_t)(cursor - suffix), ranges, &prompt);
         free(text);
         spans[i].token_start = (uint32_t)(prompt.len + wrapper);
         for (int64_t p = start; p < (int64_t)end; p++)
             ds4_tokens_push(&prompt, req->prompt.v[p]);
         cursor = marker + strlen(req->image_markers[i]);
     }
-    ds4_tokenize_rendered_chat(s->engine, cursor, &prompt);
+    tokenize_rendered(s->engine, cursor, offset + (size_t)(cursor - suffix), ranges, &prompt);
     if (!ds4_session_vision_prefix_matches(slot->session, spans, req->image_count)) {
         ds4_tokens_free(&prompt);
         return false;
@@ -11258,7 +11335,17 @@ static void thinking_state_feed(thinking_state *st, const char *p, size_t len) {
 static thinking_state thinking_state_from_prompt(const request *r) {
     thinking_state st = {0};
     if (r && r->prompt_text) {
-        thinking_state_feed(&st, r->prompt_text, strlen(r->prompt_text));
+        /* Content is literal text: only the template's tags move the state. */
+        const char *p = r->prompt_text;
+        const size_t n = strlen(p);
+        size_t at = 0;
+        for (int i = 0; i < r->prompt_ranges.len && at < n; i++) {
+            const size_t begin = r->prompt_ranges.v[i].begin < n ? r->prompt_ranges.v[i].begin : n;
+            if (begin > at) thinking_state_feed(&st, p + at, begin - at);
+            st.tail_len = 0;
+            if (r->prompt_ranges.v[i].end > at) at = r->prompt_ranges.v[i].end;
+        }
+        if (at < n) thinking_state_feed(&st, p + at, n - at);
     } else if (r && ds4_think_mode_enabled(r->think_mode)) {
         st.inside = true;
     }
@@ -11760,18 +11847,21 @@ static void send_prefill_failure_response(server *s, const job *j,
     http_error(j->fd, s->enable_cors, 500, err);
 }
 
+/* `ranges`, when given, receives the suffix's content bytes, as the next
+ * request's render of this assistant turn will mark them. */
 static char *build_tool_checkpoint_suffix(const request *r, const char *content,
-                                          const char *reasoning, const tool_calls *calls) {
+                                          const char *reasoning, const tool_calls *calls,
+                                          text_ranges *ranges) {
     const server_model_syntax syntax =
         r ? r->model_syntax : SERVER_MODEL_SYNTAX_DEEPSEEK;
     buf suffix = {0};
     if (r && ds4_think_mode_enabled(r->think_mode)) {
-        buf_puts(&suffix, reasoning ? reasoning : "");
+        buf_puts_content(&suffix, ranges, reasoning ? reasoning : "");
         buf_puts(&suffix, "</think>");
     }
-    buf_puts(&suffix, content ? content : "");
+    buf_puts_content(&suffix, ranges, content ? content : "");
     append_tool_calls_text_for_syntax(&suffix, syntax, calls,
-                                      r ? &r->tool_orders : NULL);
+                                      r ? &r->tool_orders : NULL, ranges);
     {
         buf_puts(&suffix, "<｜end▁of▁sentence｜>");
     }
@@ -11801,7 +11891,7 @@ static char *build_responses_visible_assistant_suffix(const request *r,
     }
     buf_puts(&suffix, content ? content : "");
     append_tool_calls_text_for_syntax(&suffix, syntax, calls,
-                                      r ? &r->tool_orders : NULL);
+                                      r ? &r->tool_orders : NULL, NULL);
     {
         buf_puts(&suffix, "<｜end▁of▁sentence｜>");
     }
@@ -11876,14 +11966,25 @@ static void canonicalize_tool_checkpoint(server *s, server_slot *slot,
                                          const char *reasoning, const tool_calls *calls) {
     if (!calls || calls->len == 0 || !j->req.prompt_text) return;
 
-    char *suffix_text = build_tool_checkpoint_suffix(&j->req, content, reasoning, calls);
+    text_ranges suffix_ranges = {0};
+    char *suffix_text = build_tool_checkpoint_suffix(&j->req, content, reasoning, calls,
+                                                     &suffix_ranges);
 
     buf rendered = {0};
     buf_puts(&rendered, j->req.prompt_text);
+    const size_t suffix_at = rendered.len;
     buf_puts(&rendered, suffix_text);
+    text_ranges rendered_ranges = {0};
+    for (int i = 0; i < j->req.prompt_ranges.len; i++)
+        text_ranges_add(&rendered_ranges, j->req.prompt_ranges.v[i].begin,
+                        j->req.prompt_ranges.v[i].end);
+    for (int i = 0; i < suffix_ranges.len; i++)
+        text_ranges_add(&rendered_ranges, suffix_ranges.v[i].begin + suffix_at,
+                        suffix_ranges.v[i].end + suffix_at);
 
     ds4_tokens canonical = {0};
-    ds4_tokenize_rendered_chat(s->engine, rendered.ptr ? rendered.ptr : "", &canonical);
+    tokenize_rendered(s->engine, rendered.ptr ? rendered.ptr : "", 0, &rendered_ranges,
+                      &canonical);
     const int live_len = ds4_session_pos(slot->session);
     const int common = ds4_session_common_prefix(slot->session, &canonical);
     if (common == live_len && canonical.len == live_len) goto done;
@@ -11945,7 +12046,7 @@ static void canonicalize_tool_checkpoint(server *s, server_slot *slot,
         ds4_tokens effective = {0};
         int loaded = kv_cache_try_load_text(s, slot,
                                             rendered.ptr ? rendered.ptr : "",
-                                            &effective, &path, NULL, false);
+                                            &rendered_ranges, &effective, &path, NULL, false);
         if (loaded == 0) {
             pthread_mutex_lock(&s->inference_mu);
             ds4_session_invalidate(slot->session);
@@ -12042,6 +12143,8 @@ done:
     ds4_tokens_free(&canonical);
     buf_free(&rendered);
     free(suffix_text);
+    text_ranges_free(&suffix_ranges);
+    text_ranges_free(&rendered_ranges);
 }
 
 static bool should_canonicalize_tool_checkpoint(const server *s, const tool_calls *calls) {
@@ -12355,7 +12458,8 @@ static void generate_job_inner(server *s, server_slot *slot, job *j) {
     switch (reuse.kind) {
     case REUSE_RESPONSES_VISIBLE:
         if (!build_live_prompt_suffix(s, slot, &j->req,
-            j->req.prompt_text + reuse.suffix_off, &effective_prompt)) {
+            j->req.prompt_text + reuse.suffix_off, &j->req.prompt_ranges, reuse.suffix_off,
+            &effective_prompt)) {
             cached = 0;
             cache_source = "none";
             break;
@@ -12374,7 +12478,8 @@ static void generate_job_inner(server *s, server_slot *slot, job *j) {
         break;
     case REUSE_RESPONSES_TOOL_OUTPUT:
         if (!build_live_prompt_suffix(s, slot, &j->req,
-            j->req.responses_live_suffix_text, &effective_prompt)) {
+            j->req.responses_live_suffix_text, &j->req.responses_live_suffix_ranges, 0,
+            &effective_prompt)) {
             cached = 0;
             cache_source = "none";
             break;
@@ -12388,7 +12493,8 @@ static void generate_job_inner(server *s, server_slot *slot, job *j) {
         break;
     case REUSE_ANTHROPIC_TOOL_OUTPUT:
         if (!build_live_prompt_suffix(s, slot, &j->req,
-            j->req.anthropic_live_suffix_text, &effective_prompt)) {
+            j->req.anthropic_live_suffix_text, &j->req.anthropic_live_suffix_ranges, 0,
+            &effective_prompt)) {
             cached = 0;
             cache_source = "none";
             break;
@@ -12436,7 +12542,8 @@ static void generate_job_inner(server *s, server_slot *slot, job *j) {
         break;
     case REUSE_THINKING_VISIBLE:
         if (!build_live_prompt_suffix(s, slot, &j->req,
-            j->req.prompt_text + reuse.suffix_off, &effective_prompt)) {
+            j->req.prompt_text + reuse.suffix_off, &j->req.prompt_ranges, reuse.suffix_off,
+            &effective_prompt)) {
             cached = 0;
             cache_source = "none";
             break;
@@ -12448,7 +12555,8 @@ static void generate_job_inner(server *s, server_slot *slot, job *j) {
         break;
     case REUSE_MEMORY_TEXT:
         if (!build_live_prompt_suffix(s, slot, &j->req,
-            j->req.prompt_text + reuse.suffix_off, &effective_prompt)) {
+            j->req.prompt_text + reuse.suffix_off, &j->req.prompt_ranges, reuse.suffix_off,
+            &effective_prompt)) {
             cached = 0;
             cache_source = "none";
             break;
@@ -17143,7 +17251,7 @@ static void test_parse_short_dsml_and_canonical_suffix(void) {
     request_init(&r, REQ_CHAT, 128);
     r.think_mode = DS4_THINK_HIGH;
     r.tool_orders = make_bash_order();
-    char *suffix = build_tool_checkpoint_suffix(&r, content, reasoning, &calls);
+    char *suffix = build_tool_checkpoint_suffix(&r, content, reasoning, &calls, NULL);
     const char *command = strstr(suffix, "name=\"command\"");
     const char *description = strstr(suffix, "name=\"description\"");
     TEST_ASSERT(command != NULL);
@@ -17570,7 +17678,7 @@ static void test_tool_checkpoint_suffix_is_future_prompt_canonical(void) {
     r.think_mode = DS4_THINK_HIGH;
     r.tool_orders = orders;
     memset(&orders, 0, sizeof(orders));
-    char *suffix = build_tool_checkpoint_suffix(&r, content, reasoning, &calls);
+    char *suffix = build_tool_checkpoint_suffix(&r, content, reasoning, &calls, NULL);
     TEST_ASSERT(strstr(suffix, "cd /tmp && git diff 2>/dev/null") != NULL);
     TEST_ASSERT(strstr(suffix, "&amp;&amp;") == NULL);
     TEST_ASSERT(strstr(suffix, "2&gt;/dev/null") == NULL);
@@ -17647,7 +17755,7 @@ static void test_tool_checkpoint_minifies_json_parameters(void) {
     r.think_mode = DS4_THINK_HIGH;
     r.tool_orders = orders;
     memset(&orders, 0, sizeof(orders));
-    char *suffix = build_tool_checkpoint_suffix(&r, content, reasoning, &calls);
+    char *suffix = build_tool_checkpoint_suffix(&r, content, reasoning, &calls, NULL);
     buf canonical = {0};
     buf_puts(&canonical, prompt_text);
     buf_puts(&canonical, suffix);
@@ -18407,7 +18515,7 @@ static void test_tool_body_escape_round_trip(void) {
         tool_calls_push(&original, tc);
         buf raw = {0};
         server_model_syntax syntax = SERVER_MODEL_SYNTAX_DEEPSEEK;
-        append_tool_calls_text_for_syntax(&raw, syntax, &original, NULL);
+        append_tool_calls_text_for_syntax(&raw, syntax, &original, NULL, NULL);
         char *content = NULL, *reasoning = NULL;
         TEST_ASSERT(parse_generated_message_ex_for_syntax(syntax, raw.ptr, false,
             &content, &reasoning, &parsed));

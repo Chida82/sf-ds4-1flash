@@ -5968,7 +5968,7 @@ int main(int argc, char **argv) {
             return 2;
         }
         char *text = render_chat_prompt_text_for_syntax(SERVER_MODEL_SYNTAX_DEEPSEEK41,
-                                                       &msgs, NULL, NULL, mode);
+                                                       &msgs, NULL, NULL, mode, NULL);
         fputs(text, stdout);
         free(text); chat_msgs_free(&msgs);
         return 0;
