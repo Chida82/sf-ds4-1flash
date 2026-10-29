@@ -39000,7 +39000,10 @@ int ds4_gpu_glm53_matmul_bf16(
             model_map, model_size, weight_offset, weights * sizeof(uint16_t),
             &inner, "BF16 matrix");
         if (!weightbuf) return 0;
-        const bool use_mv = n_rows <= 8u;
+        /* mul_mm dequantizes whole 16-value weight blocks, and bc_inp only
+         * zeroes the activation tail, so a partial block would read the next
+         * row (or past the tensor) and NaN * 0 still poisons the sum. */
+        const bool use_mv = n_rows <= 8u || (in_dim % 16u) != 0u;
         const bool bc_inp = (in_dim % 32u) != 0u;
         const bool bc_out = (out_dim % 64u) != 0u || (n_rows % 32u) != 0u;
         id<MTLComputePipelineState> pipeline = use_mv
