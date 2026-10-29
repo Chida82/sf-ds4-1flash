@@ -27344,6 +27344,14 @@ bool ds4_token_is_thinking_control(ds4_engine *e, int token) {
             token == e->vocab.think_end_id);
 }
 
+ds4_output_marker ds4_token_output_marker(ds4_engine *e, int token) {
+    if (!e || token < 0) return DS4_OUTPUT_MARKER_NONE;
+    if (token == e->vocab.think_start_id) return DS4_OUTPUT_MARKER_THINK_OPEN;
+    if (token == e->vocab.think_end_id) return DS4_OUTPUT_MARKER_THINK_CLOSE;
+    if (token == e->vocab.dsml_id) return DS4_OUTPUT_MARKER_DSML;
+    return DS4_OUTPUT_MARKER_NONE;
+}
+
 bool ds4_token_is_stop_for_think_mode(
         ds4_engine      *e,
         int              token,

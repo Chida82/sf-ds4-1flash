@@ -53,6 +53,12 @@ whose content spells no marker tokenize exactly as before. The CLI is
 different: a prompt it receives already rendered as a chat keeps every marker
 as a control token.
 
+The same holds for the model's output. Reasoning ends, and a tool call
+starts, only where the model emitted the `</think>` or `｜DSML｜` token. When
+it writes those characters as ordinary text, for example while quoting or
+editing a file that contains them, they reach the client as text in whatever
+field they fall in: reasoning, content or a tool argument.
+
 The default sampling settings are temperature 1, top-p 1, and min-p 0.05.
 For DeepSeek, thinking is on by default. `reasoning_effort=max` selects Think
 Max only with sufficient context; otherwise it falls back to normal thinking.

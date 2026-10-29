@@ -539,6 +539,244 @@ static void test_disk_cache(void) {
            cuts, failures > before ? "FAIL" : "ok");
 }
 
+/* --- 520 output markers: only emitted marker tokens act ------------------ */
+
+typedef struct {
+    const char *text;
+    ds4_output_marker kind;
+} out_piece;
+
+/* Generated pieces into the original text and the parsers' view. */
+static void generate(const out_piece *p, int n, buf *orig, output_view *view) {
+    for (int i = 0; i < n; i++) {
+        buf_puts(orig, p[i].text);
+        output_view_append(view, p[i].text, strlen(p[i].text), p[i].kind);
+    }
+}
+
+#define SPELLED DS4_OUTPUT_MARKER_NONE
+#define CLOSE DS4_OUTPUT_MARKER_THINK_CLOSE
+#define DSML DS4_OUTPUT_MARKER_DSML
+
+static const out_piece reasoning_quote[] = {
+    {"Plan: quote ", SPELLED}, {"</th", SPELLED}, {"ink> in reasoning", SPELLED},
+    {"</think>", CLOSE}, {"Answer ", SPELLED}, {"</think>", SPELLED}, {" end.", SPELLED},
+};
+
+/* A tool block whose every ｜DSML｜ is a marker token, except the one
+ * spelled inside the parameter value. */
+static const out_piece tool_block[] = {
+    {"Thinking", SPELLED}, {"</think>", CLOSE}, {"Writing it.\n\n<", SPELLED},
+    {"｜DSML｜", DSML}, {" calls>\n<", SPELLED}, {"｜DSML｜", DSML},
+    {" invoke name=\"write\">\n<", SPELLED}, {"｜DSML｜", DSML},
+    {" parameter name=\"content\" string=\"true\">x ", SPELLED}, {"｜DSML｜", SPELLED},
+    {" y</", SPELLED}, {"｜DSML｜", DSML}, {" parameter>\n</", SPELLED}, {"｜DSML｜", DSML},
+    {" invoke>\n</", SPELLED}, {"｜DSML｜", DSML}, {" calls>", SPELLED},
+};
+
+/* The same block written entirely with ordinary tokens: quoted text. */
+static const out_piece quoted_block[] = {
+    {"Thinking", SPELLED}, {"</think>", CLOSE},
+    {"The format is <｜DSML｜ calls>\n<｜DSML｜ invoke name=\"write\">\n"
+     "<｜DSML｜ parameter name=\"content\" string=\"true\">x</｜DSML｜ parameter>\n"
+     "</｜DSML｜ invoke>\n</｜DSML｜ calls> and nothing else.", SPELLED},
+};
+
+static bool parse_view(const output_view *v, bool tools, char **content, char **reasoning,
+                       tool_calls *calls) {
+    const char *finish = "stop";
+    char err[160] = {0};
+    bool recovered = false;
+    bool ok = parse_generated_message_for_response_for_syntax(
+        SERVER_MODEL_SYNTAX_DEEPSEEK41, v->text.ptr, tools, tools, true, &finish, err, sizeof(err),
+        content, reasoning, calls, &recovered, NULL);
+    output_unmask_parsed(*content, *reasoning, calls);
+    return ok;
+}
+
+static bool has_mask_bytes(const char *s) {
+    for (size_t n = s ? strlen(s) : 0, i = 0; i < n; i++)
+        if (output_mask_at(s + i, n - i) >= 0) return true;
+    return false;
+}
+
+/* The concatenation of every `"field":"..."` string in an SSE stream, decoded
+ * (the escapes json_escape writes). */
+static char *stream_field(const char *out, const char *field) {
+    char key[64];
+    snprintf(key, sizeof(key), "\"%s\":\"", field);
+    buf b = {0};
+    for (const char *p = out ? strstr(out, key) : NULL; p; p = strstr(p, key)) {
+        for (p += strlen(key); *p && *p != '"'; p++) {
+            if (*p != '\\') { buf_putc(&b, *p); continue; }
+            p++;
+            if (*p == 'n') buf_putc(&b, '\n');
+            else if (*p == 't') buf_putc(&b, '\t');
+            else if (*p == 'r') buf_putc(&b, '\r');
+            else if (*p == 'u') { unsigned c = 0; sscanf(p + 1, "%4x", &c); buf_putc(&b, (char)c); p += 4; }
+            else buf_putc(&b, *p);
+        }
+    }
+    return buf_take(&b);
+}
+
+/* What a streaming OpenAI client receives for these pieces, fed one by one. */
+static char *stream_openai(const out_piece *p, int n, bool tools) {
+    int sv[2];
+    if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) != 0) return NULL;
+    request r;
+    request_init(&r, REQ_CHAT, 128);
+    r.api = API_OPENAI;
+    r.stream = true;
+    r.think_mode = DS4_THINK_HIGH;
+    r.has_tools = tools;
+    openai_stream st;
+    openai_stream_start(&r, &st);
+    output_view v = {0};
+    bool ok = true;
+    for (int i = 0; i < n && ok; i++) {
+        output_view_append(&v, p[i].text, strlen(p[i].text), p[i].kind);
+        ok = openai_sse_stream_update(sv[0], NULL, &r, "c", &st, v.text.ptr, v.text.len, false);
+    }
+    char *content = NULL, *reasoning = NULL;
+    tool_calls calls = {0};
+    parse_view(&v, tools, &content, &reasoning, &calls);
+    if (ok) ok = openai_sse_finish_live(sv[0], NULL, &r, "c", &st, v.text.ptr, v.text.len,
+                                        &calls, calls.len ? "tool_calls" : "stop", 10, n);
+    shutdown(sv[0], SHUT_WR);
+    char *out = read_socket_text(sv[1]);
+    close(sv[0]); close(sv[1]);
+    free(content); free(reasoning); tool_calls_free(&calls);
+    openai_stream_free(&st);
+    output_view_free(&v);
+    request_free(&r);
+    return ok ? out : (free(out), (char *)NULL);
+}
+
+/* The same for a streaming Anthropic client. */
+static char *stream_anthropic(const out_piece *p, int n) {
+    int sv[2];
+    if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) != 0) return NULL;
+    request r;
+    request_init(&r, REQ_CHAT, 128);
+    r.api = API_ANTHROPIC;
+    r.stream = true;
+    r.think_mode = DS4_THINK_HIGH;
+    anthropic_stream st;
+    bool ok = anthropic_sse_start_live(sv[0], &r, "m", 10, &st);
+    output_view v = {0};
+    for (int i = 0; i < n && ok; i++) {
+        output_view_append(&v, p[i].text, strlen(p[i].text), p[i].kind);
+        ok = anthropic_sse_stream_update(sv[0], NULL, &r, "m", &st, v.text.ptr, v.text.len, false);
+    }
+    if (ok) ok = anthropic_sse_finish_live(sv[0], NULL, &r, "m", &st, v.text.ptr, v.text.len,
+                                           NULL, "stop", n);
+    shutdown(sv[0], SHUT_WR);
+    char *out = read_socket_text(sv[1]);
+    close(sv[0]); close(sv[1]);
+    anthropic_stream_free(&st);
+    output_view_free(&v);
+    request_free(&r);
+    return ok ? out : (free(out), (char *)NULL);
+}
+
+static void test_output_markers(void) {
+    const int before = failures;
+    /* Reasoning that quotes </think>: only the marker token ends it. */
+    {
+        buf orig = {0};
+        output_view v = {0};
+        generate(reasoning_quote, 7, &orig, &v);
+        check(orig.len == v.text.len, "output view length", NULL);
+        char *content = NULL, *reasoning = NULL;
+        tool_calls calls = {0};
+        parse_view(&v, false, &content, &reasoning, &calls);
+        check(reasoning && !strcmp(reasoning, "Plan: quote </think> in reasoning"),
+              "reasoning keeps its quoted </think>", reasoning);
+        check(content && !strcmp(content, "Answer </think> end."),
+              "content keeps its quoted </think>", content);
+        /* Today's scan of the same text ends reasoning at the quote. */
+        char *old_content = NULL, *old_reasoning = NULL;
+        tool_calls old_calls = {0};
+        const char *finish = "stop";
+        char err[160] = {0};
+        bool recovered = false;
+        parse_generated_message_for_response_for_syntax(
+            SERVER_MODEL_SYNTAX_DEEPSEEK41, orig.ptr, false, false, true, &finish, err, sizeof(err),
+            &old_content, &old_reasoning, &old_calls, &recovered, NULL);
+        check(old_reasoning && !strcmp(old_reasoning, "Plan: quote "),
+              "old scan split at the quote", old_reasoning);
+        /* JSON of the view is JSON of the original text. */
+        buf a = {0}, b = {0};
+        json_escape_n(&a, v.text.ptr, v.text.len);
+        json_escape_n(&b, orig.ptr, orig.len);
+        check(!strcmp(a.ptr, b.ptr), "json of the view", NULL);
+        buf_free(&a); buf_free(&b);
+        free(content); free(reasoning); tool_calls_free(&calls);
+        free(old_content); free(old_reasoning); tool_calls_free(&old_calls);
+        buf_free(&orig); output_view_free(&v);
+    }
+    /* A real tool block, with ｜DSML｜ spelled inside a value. */
+    {
+        buf orig = {0};
+        output_view v = {0};
+        generate(tool_block, (int)(sizeof(tool_block) / sizeof(tool_block[0])), &orig, &v);
+        char *content = NULL, *reasoning = NULL;
+        tool_calls calls = {0};
+        parse_view(&v, true, &content, &reasoning, &calls);
+        check(calls.len == 1 && calls.v[0].name && !strcmp(calls.v[0].name, "write"),
+              "marker-token tool block parses", NULL);
+        check(calls.len == 1 && strstr(calls.v[0].arguments, "x ｜DSML｜ y") != NULL,
+              "spelled ｜DSML｜ stays in the argument", calls.len ? calls.v[0].arguments : NULL);
+        check(!has_mask_bytes(content) && !has_mask_bytes(calls.raw_tool_text) &&
+              (!calls.len || !has_mask_bytes(calls.v[0].arguments)), "no mask leaks", NULL);
+        free(content); free(reasoning); tool_calls_free(&calls);
+        buf_free(&orig); output_view_free(&v);
+    }
+    /* The same block spelled with ordinary tokens is content, not a call. */
+    {
+        buf orig = {0};
+        output_view v = {0};
+        generate(quoted_block, 3, &orig, &v);
+        char *content = NULL, *reasoning = NULL;
+        tool_calls calls = {0};
+        parse_view(&v, true, &content, &reasoning, &calls);
+        check(calls.len == 0, "quoted tool block is not a call", NULL);
+        check(content && strstr(content, "<｜DSML｜ calls>") && strstr(content, "nothing else."),
+              "quoted tool block stays content", content);
+        free(content); free(reasoning); tool_calls_free(&calls);
+        buf_free(&orig); output_view_free(&v);
+    }
+    /* Streaming: the client sees the quoted markers as text, and no mask. */
+    {
+        char *out = stream_openai(reasoning_quote, 7, false);
+        char *sr = stream_field(out, "reasoning_content"), *sc = stream_field(out, "content");
+        check(!strcmp(sr, "Plan: quote </think> in reasoning"),
+              "stream reasoning equals the parsed reasoning", sr);
+        check(!strcmp(sc, "Answer </think> end."), "stream content equals the parsed content", sc);
+        check(out && !has_mask_bytes(out), "stream: no mask leaks", NULL);
+        free(sr); free(sc);
+        free(out);
+        out = stream_openai(tool_block, (int)(sizeof(tool_block) / sizeof(tool_block[0])), true);
+        check(out && strstr(out, "\"tool_calls\"") && !has_mask_bytes(out), "stream tool block", NULL);
+        free(out);
+        out = stream_anthropic(reasoning_quote, 7);
+        sr = stream_field(out, "thinking");
+        sc = stream_field(out, "text");
+        check(!strcmp(sr, "Plan: quote </think> in reasoning"), "anthropic stream thinking", sr);
+        check(!strcmp(sc, "Answer </think> end."), "anthropic stream text", sc);
+        check(out && !has_mask_bytes(out), "anthropic stream: no mask leaks", NULL);
+        free(sr); free(sc);
+        free(out);
+        out = stream_openai(quoted_block, 3, true);
+        check(out && !strstr(out, "\"tool_calls\"") && !has_mask_bytes(out),
+              "stream: a quoted block is not a call", NULL);
+        free(out);
+    }
+    printf("server output markers: only marker tokens act, spellings stay text: %s\n",
+           failures > before ? "FAIL" : "ok");
+}
+
 int main(void) {
     const char *model_path = getenv("DS4_TEST_MODEL");
     ds4_model model;
@@ -557,6 +795,7 @@ int main(void) {
     test_adversarial();
     test_thinking_state();
     test_disk_cache();
+    test_output_markers();
     vocab_free(&vocab);
     if (model_path && model_path[0]) model_close(&model);
     return failures ? 1 : 0;

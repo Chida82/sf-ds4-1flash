@@ -5285,13 +5285,119 @@ static size_t utf8_count_invalid(const char *s, size_t n, size_t *first) {
     return count;
 }
 
+/* Output markers the model spelled with ordinary tokens are text. The output
+ * parsers read a view of the generated text in which those spellings are
+ * masked by Unicode noncharacters of the same byte length (U+FDD0-U+FDD3,
+ * reserved for internal use), so only emitted marker tokens can match. JSON
+ * output and the parsed strings get the original bytes back. */
+static const char *const output_mask_text[4] = {"<th", "</t", "｜", "｜"};
+static const struct {
+    const char *text;
+    size_t at[2];      /* byte offsets masked: at[1] == 0 means one mask */
+    int mask[2];       /* index into output_mask_text, U+FDD0 + index */
+} output_masks[] = {
+    {"｜DSML｜", {0, 7}, {2, 3}},
+    {"DSML｜", {4, 0}, {3, -1}},
+    {"</think>", {0, 0}, {1, -1}},
+    {"<think>", {0, 0}, {0, -1}},
+};
+
+static int output_mask_at(const char *s, size_t n) {
+    const unsigned char *u = (const unsigned char *)s;
+    return n >= 3 && u[0] == 0xef && u[1] == 0xb7 && u[2] >= 0x90 && u[2] <= 0x93 ?
+           u[2] - 0x90 : -1;
+}
+
+static void output_unmask(char *s) {
+    for (size_t n = s ? strlen(s) : 0, i = 0; i + 3 <= n; i++) {
+        const int m = output_mask_at(s + i, n - i);
+        if (m >= 0) memcpy(s + i, output_mask_text[m], 3);
+    }
+}
+
+typedef struct {
+    buf text;            /* the generated text with spelled markers masked */
+    ds4_text_range *genuine; /* byte ranges of emitted marker tokens */
+    int genuine_len, genuine_cap;
+    bool off;            /* the output itself held a mask: parse as before */
+} output_view;
+
+/* Whether [begin, end) overlaps an emitted marker token (ranges ascend). */
+static bool output_view_genuine(const output_view *v, size_t begin, size_t end) {
+    for (int i = v->genuine_len - 1; i >= 0 && v->genuine[i].end > begin; i--)
+        if (v->genuine[i].begin < end) return true;
+    return false;
+}
+
+static void output_view_append(output_view *v, const char *piece, size_t n,
+                               ds4_output_marker kind) {
+    for (size_t i = 0; !v->off && i < n; i++) {
+        if (output_mask_at(piece + i, n - i) < 0) continue;
+        v->off = true;
+        output_unmask(v->text.ptr);
+    }
+    const size_t old = v->text.len;
+    buf_append(&v->text, piece, n);
+    if (v->off) return;
+    if (kind != DS4_OUTPUT_MARKER_NONE) {
+        if (v->genuine_len == v->genuine_cap) {
+            v->genuine_cap = v->genuine_cap ? v->genuine_cap * 2 : 16;
+            v->genuine = xrealloc(v->genuine, (size_t)v->genuine_cap * sizeof(v->genuine[0]));
+        }
+        v->genuine[v->genuine_len++] = (ds4_text_range){old, v->text.len};
+        return;
+    }
+    /* Mask each spelling that this piece completes. */
+    const size_t from = old > 9 ? old - 9 : 0;
+    for (size_t p = 0; p < sizeof(output_masks) / sizeof(output_masks[0]); p++) {
+        const size_t len = strlen(output_masks[p].text);
+        for (size_t at = from; at + len <= v->text.len; at++) {
+            if (at + len <= old || memcmp(v->text.ptr + at, output_masks[p].text, len)) continue;
+            if (output_view_genuine(v, at, at + len)) continue;
+            for (int k = 0; k < 2 && output_masks[p].mask[k] >= 0; k++) {
+                const char mask[3] = {(char)0xef, (char)0xb7, (char)(0x90 + output_masks[p].mask[k])};
+                memcpy(v->text.ptr + at + output_masks[p].at[k], mask, 3);
+            }
+        }
+    }
+}
+
+static void output_view_truncate(output_view *v, size_t len) {
+    if (len < v->text.len) {
+        v->text.len = len;
+        v->text.ptr[len] = '\0';
+    }
+}
+
+static void output_view_free(output_view *v) {
+    buf_free(&v->text);
+    free(v->genuine);
+    memset(v, 0, sizeof(*v));
+}
+
+/* Parsed from the view: give every string its original bytes. */
+static void output_unmask_parsed(char *content, char *reasoning, tool_calls *calls) {
+    output_unmask(content);
+    output_unmask(reasoning);
+    for (int i = 0; calls && i < calls->len; i++) {
+        output_unmask(calls->v[i].name);
+        output_unmask(calls->v[i].arguments);
+    }
+    if (calls) output_unmask(calls->raw_tool_text);
+}
+
 /* Shared body of the JSON string escapers: control chars escaped, valid UTF-8
- * copied byte for byte, each ill-formed subpart replaced by U+FFFD (501). */
+ * copied byte for byte, each ill-formed subpart replaced by U+FFFD (501). A
+ * masked output marker is written as its original bytes. */
 static void json_escape_bytes(buf *b, const char *s, size_t n) {
     size_t i = 0;
     while (i < n) {
         unsigned char c = (unsigned char)s[i];
-        if (c == '"' || c == '\\') {
+        const int mask = c == 0xef ? output_mask_at(s + i, n - i) : -1;
+        if (mask >= 0) {
+            buf_puts(b, output_mask_text[mask]);
+            i += 3;
+        } else if (c == '"' || c == '\\') {
             buf_putc(b, '\\');
             buf_putc(b, (char)c);
             i++;
@@ -11165,6 +11271,26 @@ static void trace_piece(server *s, uint64_t id, const char *piece, size_t len) {
     pthread_mutex_unlock(&s->trace_mu);
 }
 
+/* One line per generated token: its id and its bytes in hex. */
+static void trace_note_token(server *s, buf *ids, int token, const char *piece, size_t len) {
+    if (!s->trace) return;
+    buf_printf(ids, "%d ", token);
+    for (size_t i = 0; i < len; i++) buf_printf(ids, "%02x", (unsigned char)piece[i]);
+    buf_putc(ids, '\n');
+}
+
+static void trace_flush_tokens(server *s, uint64_t id, buf *ids) {
+    if (s->trace && id && ids->len) {
+        pthread_mutex_lock(&s->trace_mu);
+        fputs("\n\n--- generated token ids (id, hex bytes) ---\n", s->trace);
+        fwrite(ids->ptr, 1, ids->len, s->trace);
+        fputs("--- end generated token ids ---\n\n", s->trace);
+        fflush(s->trace);
+        pthread_mutex_unlock(&s->trace_mu);
+    }
+    buf_free(ids);
+}
+
 static void trace_event(server *s, uint64_t id, const char *fmt, ...) {
     if (!s->trace || !id) return;
     pthread_mutex_lock(&s->trace_mu);
@@ -12902,6 +13028,8 @@ static void generate_job_inner(server *s, server_slot *slot, job *j) {
 decode_again:
     ;
     buf text = {0};
+    output_view view = {0}; /* what the marker parsers read */
+    buf trace_ids = {0};
     size_t plain_stream_pos = 0;
     size_t stop_scan_from = 0;
     const char *finish = "length";
@@ -13019,21 +13147,26 @@ decode_again:
             kept++;
 
             trace_piece(s, trace_id, piece, piece_len);
+            trace_note_token(s, &trace_ids, token, piece, piece_len);
             buf_append(&text, piece, piece_len);
+            const ds4_output_marker marker = ds4_token_output_marker(s->engine, token);
+            output_view_append(&view, piece, piece_len, marker);
             const bool was_thinking = thinking.inside;
-            if (!dsml_decode_state_is_tool(dsml_tracker.decode))
-                thinking_state_feed(&thinking, piece, piece_len);
+            if (!dsml_decode_state_is_tool(dsml_tracker.decode)) {
+                if (marker == DS4_OUTPUT_MARKER_THINK_OPEN) thinking.inside = true;
+                else if (marker == DS4_OUTPUT_MARKER_THINK_CLOSE) thinking.inside = false;
+            }
             if (j->req.kind == REQ_CHAT && j->req.has_tools) {
                 if (thinking.inside) {
                     dsml_decode_tracker_init(&dsml_tracker);
                     dsml_tracker.model_syntax = j->req.model_syntax;
-                    dsml_tracker.pos = text.len;
+                    dsml_tracker.pos = view.text.len;
                 } else {
                     if (was_thinking) {
-                        const char *end = find_last_substr(text.ptr, "</think>");
-                        dsml_tracker.pos = end ? (size_t)(end + 8 - text.ptr) : text.len;
+                        const char *end = find_last_substr(view.text.ptr, "</think>");
+                        dsml_tracker.pos = end ? (size_t)(end + 8 - view.text.ptr) : view.text.len;
                     }
-                    dsml_decode_tracker_update(&dsml_tracker, text.ptr, text.len);
+                    dsml_decode_tracker_update(&dsml_tracker, view.text.ptr, view.text.len);
                 }
             }
 
@@ -13067,7 +13200,7 @@ decode_again:
             }
             if (j->req.stream && j->req.api == API_ANTHROPIC &&
                 !anthropic_sse_stream_update(j->fd, s, &j->req, id,
-                                             &anthropic_live, text.ptr, stream_len,
+                                             &anthropic_live, view.text.ptr, stream_len,
                                              false)) {
                 job_mark_cancelled(j);
                 finish = "error";
@@ -13078,7 +13211,7 @@ decode_again:
             }
             if (openai_live_chat &&
                 !openai_sse_stream_update(j->fd, s, &j->req, id,
-                                          &openai_live, text.ptr, stream_len,
+                                          &openai_live, view.text.ptr, stream_len,
                                           false)) {
                 job_mark_cancelled(j);
                 finish = "error";
@@ -13089,7 +13222,7 @@ decode_again:
             }
             if (responses_live_chat &&
                 !responses_sse_stream_update(j->fd, &j->req,
-                                             &responses_live, text.ptr, stream_len,
+                                             &responses_live, view.text.ptr, stream_len,
                                              false)) {
                 job_mark_cancelled(j);
                 finish = "error";
@@ -13107,7 +13240,8 @@ decode_again:
                      * recover without asking the model to restart it after an
                      * injected close marker. */
                     if (complete_tool_call_inside_thinking(
-                            j->req.model_syntax, text.ptr, text.len, &think_recovery_scan_from)) {
+                            j->req.model_syntax, view.text.ptr, view.text.len,
+                            &think_recovery_scan_from)) {
                         saw_tool_start = true;
                         saw_tool_end = true;
                         finish = "tool_calls";
@@ -13127,13 +13261,13 @@ decode_again:
                     tool_scan_from = text.len;
                 } else {
                     if (tool_scan_waiting_for_think_close) {
-                        const char *think_end = find_last_substr(text.ptr, "</think>");
-                        tool_scan_from = think_end ? (size_t)((think_end + 8) - text.ptr) : text.len;
+                        const char *think_end = find_last_substr(view.text.ptr, "</think>");
+                        tool_scan_from = think_end ? (size_t)((think_end + 8) - view.text.ptr) : text.len;
                         if (tool_scan_from > text.len) tool_scan_from = text.len;
                         tool_scan_waiting_for_think_close = false;
                     }
                     if (tool_scan_from > text.len) tool_scan_from = text.len;
-                    const char *tool_scan = text.ptr ? text.ptr + tool_scan_from : "";
+                    const char *tool_scan = view.text.ptr ? view.text.ptr + tool_scan_from : "";
                     bool orphan_end = false;
                     bool old_start = saw_tool_start;
                     bool old_end = saw_tool_end;
@@ -13189,6 +13323,7 @@ decode_again:
                 client_stop = true;
                 text.len = stop_pos;
                 text.ptr[text.len] = '\0';
+                output_view_truncate(&view, stop_pos);
                 pthread_mutex_lock(&s->inference_mu);
                 ds4_session_invalidate(slot->session);
                 pthread_mutex_unlock(&s->inference_mu);
@@ -13216,6 +13351,7 @@ decode_again:
         if (stop_decode) break;
     }
     server_generation_leave(s);
+    trace_flush_tokens(s, trace_id, &trace_ids);
 
     if (job_cancelled(j)) {
         request_live_state_clear(s, slot);
@@ -13224,6 +13360,7 @@ decode_again:
         openai_stream_free(&openai_live);
         responses_stream_free(&responses_live);
         buf_free(&text);
+        output_view_free(&view);
         ds4_tokens_free(&effective_prompt);
         return;
     }
@@ -13252,7 +13389,7 @@ decode_again:
          * budget, after a tool error and prompt reminder. */
         bool completed_truncation = false;
         buf repaired = {0};
-        if (try_repair_dsml(text.ptr, text.len, &repaired)) {
+        if (try_repair_dsml(view.text.ptr, view.text.len, &repaired)) {
             /* Parse repaired text to verify it produces valid tool calls */
             tool_calls test_calls = {0};
             char *test_content = NULL;
@@ -13264,9 +13401,15 @@ decode_again:
             free(test_reasoning);
             if (repair_ok && test_calls.len > 0) {
                 /* Repair succeeded - replace text with repaired version */
+                free(view.text.ptr);
+                view.text.ptr = buf_take(&repaired);
+                view.text.len = strlen(view.text.ptr);
+                view.text.cap = view.text.len + 1;
                 free(text.ptr);
-                text.ptr = buf_take(&repaired);
+                text.ptr = xstrdup(view.text.ptr);
+                output_unmask(text.ptr);
                 text.len = strlen(text.ptr);
+                text.cap = text.len + 1;
                 saw_tool_end = true;
                 completed_truncation = true;
                 server_log(DS4_LOG_WARNING,
@@ -13309,6 +13452,7 @@ decode_again:
                                 recovery_tokens);
                     buf_free(&repaired);
                     buf_free(&text);
+                    output_view_free(&view);
                     goto decode_again;
                 }
                 finish = "error";
@@ -13350,6 +13494,7 @@ decode_again:
         openai_stream_free(&openai_live);
         responses_stream_free(&responses_live);
         buf_free(&text);
+        output_view_free(&view);
         ds4_tokens_free(&effective_prompt);
         return;
     }
@@ -13362,7 +13507,7 @@ decode_again:
     if (j->req.kind == REQ_CHAT) {
         bool parsed_ok = parse_generated_message_for_response_for_syntax(
             j->req.model_syntax,
-            text.ptr ? text.ptr : "",
+            view.text.ptr ? view.text.ptr : "",
             j->req.has_tools,
             saw_tool_start,
             ds4_think_mode_enabled(j->req.think_mode),
@@ -13374,6 +13519,8 @@ decode_again:
             &parsed_calls,
             &recovered_tool_parse_failure,
             &j->req.tool_orders);
+        output_unmask_parsed(parsed_content, parsed_reasoning, &parsed_calls);
+        output_unmask(err);
         if (!parsed_ok && recovered_tool_parse_failure && j->req.has_tools && saw_tool_start) {
             /* parse_generated_message failed even though DSML was present.
              * Semantic repair is intentionally avoided: if the parser cannot
@@ -13413,6 +13560,7 @@ decode_again:
                     free(parsed_reasoning);
                     tool_calls_free(&parsed_calls);
                     buf_free(&text);
+                    output_view_free(&view);
                     goto decode_again;
                 }
                 final_finish = "error";
@@ -13462,6 +13610,7 @@ decode_again:
             openai_stream_free(&openai_live);
             responses_stream_free(&responses_live);
             buf_free(&text);
+            output_view_free(&view);
             ds4_tokens_free(&effective_prompt);
             return;
         }
@@ -13486,6 +13635,7 @@ decode_again:
         openai_stream_free(&openai_live);
         responses_stream_free(&responses_live);
         buf_free(&text);
+        output_view_free(&view);
         ds4_tokens_free(&effective_prompt);
         return;
     }
@@ -13560,11 +13710,11 @@ decode_again:
     if (response_ok && j->req.stream) {
         if (j->req.api == API_ANTHROPIC) {
             response_ok = anthropic_sse_finish_live(j->fd, s, &j->req, id, &anthropic_live,
-                                                    text.ptr ? text.ptr : "", text.len,
+                                                    view.text.ptr ? view.text.ptr : "", view.text.len,
                                                     &parsed_calls, final_finish, completion);
         } else if (openai_live_chat) {
             response_ok = openai_sse_finish_live(j->fd, s, &j->req, id, &openai_live,
-                                                 text.ptr ? text.ptr : "", text.len,
+                                                 view.text.ptr ? view.text.ptr : "", view.text.len,
                                                  &parsed_calls, final_finish,
                                                  prompt_tokens, completion);
         } else if (responses_live_chat) {
@@ -13575,7 +13725,7 @@ decode_again:
             const char *recover =
                 recovered_tool_parse_failure ? parsed_content : NULL;
             response_ok = responses_sse_finish_live(j->fd, &j->req, &responses_live,
-                                                    text.ptr ? text.ptr : "", text.len,
+                                                    view.text.ptr ? view.text.ptr : "", view.text.len,
                                                     recover,
                                                     &parsed_calls, final_finish,
                                                     prompt_tokens, completion,
@@ -13700,6 +13850,7 @@ decode_again:
     openai_stream_free(&openai_live);
     responses_stream_free(&responses_live);
     buf_free(&text);
+    output_view_free(&view);
     ds4_tokens_free(&effective_prompt);
 }
 

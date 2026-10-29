@@ -349,6 +349,15 @@ char *ds4_token_text(ds4_engine *e, int token, size_t *len);
 int ds4_token_eos(ds4_engine *e);
 bool ds4_token_is_stop(ds4_engine *e, int token);
 bool ds4_token_is_thinking_control(ds4_engine *e, int token);
+/* Which output marker a generated token is: the parsers act on these ids only,
+ * and a marker spelled with ordinary tokens is text. */
+typedef enum {
+    DS4_OUTPUT_MARKER_NONE,
+    DS4_OUTPUT_MARKER_THINK_OPEN,
+    DS4_OUTPUT_MARKER_THINK_CLOSE,
+    DS4_OUTPUT_MARKER_DSML,
+} ds4_output_marker;
+ds4_output_marker ds4_token_output_marker(ds4_engine *e, int token);
 bool ds4_token_is_stop_for_think_mode(ds4_engine *e,
                                       int token,
                                       ds4_think_mode mode);

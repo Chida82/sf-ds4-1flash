@@ -39,6 +39,17 @@
   - If any does not, recognizing by id would break that response, so the change stops and the owner chooses.
   - The likely alternative then is to recognize the spelled DSML block only when it is a complete, well-formed tool block. That is a different design.
 
+- **Measured (task 1.2, 2026-10-28).** 45 greedy requests on the 1017 checkpoint through this branch's server (`82GB`, `reasoning_effort` low): 20 reasoning questions, 20 agent turns whose tool result is a 6000-character slice of this repository's files (server, tokenizer, docs, the security fixture, these changes), 5 tool requests. The script counts marker strings in the traced output by origin and prints counts and offsets only.
+
+  | Requests | `</think>` control / spelled | `<think>` | end of sentence | `｜DSML｜` |
+  |---|---|---|---|---|
+  | reasoning (20) | 19 / 0 | 0 / 0 | 0 / 0 | 0 / 0 |
+  | agent turns (20) | 22 / 28 | 0 / 11 | 0 / 2 | 156 / 37 |
+  | tool requests (5) | 5 / 0 | 0 / 0 | 0 / 0 | 32 / 0 |
+
+  - **Gate: passed.** Every response that closed its reasoning did so with the control token, and every response with tool calls carried control `｜DSML｜` tokens. No genuine boundary arrived spelled.
+  - **The defect is common in agent work.** 5 of the 20 agent turns spell `</think>` inside their reasoning before the real one (16 occurrences), which today's `strstr` takes as the end of reasoning. Two turns (the ones quoting DSML-heavy code) made today's tracker enter a tool-call block on spelled `｜DSML｜`; both ended as "invalid tool call returned as assistant text", one of them with no control `｜DSML｜` at all.
+
 ### D2. Offsets beside the text
 - **What the loop records.** When a sampled token is one of the marker ids, the loop records `(text.len before the append, kind)`. The record lives on the job beside `text`, and the stream encoders and the final parse receive it with the text.
 - **Why offsets.** The text stays the single buffer every parser reads, and its bytes do not change.
@@ -51,6 +62,14 @@
   - the DSML start search;
   - `raw_full_lit` on the tool-calls tag.
 - **What text matching still does.** A spelled marker stays in the text and is escaped as content. The DSML block parser still checks the block's inner text grammar as today, but only starting from a genuine start.
+
+### D2-D3 as built: a masked view instead of an offset record (2026-10-28)
+- **Why the change.** The trackers, the three encoders and the parsers read the generated text in about 160 places (`raw +`, `raw_full_lit`, `strstr`, `find_any_tool_start`, ...). Passing an offset record to each search would touch every one of them.
+- **What is built.** The generation loop keeps, beside `text`, an `output_view`: the same bytes, except that a marker the model spelled with ordinary tokens has some bytes replaced by a Unicode noncharacter of the same length. `<th` of `<think>` becomes U+FDD0, `</t` of `</think>` U+FDD1, the two `｜` of `｜DSML｜` U+FDD2 and U+FDD3 (the trailing one also breaks the short form `DSML｜`). A spelling is masked when the piece that completes it arrives; marker tokens (`ds4_token_output_marker`) are kept and recorded, and a spelling that overlaps one is left alone. Offsets do not move, so every parser keeps its code and reads the view; only emitted markers can match.
+- **Original bytes back.** `json_escape_bytes` writes each of the four noncharacters as the bytes it replaced, so every stream delta and response body carries the model's text. Strings parsed from the view (content, reasoning, tool names, arguments, `raw_tool_text`) are unmasked before they are stored or sent. Client stop strings, plain streaming and the trace keep reading `text`.
+- **Reasoning state.** The decode loop sets it from the token id; `thinking_state_feed` keeps only its prompt-side caller.
+- **Limits.** If the generated text itself contains one of the four noncharacters, the view turns off for that response and parsing is as before. A client string holding one of them would be echoed with the replaced bytes; Unicode reserves these code points for internal use.
+- **The grep of D3** therefore reads differently: the marker searches stay, and each one reads either the view (generated output) or client history text (no record, as before).
 
 ### D4. Tests
 - **Model-less.** The trackers and encoders driven by synthetic text plus a record, in which `</think>` and the DSML tag appear once recorded and once literal:
