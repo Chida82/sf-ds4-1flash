@@ -72,15 +72,18 @@ On V4.1 the CLI SHALL keep upstream's `--dir-steering-file`, FFN/attention optio
 - **THEN** it is rejected as an unknown option and the binary exits 2
 
 ### Requirement: Steering and persistent state
-While a session's steering is on, automatic persistent KV reuse and explicit snapshot save/load SHALL be refused with a clear error before any session mutation, unless the frontend has declared for that session that it keeps steered persistent state apart, bound to the profile's identity. Sessions with steering off, and sessions of an engine without a profile, SHALL keep existing persistent-state behavior. A steered session SHALL NOT read, rewrite or delete cache files outside the store its frontend reserves for it.
-
-#### Scenario: Steered session with a KV root
-- **WHEN** a server with a configured KV root runs a session with steering on
-- **THEN** that session's persistent lookup, load and store use only the server's steering store, bound to the loaded profile, and never the root
+While a session's steering is on, automatic persistent KV reuse and explicit snapshot save/load SHALL be refused with a clear error before any session mutation, unless the frontend has declared for that session that it keeps steered persistent state apart, bound to the profile's identity. Sessions with steering off, and sessions of an engine without a profile, SHALL keep existing persistent-state behavior.
 
 #### Scenario: Snapshot while steered
 - **WHEN** snapshot save or load is requested on a session with steering on whose frontend has made no such declaration, including while a gated slot is at zero for the current token
 - **THEN** it fails clearly before changing the session's tokens, logits or KV
+
+### Requirement: Steered sessions stay in their own store
+A steered session SHALL NOT read, rewrite or delete cache files outside the store its frontend reserves for it.
+
+#### Scenario: Steered session with a KV root
+- **WHEN** a server with a configured KV root runs a session with steering on
+- **THEN** that session's persistent lookup, load and store use only the server's steering store, bound to the loaded profile, and never the root
 
 ### Requirement: Runtime no-op evidence
 Disabled steering and a zero-direction control at nonzero scale SHALL preserve baseline logits, KV and Engram bitwise under the same schedule. Release evidence SHALL include state comparisons, route coverage and enabled overhead; matching completion text alone SHALL NOT establish bitwise correctness.
@@ -321,12 +324,7 @@ a profile that declares none of them bitwise identical to its pre-change behavio
 ### Requirement: Shipped candor schedule (418-C)
 The shipped `sf-ds4-1flash-candor` profile SHALL carry the 418-C schedule that satisfied
 the evidence gate: equi scale 7 (both phases) with `decay_hold` 25, `decay_tokens` 256,
-`decay_final` 3.5 and `decay_final_answer` 4.0, and q1 scale 7 (thinking). It SHALL also
-carry the two-stage additive closure channel of change 419: the satisfied-closure vector,
-thinking phase only, `scale` 0.4 with `onset_min` 2700 / `onset_max` 3100 and
-`ramp_tokens` 256, and a second stage `scale2` 0.9 with `after_tokens` 2000 and
-`ramp2_tokens` 512. The closure channel SHALL be inert outside the thinking phase, so the
-non-think and answer-phase output SHALL be bitwise identical to the pre-promotion candor.
+`decay_final` 3.5 and `decay_final_answer` 4.0, and q1 scale 7 (thinking).
 The selection and its accepting runs SHALL be recorded in `com-steering/README.md` ("Directions (provenance)") and `com-steering/result.md`.
 
 #### Scenario: Default profile breaks the think loop at held compliance
@@ -336,6 +334,14 @@ The selection and its accepting runs SHALL be recorded in `com-steering/README.m
   constant candor and breaks the reasoning loop — reasoning-loop rate at most 3/44 by the
   completion-length proxy, against the pre-closure candor's 13/44 — as recorded in
   `com-steering/result.md`
+
+### Requirement: Shipped candor closure channel (419)
+The shipped `sf-ds4-1flash-candor` profile SHALL carry the two-stage additive closure
+channel of change 419: the satisfied-closure vector, thinking phase only, `scale` 0.4 with
+`onset_min` 2700 / `onset_max` 3100 and `ramp_tokens` 256, and a second stage `scale2` 0.9
+with `after_tokens` 2000 and `ramp2_tokens` 512. The closure channel SHALL be inert outside
+the thinking phase, so the non-think and answer-phase output SHALL be bitwise identical to
+the pre-promotion candor.
 
 #### Scenario: Non-think output is unchanged by the promotion
 - **WHEN** the shipped candor profile runs with thinking off
