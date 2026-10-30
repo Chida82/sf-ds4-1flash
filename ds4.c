@@ -25634,6 +25634,7 @@ struct ds4_engine {
     int vision_end_token;
     ds4_backend backend;
     char *directional_steering_file;
+    char *steering_profile_path;  /* sf: 650 the resolved .sfsteer file, for the server's store identity */
     float *directional_steering_dirs;
     float directional_steering_attn_scale;
     float directional_steering_ffn_scale;
@@ -25956,7 +25957,7 @@ static bool cpu_load_directional_steering(ds4_engine *e) {
     if (e->directional_steering_residual2_scale != 0.0f) {
         const char *path2 = e->directional_steering_file2;
         if (!path2 || !path2[0]) {
-            fprintf(stderr, "ds4: --dir-steering-residual-2 needs --dir-steering-file-2\n");
+            fprintf(stderr, "ds4: steering slot 2 has a scale but no direction\n");
             return false;
         }
         e->directional_steering_dirs2 = ds41_load_steering_matrix(path2, e->directional_steering_offset[1], n_layers, true);
@@ -26298,6 +26299,8 @@ static bool ds41_steering_profile_open(ds4_engine *e, const char *arg) {
         }
         fputc('\n', stderr);
     }
+    free(e->steering_profile_path);
+    e->steering_profile_path = ds4_strdup(path);
     ok = true;
     goto done;
 bad_slots:
@@ -26845,9 +26848,7 @@ const char *ds4_glm_reasoning_effort_text(ds4_think_mode mode) {
 }
 
 const char *ds4_deepseek41_reasoning_effort_text(ds4_think_mode mode) {
-    int level = ds4_think_mode_level(mode);
-    if (mode == DS4_THINK_HIGH) level = 75;
-    if (mode == DS4_THINK_MAX) level = 100;
+    int level = ds4_think_mode_effort_level(mode);
     if (level <= 0) return NULL;
     static __thread char text[128];
     snprintf(text, sizeof(text), "Reasoning Effort: %d (range 1-100, the higher the value, the more thorough the reasoning)\n\n", level);
@@ -28319,6 +28320,14 @@ int ds4_think_mode_level(ds4_think_mode mode) {
     return (int)mode - DS4_THINK_LEVEL_BASE;
 }
 
+/* sf: the level V4.1's effort line carries: HIGH and MAX render 75 and 100,
+ * numeric modes their number; -1 for modes that render no level. */
+int ds4_think_mode_effort_level(ds4_think_mode mode) {
+    if (mode == DS4_THINK_HIGH) return 75;
+    if (mode == DS4_THINK_MAX) return 100;
+    return ds4_think_mode_level(mode);
+}
+
 bool ds4_think_mode_parse_level(const char *text, ds4_think_mode *out) {
     if (!text || !out || !text[0]) return false;
     unsigned level = 0;
@@ -28452,6 +28461,12 @@ struct ds4_session {
     int ctx_size;
     bool checkpoint_valid;
     bool greedy_splitkv_anchor_valid;
+    /* sf: 630 this session applies the engine's steering profile; off is the
+     * unsteered model (every graph scale 0). On at create when a profile is loaded. */
+    bool steering_on;
+    /* sf: 650 the frontend keeps this session's steered persistent state in a
+     * store bound to the profile's identity, so steered payloads may be saved. */
+    bool persist_steered;
     /* sf: think/answer phase of the generation, tracked while a steering slot
      * is gated to one phase or carries a decay schedule (418). */
     bool steering_in_think;
@@ -28465,6 +28480,14 @@ struct ds4_session {
 };
 
 static bool ds4_session_tp_leader(const ds4_session *s);
+
+/* sf: 630 the engine loaded a steering profile: a slot or the closure channel
+ * has a direction and a scale, the condition under which sessions upload them. */
+static bool ds41_engine_steered(const ds4_engine *e) {
+    return e && ((e->directional_steering_residual_scale != 0.0f && e->directional_steering_dirs) ||
+                 (e->directional_steering_residual2_scale != 0.0f && e->directional_steering_dirs2) ||
+                 (e->closure_scale != 0.0f && e->closure_dirs));
+}
 
 #ifdef DS4_HAS_DEEPSEEK41_GPU
 /* sf: apply each slot's think/answer gate to this token's forward: a slot
@@ -28542,6 +28565,7 @@ static bool ds41_steering_scheduled(const ds4_engine *e) {
  * </think> when it is off, so the opening phase follows the last prompt token;
  * the prefill forward that produces the first generated token uses it. */
 static void ds41_steering_on_prompt(ds4_session *s, const ds4_tokens *prompt) {
+    if (!s->steering_on) return;  /* sf: 630 off keeps every scale at 0 */
     if (!ds41_steering_gated(s) && !ds41_steering_scheduled(s->engine)) return;
     const int think_start = s->engine->vocab.think_start_id;
     s->steering_in_think = prompt && prompt->len > 0 && think_start >= 0 &&
@@ -28553,6 +28577,7 @@ static void ds41_steering_on_prompt(ds4_session *s, const ds4_tokens *prompt) {
 /* Before a decode forward: token is the just-sampled token being fed; when it
  * is </think> the next token opens the answer phase. */
 static void ds41_steering_on_decode(ds4_session *s, int token) {
+    if (!s->steering_on) return;  /* sf: 630 off keeps every scale at 0 */
     if (!ds41_steering_gated(s) && !ds41_steering_scheduled(s->engine)) return;
     const int think_end = s->engine->vocab.think_end_id;
     if (s->steering_in_think && think_end >= 0 && token == think_end) {
@@ -28562,6 +28587,33 @@ static void ds41_steering_on_decode(ds4_session *s, int token) {
         s->steering_phase_tok++;    /* sf: 418 advance the in-phase decay position */
     }
     ds41_steering_apply_gates(s);
+}
+
+/* sf: 630 write the graph scales for the session's switch: the profile's
+ * constant scales when on (a gated or scheduled profile recomputes them at the
+ * next prompt), 0 everywhere when off, which is the unsteered forward. */
+static void ds41_steering_arm(ds4_session *s) {
+    const ds4_engine *e = s->engine;
+    const bool on = s->steering_on;
+    s->ds41_graph.residual_scale = on && s->ds41_graph.residual_dirs ?
+        e->directional_steering_residual_scale : 0.0f;
+    s->ds41_graph.residual_scale2 = on && s->ds41_graph.residual_dirs2 ?
+        e->directional_steering_residual2_scale : 0.0f;
+    s->ds41_graph.closure_scale = 0.0f;
+    s->steering_in_think = false;
+    s->steering_phase_tok = 0;
+}
+
+/* sf: 630 one native batch forward folds every row with one scale: the items
+ * must agree on the switch, and steered items need a constant profile. */
+static bool ds41_steering_batch_ok(const ds4_decode_item *items, int count) {
+    for (int i = 0; i < count; i++) {
+        const ds4_session *s = items[i].session;
+        if (!s || s->steering_on != items[0].session->steering_on) return false;
+        if (s->steering_on && (ds41_steering_gated(s) || ds41_steering_scheduled(s->engine)))
+            return false;
+    }
+    return true;
 }
 #endif
 
@@ -28947,13 +28999,12 @@ static bool ds4_layer_payload_range_valid(uint32_t layer_start, uint32_t layer_e
 
 /* sf: 401 a steered session's KV, prefix caches and snapshots belong to one
  * steering configuration, which no payload records yet. Refuse every save
- * and load before any mutation; zero-scale sessions keep today's behaviour,
- * and the server does not open its disk cache at all while steered. */
+ * and load before any mutation; sessions with steering off keep today's
+ * behaviour. 630: the switch decides, not this token's scales, so a gated
+ * slot at 0 for the current phase still refuses. */
 static bool ds41_steering_refuses_persistence(const ds4_session *s, char *err, size_t errlen) {
 #if !defined(DS4_NO_GPU) && defined(DS4_HAS_DEEPSEEK41_GPU)
-    if (!s || !s->ds41_graph_ready ||
-        ((s->ds41_graph.residual_scale == 0.0f || !s->ds41_graph.residual_dirs) &&
-         (s->ds41_graph.residual_scale2 == 0.0f || !s->ds41_graph.residual_dirs2))) return false;
+    if (!s || !s->ds41_graph_ready || !s->steering_on || s->persist_steered) return false;
     payload_set_err(err, errlen, "session payloads and snapshots are not supported while "
                     "directional steering is active: no steering identity is recorded");
     return true;
@@ -30525,19 +30576,10 @@ static int ds4_engine_open_internal(ds4_engine **out,
     e->ssd_streaming_cache_bytes = opt->ssd_streaming_cache_bytes;
     e->ssd_streaming_preload_experts = opt->ssd_streaming_preload_experts;
     if (e->power_percent > 100) e->power_percent = 100;
-    if ((opt->directional_steering_attn != 0.0f || opt->directional_steering_ffn != 0.0f ||
-         opt->directional_steering_residual != 0.0f) &&
+    if ((opt->directional_steering_attn != 0.0f || opt->directional_steering_ffn != 0.0f) &&
         (!opt->directional_steering_file || !opt->directional_steering_file[0]))
     {
         fprintf(stderr, "ds4: directional steering needs --dir-steering-file\n");
-        free(e);
-        *out = NULL;
-        return 1;
-    }
-    if (opt->directional_steering_residual2 != 0.0f &&
-        (!opt->directional_steering_file2 || !opt->directional_steering_file2[0]))
-    {
-        fprintf(stderr, "ds4: --dir-steering-residual-2 needs --dir-steering-file-2\n");
         free(e);
         *out = NULL;
         return 1;
@@ -30546,23 +30588,12 @@ static int ds4_engine_open_internal(ds4_engine **out,
         e->directional_steering_file = ds4_strdup(opt->directional_steering_file);
         e->directional_steering_attn_scale = opt->directional_steering_attn;
         e->directional_steering_ffn_scale = opt->directional_steering_ffn;
-        e->directional_steering_residual_scale = opt->directional_steering_residual;
     }
-    if (opt->directional_steering_file2 && opt->directional_steering_file2[0]) {
-        e->directional_steering_file2 = ds4_strdup(opt->directional_steering_file2);
-        e->directional_steering_residual2_scale = opt->directional_steering_residual2;
-    }
-    /* sf: think/answer gates for the raw --dir-steering-* options come from the
-     * environment; a steering profile carries its own and replaces those options. */
-    {
-        const char *tp[2] = {getenv("DS4_STEERING_THINK_PHASE"), getenv("DS4_STEERING_THINK_PHASE2")};
-        for (int i = 0; i < 2; i++) {
-            const int g = tp[i] ? ds41_steering_phase_parse(tp[i], strlen(tp[i])) : DS41_STEER_TP_BOTH;
-            e->directional_steering_phase[i] = g < 0 ? DS41_STEER_TP_BOTH : g;
-        }
-    }
+    /* sf: both slots act in both phases until a steering profile sets its gates. */
+    e->directional_steering_phase[0] = DS41_STEER_TP_BOTH;
+    e->directional_steering_phase[1] = DS41_STEER_TP_BOTH;
     if (opt->steering_profile && opt->steering_profile[0]) {
-        if (e->directional_steering_file || e->directional_steering_file2 ||
+        if (e->directional_steering_file ||
             opt->directional_steering_attn != 0.0f || opt->directional_steering_ffn != 0.0f) {
             fprintf(stderr, "ds4: --steering-profile replaces the --dir-steering-* options; pass one or the other\n");
             free(e);
@@ -30570,8 +30601,9 @@ static int ds4_engine_open_internal(ds4_engine **out,
             return 1;
         }
         if (!ds41_steering_profile_open(e, opt->steering_profile)) {
-            free(e->directional_steering_file);
-            free(e->directional_steering_file2);
+            free(e->steering_profile_path);
+    free(e->directional_steering_file);
+            free(e->directional_steering_file2);  /* set by a profile that failed late */
             free(e);
             *out = NULL;
             return 1;
@@ -30628,29 +30660,13 @@ static int ds4_engine_open_internal(ds4_engine **out,
             opt->distributed.role == DS4_DISTRIBUTED_NONE &&
             !load_slice &&
             !opt->first_token_test && !opt->metal_graph_test &&
-            /* sf: the opt-in lifts only this steering term; the refusal below and
-             * every other condition stay upstream's, byte for byte (SPEC rule #4). */
-            (opt->allow_v41_steering || getenv("DS4_ALLOW_V41_STEERING") != NULL ||
-             (opt->steering_profile && opt->steering_profile[0]) ||  /* sf: a profile is the opt-in */
-             ((!opt->directional_steering_file || !opt->directional_steering_file[0]) &&
-              (!opt->directional_steering_file2 || !opt->directional_steering_file2[0]))) &&
+            ((opt->steering_profile && opt->steering_profile[0]) ||   /* sf: a profile is the only steering admission */
+             (!opt->directional_steering_file || !opt->directional_steering_file[0])) &&
             e->power_percent == 100 && opt->context_size <= 1048576;
         if (!supported) {
             fprintf(stderr, "ds4: V4.1 requires Metal, single-GPU CUDA or ROCm (network TP on Metal/CUDA); "
                             "steering and legacy diagnostics "
                             "are not supported (maximum context 1048576)\n");
-            ds4_engine_close(e);
-            *out = NULL;
-            return 1;
-        }
-        /* sf: 401 the FFN and attention hooks live on the V4 graph, which V4.1
-         * never allocates: a nonzero scale there would be accepted and change
-         * nothing. The one live V4.1 site is the residual one. The CLI and
-         * server turn a file alone into --dir-steering-ffn 1. */
-        if (e->directional_steering_ffn_scale != 0.0f || e->directional_steering_attn_scale != 0.0f) {
-            fprintf(stderr, "ds4: V4.1 steering applies only at --dir-steering-residual F; "
-                            "--dir-steering-ffn and --dir-steering-attn are V4 hooks with no effect on this model "
-                            "(a file alone implies --dir-steering-ffn 1)\n");
             ds4_engine_close(e);
             *out = NULL;
             return 1;
@@ -31884,6 +31900,7 @@ int ds4_session_create(ds4_session **out, ds4_engine *e, int ctx_size) {
             return 1;
         }
         s->ds41_graph_ready = true;
+        s->steering_on = ds41_engine_steered(e);  /* sf: 630 the uploads below arm it */
         /* sf: 401 upload the per-layer steering directions to the V4.1 graph and
          * arm the residual_stream_post_layer site (no tensor when off). */
         if (e->directional_steering_residual_scale != 0.0f && e->directional_steering_dirs) {
@@ -32032,6 +32049,44 @@ float ds4_session_directional_steering_ffn(ds4_session *s) {
     }
 #endif
     return s->engine->directional_steering_ffn_scale;
+}
+
+bool ds4_session_steering(const ds4_session *s) {
+    return s && s->steering_on;
+}
+
+void ds4_session_set_persist_steered(ds4_session *s, bool on) {
+    if (s) s->persist_steered = on;
+}
+
+const char *ds4_engine_steering_profile_path(const ds4_engine *e) {
+    return e ? e->steering_profile_path : NULL;
+}
+
+/* sf: 630 turn the loaded profile on or off for this session. A change drops
+ * the live KV (ds4_session_invalidate): the next sync evaluates the whole
+ * prompt, so no state computed under one setting is read under the other. */
+int ds4_session_set_steering(ds4_session *s, bool on) {
+    if (!s) return 1;
+    if (s->steering_on == on) return 0;
+    if (on && !ds41_engine_steered(s->engine)) {
+        fprintf(stderr, "ds4: steering needs a loaded --steering-profile\n");
+        return 1;
+    }
+    if (s->distributed || (s->engine && s->engine->tp.active)) {
+        fprintf(stderr,
+                "ds4: steering changes are not supported for distributed or network tensor-parallel sessions\n");
+        return 1;
+    }
+#if !defined(DS4_NO_GPU) && defined(DS4_HAS_DEEPSEEK41_GPU)
+    if (!s->ds41_graph_ready) return 1;
+    if (s->checkpoint.len > 0) ds4_session_invalidate(s);
+    s->steering_on = on;
+    ds41_steering_arm(s);
+    return 0;
+#else
+    return 1;
+#endif
 }
 
 int ds4_session_set_directional_steering_ffn(ds4_session *s, float scale) {
@@ -33425,11 +33480,9 @@ static bool ds4_sessions_eval_batch_metal_supported(
         return false;
     }
     /* sf: a think/answer steering gate or a decay schedule (418) is per session
-     * and switches in ds4_session_eval; one native batch forward folds every
-     * row with one graph's scale, so these sessions take the serialized path. */
-    if (e->directional_steering_phase[0] != DS41_STEER_TP_BOTH ||
-        e->directional_steering_phase[1] != DS41_STEER_TP_BOTH ||
-        ds41_steering_scheduled(e)) return false;
+     * and switches in ds4_session_eval, and the switch (630) differs per
+     * session; such batches take the serialized path. */
+    if (!ds41_steering_batch_ok(items, count)) return false;
     return ds41_sessions_batch_supported(items, count, e);
 }
 
@@ -33788,6 +33841,11 @@ void ds4_session_free_test_checkpoint(ds4_session *s) {
     token_vec_free(&s->checkpoint);
     free(s->checkpoint_images);
     free(s);
+}
+
+/* sf: 640 test checkpoints carry no graph; this marks one as steered. */
+void ds4_session_set_test_steering(ds4_session *s, bool on) {
+    if (s) s->steering_on = on;
 }
 
 void ds4_session_set_test_images(ds4_session *s,

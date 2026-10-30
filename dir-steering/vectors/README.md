@@ -8,7 +8,7 @@ the record of what they were, so they can be rebuilt if the work reopens.
 
 Format (for any rebuild): little-endian float32, row-major `[layer][embd]`,
 40 × 5120 = 819200 B. Projective directions (no inherent sign); ds4 removes the
-direction with a positive `--dir-steering-residual` scale. Layer 0 is masked to
+direction with a positive profile slot scale. Layer 0 is masked to
 zero (msuiche convention), so 39 layers are active. All on base
 `deepseek-ai/DeepSeek-V4.1-Flash`.
 

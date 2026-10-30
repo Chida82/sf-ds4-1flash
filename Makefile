@@ -46,6 +46,7 @@ help:
 	@echo "  make test-mxfp4-metal  Check the MXFP4 half LUT, then run Metal MXFP4 exactness tests"
 	@echo "  make test-deepseek41-metal  Run the DeepSeek V4.1 Metal kernel tests"
 	@echo "  make test-deepseek41-decode-switch SWITCH=VAR  Decode bitwise with and without a switch"
+	@echo "  make test-deepseek41-steering-session  Steering off with a profile loaded == no profile, bitwise"
 	@echo "  make test-engram         Run the Engram store tests"
 	@echo "  make clean        Remove build outputs"
 
@@ -164,6 +165,11 @@ test-deepseek41-metal: tests/test_deepseek41_metal
 # Decode with SWITCH set against decode without it: logits, Engram history and
 # KV state bitwise over 65 steps after 511- and 2047-token prefixes.
 SWITCH ?= DS4_METAL_DISABLE_V41_DECODE_FLUSH
+# sf: 630 steering off with a profile loaded is the unsteered model, bitwise.
+.PHONY: test-deepseek41-steering-session
+test-deepseek41-steering-session: tests/test_deepseek41_graph
+	./tests/test_deepseek41_graph deepseek-v4.1-flash.gguf --steering-session sf-ds4-1flash-candor speed-bench/promessi_sposi.txt
+
 .PHONY: test-deepseek41-decode-switch
 test-deepseek41-decode-switch: tests/test_deepseek41_graph
 	./tests/test_deepseek41_graph deepseek-v4.1-flash.gguf --decode-switch speed-bench/promessi_sposi.txt $(SWITCH)
@@ -365,8 +371,9 @@ tests/test_tp_tcp: tests/test_tp_tcp.o $(filter-out ds4_tp.o,$(CPU_CORE_OBJS))
 	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
 
 .PHONY: test-session-state
-test-session-state: tests/test_session_state tests/test_tp_commands tests/test_tp_rdma tests/test_tp_tcp
+test-session-state: tests/test_session_state tests/test_session_state_gpu tests/test_tp_commands tests/test_tp_rdma tests/test_tp_tcp
 	./tests/test_session_state
+	./tests/test_session_state_gpu --steering-switch
 	./tests/test_tp_commands
 	./tests/test_tp_rdma
 	./tests/test_tp_tcp

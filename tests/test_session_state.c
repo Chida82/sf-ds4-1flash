@@ -383,9 +383,73 @@ static void test_text_observations(void) {
     vocab_free(v);
 }
 
+#ifndef DS4_NO_GPU
+/* sf: 630 the per-session steering switch: setter errors and no-op, the
+ * per-item batch rule, and persistence keyed on the switch. */
+static void test_steering_switch(void) {
+    const int toks[] = {1, 2, 3};
+    ds4_session *t = ds4_session_new_test_checkpoint(toks, 3);
+    assert(ds4_session_set_steering(t, true) == 1);           /* no profile */
+    assert(ds4_session_set_steering(t, false) == 0);          /* same value */
+    assert(t->checkpoint.len == 3 && t->checkpoint_valid);    /* untouched */
+    assert(!ds4_session_steering(t));
+    ds4_session_free_test_checkpoint(t);
+
+    ds4_engine *e = calloc(1, sizeof(*e));
+    ds4_session *a = calloc(1, sizeof(*a));
+    ds4_session *b = calloc(1, sizeof(*b));
+    assert(e && a && b);
+    float dir = 0.0f;
+    e->directional_steering_residual_scale = 7.0f;
+    e->directional_steering_dirs = &dir;
+    a->engine = b->engine = e;
+
+    e->tp.active = true;                                      /* TP ranks are not told */
+    assert(ds4_session_set_steering(b, true) == 1);
+    e->tp.active = false;
+
+    ds4_decode_item items[2] = {{a, 0}, {b, 0}};
+    assert(ds41_steering_batch_ok(items, 2));                 /* all off */
+    a->steering_on = b->steering_on = true;
+    assert(ds41_steering_batch_ok(items, 2));                 /* all on, constant profile */
+    e->directional_steering_phase[1] = DS41_STEER_TP_THINK;
+    assert(!ds41_steering_batch_ok(items, 2));                /* all on, gated profile */
+    e->directional_steering_phase[1] = DS41_STEER_TP_BOTH;
+    e->directional_steering_decay_tokens[0] = 256.0f;
+    assert(!ds41_steering_batch_ok(items, 2));                /* all on, scheduled profile */
+    b->steering_on = false;
+    assert(!ds41_steering_batch_ok(items, 2));                /* mixed */
+    a->steering_on = false;
+    assert(ds41_steering_batch_ok(items, 2));                 /* all off, scheduled profile */
+
+    char err[160];
+    a->ds41_graph_ready = true;
+    a->steering_on = true;                                    /* both graph scales are 0 */
+    assert(ds41_steering_refuses_persistence(a, err, sizeof(err)));
+    a->steering_on = false;
+    assert(!ds41_steering_refuses_persistence(a, err, sizeof(err)));
+    a->steering_on = true;                                    /* 650: the server's own store */
+    ds4_session_set_persist_steered(a, true);
+    assert(!ds41_steering_refuses_persistence(a, err, sizeof(err)));
+    free(a);
+    free(b);
+    free(e);
+}
+#endif
+
 /* sf-ablate(glm): test_glm_attention_budget/test_glm_spec_rollback set DS4_SHAPE_GLM53 and ran the GLM-DSA graph, not built here */
 
-int main(void) {
+int main(int argc, char **argv) {
+#ifndef DS4_NO_GPU
+    /* sf: 630 the GPU build runs only this case; its other cases were never in make test */
+    if (argc > 1 && !strcmp(argv[1], "--steering-switch")) {
+        test_steering_switch();
+        puts("session steering switch: ok");
+        return 0;
+    }
+#endif
+    (void)argc;
+    (void)argv;
     test_vision_prefix();
     test_vision_fingerprint_prefix();
     test_rewind();

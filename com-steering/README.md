@@ -9,25 +9,29 @@ files. The runtime mechanism — the fold site, the options, the rank-2 second
 slot — is documented in [`dir-steering/README.md`](../dir-steering/README.md);
 this folder is the material, not the machinery.
 
-Steering is refused by default on V4.1 and stays opt-in. A profile is itself the
-opt-in, so loading one is a deliberate act.
+Steering is refused by default on V4.1 and stays opt-in. A profile is the only
+way in, so loading one is a deliberate act.
 
 ## Using a profile
 
 ```sh
 ./sf-ds4-1flash --ssd-streaming --steering-profile sf-ds4-1flash-candor -p "..."
-./sf-ds4-1flash-server --ssd-streaming --steering-profile sf-ds4-1flash-candor
+./sf-ds4-1flash-server --ssd-streaming --steering-profile-on-request sf-ds4-1flash-candor
 ```
+
+The CLI and eval apply the profile to every prompt. The server loads it off,
+and a request turns it on with a `-steering` model id such as
+`deepseek-v4.1-flash-steering` (`docs/SERVER.md`, Steering per request).
 
 A bare name resolves to `com-steering/profiles/<name>.sfsteer`; a name that
 matches nothing makes the engine list the profiles that exist. A path works too.
-`--steering-profile` replaces the `--dir-steering-*` options and is refused if
-combined with them.
+The CLI's `--dir-steering-*` options are refused together with a profile.
 
-What a steered run gives up, unchanged from a steered run configured by hand:
-session payloads and snapshots are refused, the server does not open
-`--kv-disk-dir`, and a session whose profile gates a slot to one reasoning phase
-decodes on its own rather than sharing a batch.
+What a steered session gives up: session payloads and snapshots are refused
+in the CLI and eval, the server keeps steered disk entries in their own store,
+`<kv-disk-dir>/steering`, emptied whenever the profile's bytes change, and a
+steered session whose profile gates a slot to one reasoning phase, or
+schedules its scale, decodes on its own rather than sharing a batch.
 
 ## Profiles
 

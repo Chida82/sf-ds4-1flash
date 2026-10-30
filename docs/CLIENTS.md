@@ -55,8 +55,8 @@ Add this provider to `~/.pi/agent/models.json`:
         "name": "DwarfStar Flash",
         "reasoning": true,
         "thinkingLevelMap": {
-          "off": null, "minimal": "low", "low": "low",
-          "medium": "medium", "high": "high", "xhigh": "xhigh"
+          "minimal": "minimal", "low": "low", "medium": "medium",
+          "high": "high", "xhigh": "xhigh", "max": "max"
         },
         "input": ["text"],
         "contextWindow": 100000,
@@ -67,6 +67,20 @@ Add this provider to `~/.pi/agent/models.json`:
   }
 }
 ```
+
+On a server started with `--steering-profile-on-request`, add a second entry
+to `models` with `"id": "deepseek-v4.1-flash-steering"`, a name such as
+`"DwarfStar Flash (steering)"`, and the same `thinkingLevelMap`; selecting it
+in Pi turns the profile on for those requests (`docs/SERVER.md`, Steering per
+request).
+
+Pi's levels map one to one onto the server's effort names (`docs/SERVER.md`):
+`minimal` turns thinking off, `low` to `max` think at 25, 50, 75, 90 and 100.
+`off` is left out of the map on purpose. With `"thinkingFormat": "deepseek"`,
+Pi 1.4.0 sends `"thinking":{"type":"disabled"}` for `off` unless the map sets
+`"off": null`, which marks the level unsupported and sends nothing (read from
+its `openai-completions.js`). The model id `deepseek-chat` turns thinking off
+regardless of what a client sends.
 
 Select `ds4/deepseek-v4.1-flash` in Pi. This is a text-only client configuration;
 image use also requires the appropriate client input declaration and server

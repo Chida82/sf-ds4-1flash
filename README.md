@@ -510,17 +510,14 @@ after you type `yes`. **Know what it does before installing:**
 Using it, like the rest of this project, is your own responsibility.
 
 Directional steering is present in the build and documented under
-[dir-steering/](dir-steering/README.md). DeepSeek V4.1 Flash refuses it by
-default -- passing `--dir-steering-file` makes the engine refuse to start,
-exactly as upstream -- unless the CLI or server gets `--allow-v41-steering`
-(or `DS4_ALLOW_V41_STEERING` is set, to any value). The opt-in only admits the
-file; on V4.1 an edit is applied only at the residual site,
-`--dir-steering-residual` (the attention-input fold, change `401`), and a
-nonzero FFN or attention scale is refused rather than ignored.
-`--steering-profile NAME` loads a complete steered configuration from one
-file (both directions, their scales and think/answer gates) and needs no
-other flag; the shipped profile, how its directions were derived, and the
-measurements behind them are in [com-steering/](com-steering/investigation.md).
+[dir-steering/](dir-steering/README.md). On DeepSeek V4.1 Flash it runs only
+through a steering profile: `--steering-profile NAME` loads a complete steered
+configuration from one file (both directions, their scales and think/answer
+gates), applied at the attention-input fold (change `401`). The CLI keeps
+upstream's `--dir-steering-file`, and on V4.1 it makes the engine refuse to
+start, exactly as upstream. The shipped profile, how its directions were
+derived, and the measurements behind them are in
+[com-steering/](com-steering/investigation.md).
 
 `--prefix-file FILE` preloads complete `USER:` / `ASSISTANT:` pairs before
 the live conversation. A turn marker must start a line, roles must alternate,

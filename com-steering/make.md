@@ -104,6 +104,7 @@ com-steering/make_profile.py --show com-steering/profiles/<name>.sfsteer   # hea
 
 - The measurement config is fixed: SSD streaming, 82 GB expert cache, greedy.
   Never compare a resident number against a streaming one.
-- A steered run on this model needs `--allow-v41-steering` on the CLI directly;
-  a profile is itself the opt-in and needs nothing more.
+- A steered run on this model needs a profile: it is the only way to steer
+  V4.1. To screen a single raw direction, wrap it in a one-slot profile first
+  (`make_profile.py` with one `--slot`), then pass `--steering-profile`.
 - Harness A/B runs never pass `--boost`.

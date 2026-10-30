@@ -5,46 +5,20 @@ Provide explicit, experimental directional-steering admission on V4.1 while pres
 
 ## Requirements
 
-### Requirement: V4.1 steering opt-in
-The CLI and server SHALL reject a steering file on V4.1 with the unchanged upstream error unless the explicit opt-in is present. The opt-in SHALL lift only the steering-file restriction, not other unsupported conditions or application-site validation.
-
-#### Scenario: Default path still refuses verbatim
-- **WHEN** a steering file is supplied without either opt-in
-- **THEN** startup prints the exact upstream refusal and exits 1
-
-#### Scenario: Opt-in lifts only one restriction
-- **WHEN** the opt-in, a steering file and explicit zero scales are supplied on supported single-box Metal
-- **THEN** the steering-file admission restriction is cleared
-- **AND** an independently unsupported setting still causes rejection
-
-### Requirement: Presence-based environment opt-in
-The CLI flag SHALL independently enable admission. An unset `DS4_ALLOW_V41_STEERING` SHALL not enable admission; any present value SHALL enable it. Help and documentation SHALL distinguish permission to load steering from actual application or efficacy.
-
-#### Scenario: Environment values retain their existing meaning
-- **WHEN** the variable is tested unset, empty, `0`, and `1` without the CLI flag
-- **THEN** only the unset case lacks the environment opt-in
-
-### Requirement: Admission-only no-op
-With no active steering intervention, enabling admission SHALL allocate no direction tensor and preserve the unsteered logits, KV state and Engram history bitwise.
-
-#### Scenario: Opt-in without a file
-- **WHEN** an opted-in session without a steering file decodes 65 tokens
-- **THEN** its logits, KV and Engram match the same run without the opt-in bitwise
-
-#### Scenario: File with zero scales
-- **WHEN** a valid file is supplied with all steering scales explicitly zero and the opt-in
-- **THEN** no direction tensor is allocated and the same state comparison passes
-
 ### Requirement: V4.1 weighted-fold intervention
-With the opt-in, `--dir-steering-residual F` SHALL apply `h -= F*d[L]*dot(d[L],h)` to the weighted HC attention-input fold of layers 1-39, after Engram where present and before normalization. The scale SHALL default to zero. This site SHALL NOT be represented as a verified replica of the published mean-residual pre-Engram hook.
+A profile slot with scale `F` SHALL apply `h -= F*d[L]*dot(d[L],h)` to the weighted HC attention-input fold of layers 1-39, after Engram where present and before normalization. There SHALL be no command-line scale for this site. This site SHALL NOT be represented as a verified replica of the published mean-residual pre-Engram hook.
 
 #### Scenario: Direct layer mapping
-- **WHEN** row N is active in a valid direction file
+- **WHEN** row N is active in a valid direction matrix
 - **THEN** it edits the attention-input fold of layer N, not the FFN output or all four persistent residual copies
 
 #### Scenario: Over-projection has explicit semantics
 - **WHEN** a unit direction is applied at scales 1, 2, 4 and 8
 - **THEN** its component is respectively removed, reflected, multiplied by -3 and multiplied by -7 before normalization
+
+#### Scenario: No residual-site option
+- **WHEN** `--dir-steering-residual` is passed to the CLI, eval or server
+- **THEN** the binary rejects it as an unknown option and exits 2
 
 ### Requirement: Consistent enabled rounding and coverage
 The enabled intervention SHALL apply the same projection/rounding order on every route that produces an attention input; that order is fixed by a route-agreement test, not asserted. Decode, batch prefill and reconstructed attention-key paths SHALL apply this contract exactly once per applicable input. Disabled computation SHALL retain its prior arithmetic and schedule.
@@ -83,25 +57,29 @@ Active steering SHALL require an exact-size finite f32 matrix, finite supported 
 - **THEN** its projection makes no change while the other valid rows remain active
 
 ### Requirement: Unsupported active-site diagnostics
-V4.1 SHALL preserve the legacy FFN/attention options and live FFN API but SHALL reject unsupported nonzero application requests rather than report success without an edit. The no-opt-in upstream refusal SHALL retain precedence. Selecting the residual scale explicitly SHALL suppress the implicit FFN scale.
+On V4.1 the CLI SHALL keep upstream's `--dir-steering-file`, FFN/attention options and live FFN API, and SHALL refuse a raw direction file at engine open with upstream's unchanged message. Unsupported nonzero application requests SHALL be rejected, never reported as success without an edit. The server and eval SHALL NOT accept these options.
 
 #### Scenario: Legacy file-only default
-- **WHEN** an opted-in V4.1 invocation supplies a file and implicitly requests FFN scale 1
-- **THEN** it reports that the active FFN site is unsupported and directs the user to explicit residual-site selection
+- **WHEN** a V4.1 CLI invocation supplies `--dir-steering-file` without a profile, with or without an FFN or attention scale
+- **THEN** startup prints upstream's exact refusal and exits 1
 
 #### Scenario: Live FFN change
 - **WHEN** a V4.1 session receives a nonzero live FFN steering request
 - **THEN** it returns an unsupported-site error and does not claim to change residual steering
 
+#### Scenario: Server and eval have no raw options
+- **WHEN** `--dir-steering-file`, `--dir-steering-ffn` or `--dir-steering-attn` is passed to the server, or `--dir-steering-file` to the eval
+- **THEN** it is rejected as an unknown option and the binary exits 2
+
 ### Requirement: Steering and persistent state
-While a nonzero steering scale is active, automatic persistent KV reuse and explicit snapshot save/load SHALL be refused with a clear error before any session mutation. Zero-scale and unsteered sessions SHALL keep existing persistent-state behavior. A steered session SHALL NOT read, rewrite or delete existing cache files. A steering identity descriptor is not required by this change.
+While a session's steering is on, automatic persistent KV reuse and explicit snapshot save/load SHALL be refused with a clear error before any session mutation, unless the frontend has declared for that session that it keeps steered persistent state apart, bound to the profile's identity. Sessions with steering off, and sessions of an engine without a profile, SHALL keep existing persistent-state behavior. A steered session SHALL NOT read, rewrite or delete cache files outside the store its frontend reserves for it.
 
 #### Scenario: Steered session with a KV root
-- **WHEN** a server with a configured KV root starts a session at nonzero residual scale
-- **THEN** persistent lookup and store for that session are refused with an error naming the limitation, and the prompt is computed without disk reuse
+- **WHEN** a server with a configured KV root runs a session with steering on
+- **THEN** that session's persistent lookup, load and store use only the server's steering store, bound to the loaded profile, and never the root
 
 #### Scenario: Snapshot while steered
-- **WHEN** snapshot save or load is requested at nonzero residual scale
+- **WHEN** snapshot save or load is requested on a session with steering on whose frontend has made no such declaration, including while a gated slot is at zero for the current token
 - **THEN** it fails clearly before changing the session's tokens, logits or KV
 
 ### Requirement: Runtime no-op evidence
@@ -112,11 +90,7 @@ Disabled steering and a zero-direction control at nonzero scale SHALL preserve b
 - **THEN** state and logits match baseline even though the intervention path is exercised
 
 ### Requirement: Second residual direction
-The V4.1 residual site SHALL accept an optional second per-layer unit direction
-(`--dir-steering-file-2`) with its own constant scale (`--dir-steering-residual-2`),
-applied as a second in-place weighted fold after the first on every route that applies
-the first. It SHALL share the first direction's opt-in gate, disable switch,
-persistence refusal and loader validation.
+A profile MAY declare a second slot: a per-layer unit direction with its own scale, applied as a second in-place weighted fold after the first on every route that applies the first. It SHALL share the first slot's disable switch, persistence rule and loader validation.
 
 #### Scenario: Applied on every route of the first fold
 - **WHEN** a second direction is active
@@ -124,18 +98,16 @@ persistence refusal and loader validation.
   the second fold immediately after the first
 
 #### Scenario: Second file without the opt-in
-- **WHEN** `--dir-steering-file-2` is given and neither `--allow-v41-steering` nor
-  `DS4_ALLOW_V41_STEERING` admits steering
-- **THEN** the engine refuses to start with the same message as for the first direction
+- **WHEN** `--dir-steering-file-2` is passed to any binary
+- **THEN** it is rejected as an unknown option and the binary exits 2; a second direction exists only as a profile slot
 
 #### Scenario: Zero second scale is the single-direction run
-- **WHEN** a second file is given with `--dir-steering-residual-2 0`
-- **THEN** the second direction is not loaded and logits, Engram history and KV state
-  are bitwise identical to the run with the first direction alone
+- **WHEN** a profile declares only its first slot
+- **THEN** no second direction is loaded and the run applies the first fold alone
 
 #### Scenario: Scale without a file
-- **WHEN** `--dir-steering-residual-2` is nonzero and no second file is given
-- **THEN** the engine refuses to start naming the missing file
+- **WHEN** `--dir-steering-residual-2` is passed to any binary
+- **THEN** it is rejected as an unknown option and the binary exits 2
 
 ### Requirement: Composition of two folds is stated honestly
 Two sequential folds SHALL be documented as sequential removals. The run identity
@@ -177,22 +149,20 @@ token is generated. No gate SHALL mean both phases.
   slot's scale is unaffected
 
 #### Scenario: Gates come from the environment or from a profile
-- **WHEN** `DS4_STEERING_THINK_PHASE` or `DS4_STEERING_THINK_PHASE2` names a phase, or
-  a loaded profile declares one for a slot
-- **THEN** that slot is gated to the named phase; an unset or unrecognised value means
-  both phases
+- **WHEN** a loaded profile declares a phase for a slot, or `DS4_STEERING_THINK_PHASE` / `DS4_STEERING_THINK_PHASE2` is set
+- **THEN** the profile's phase gates that slot, a slot without one runs in both phases, and the environment variables are not read
 
 #### Scenario: Both-phase gating is the unchanged path
 - **WHEN** neither slot is gated
 - **THEN** the session performs no phase tracking and the run matches the ungated run
 
 #### Scenario: Gated sessions do not share a batch
-- **WHEN** a decode batch is assembled for sessions whose engine has a gate set
+- **WHEN** a decode batch is assembled and any of its sessions has steering on while the profile carries a gate or a schedule, or its sessions differ in steering
 - **THEN** the native batched path is declined and the sessions decode one at a time,
-  since one batched forward applies a single scale to every row
+  since one batched forward applies a single scale to every row; a batch whose sessions all have steering off is batched even with such a profile loaded
 
 ### Requirement: Steering profile file
-The engine SHALL accept `--steering-profile`, naming one file that carries every slot's
+The CLI and eval SHALL accept `--steering-profile`, and the server `--steering-profile-on-request`, naming one file that carries every slot's
 direction matrix, its constant scale and its phase gate. The file SHALL be an
 eight-byte magic, a little-endian `uint32` header length, a JSON header declaring the
 intervention site, the matrix shape and one or two slots, then one direction matrix per
@@ -200,27 +170,30 @@ slot in slot order.
 
 #### Scenario: A profile replaces the option set
 - **WHEN** a profile is loaded
-- **THEN** the run is identical to the run configured with the equivalent direction
-  files, scales and gates passed as individual options
+- **THEN** it is the run's whole steering configuration, and the run computes byte-identically to the same profile before the raw options were removed
 
 #### Scenario: A bare name resolves, and a wrong one lists the alternatives
 - **WHEN** the argument is not a readable path
 - **THEN** it is resolved as a profile name in the repository's profile directory, and
   if nothing matches, the engine lists the profiles that exist
 
+#### Scenario: The server's flag loads the same file
+- **WHEN** the server is started with `--steering-profile-on-request` and a profile name
+- **THEN** it resolves and validates the profile exactly as the CLI's `--steering-profile` does, and applies it only to requests that select steering
+
 ### Requirement: Profile admission and validation
 A profile SHALL be refused unless its header names the engine's own site and matrix
 shape, each slot carries a nonzero scale and a phase of `both`, `think` or `answer`,
 and the file's size equals the header plus one matrix per declared slot. Each matrix
 SHALL pass the validation a direction file passed on its own receives. A profile SHALL
-itself admit steering, and SHALL NOT be combined with the `--dir-steering-*` options.
+be the only admission of steering on V4.1, and SHALL NOT be combined with `--dir-steering-file`, `--dir-steering-ffn` or `--dir-steering-attn`.
 
 #### Scenario: A profile is its own opt-in
-- **WHEN** a profile is given and no steering opt-in flag or environment variable is set
-- **THEN** the engine starts and applies the profile
+- **WHEN** a profile is given
+- **THEN** the engine starts and applies the profile; no flag or environment variable exists or is needed to admit it
 
 #### Scenario: Profile and raw options together are refused
-- **WHEN** a profile is given together with any `--dir-steering-*` option
+- **WHEN** a CLI invocation gives a profile together with `--dir-steering-file`, `--dir-steering-ffn` or `--dir-steering-attn`
 - **THEN** the engine refuses to start, naming the conflict
 
 #### Scenario: A truncated or over-long profile is refused
@@ -388,7 +361,9 @@ without `closure` SHALL behave bitwise as before.
 
 ### Requirement: Closure onset schedule
 `a(t)` SHALL be 0 for the first `T0(N)` in-phase think tokens, where `N` is the prompt's
-reasoning-effort level (unknown counts as 75) and `T0` runs linearly from `onset_min` at
+reasoning-effort level, the level its effort line carries (75 for the named high level,
+100 for max, the number for a numeric level; a mode without an effort line counts as 75),
+and `T0` runs linearly from `onset_min` at
 `N ≤ 10` to `onset_max` at `N = 100`; it SHALL then rise by a cubic smoothstep to `scale`
 over `ramp_tokens` tokens and stay there, and SHALL be 0 in the answer phase.
 
@@ -408,6 +383,10 @@ over `ramp_tokens` tokens and stay there, and SHALL be 0 in the answer phase.
 - **WHEN** the CLI runs with `--think-level N`
 - **THEN** the session's level is `N`; a session whose frontend never set it uses 75
 
+#### Scenario: Named max places the onset at level 100
+- **WHEN** a steered thinking run uses the named `max` mode (server `reasoning_effort` `max`, or CLI `/think-max`)
+- **THEN** the closure onset is placed for level 100, the level the prompt's effort line tells the model, not for 75
+
 ### Requirement: Closure second stage
 When the `closure` object declares a second stage (`scale2 ≥ scale`, `after_tokens`,
 `ramp2_tokens`), `a(t)` SHALL rise again by a cubic smoothstep from `scale` to `scale2` over
@@ -424,3 +403,36 @@ SHALL be single-stage.
   a non-integer onset or ramp, `scale2 < scale`, a second stage without `after_tokens`,
   or the file lacks the extra matrix
 - **THEN** the engine refuses to start, naming the file and the fault
+
+### Requirement: Per-session steering switch
+Each session SHALL carry a steering switch. A session SHALL start with it on when its engine loaded a profile, and off otherwise. Turning it on in an engine without a profile SHALL fail with an error and leave the session unchanged.
+
+#### Scenario: Default follows the profile
+- **WHEN** a session is created by an engine that loaded a profile
+- **THEN** its steering is on, and a run that never touches the switch computes exactly as before this change
+
+#### Scenario: No profile, no steering
+- **WHEN** a frontend turns steering on for a session whose engine loaded no profile
+- **THEN** the call returns an error naming the missing profile and the session stays unsteered
+
+#### Scenario: Distributed sessions keep their default
+- **WHEN** a frontend changes the switch on a distributed or network tensor-parallel session
+- **THEN** the call returns an error and the switch keeps its value
+
+### Requirement: Switched-off session is the unsteered model
+A session whose steering is off SHALL compute exactly as a session of an engine opened without the profile: the same logits, KV state and Engram history, bit for bit, on every route.
+
+#### Scenario: Profile loaded, session off
+- **WHEN** an engine with the shipped profile runs a session with steering off for a prefill and 65 decoded tokens
+- **THEN** its logits, KV and Engram history equal, bitwise, those of the same run on an engine opened without the profile
+
+### Requirement: Switching drops live state
+Changing a session's switch while the session holds evaluated tokens SHALL discard that state before the next evaluation, so no state computed under one setting is extended under the other. Setting the switch to its current value SHALL change nothing.
+
+#### Scenario: Switched after a prefill
+- **WHEN** a steered session evaluates a prompt, its switch is turned off, and the same prompt is synced again
+- **THEN** the whole prompt is evaluated again, and the result equals, bitwise, a fresh session with steering off
+
+#### Scenario: Same value is a no-op
+- **WHEN** the switch is set to the value it already has
+- **THEN** the session keeps its tokens, KV and logits

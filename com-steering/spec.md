@@ -19,15 +19,15 @@ this model; the residual fold is the only place a direction acts.
 A direction is a `40 × 5120` float32 matrix: one unit row per layer (row 0 is
 all-zero — layer 0 is never steered), each other row either unit-norm (within
 `1e-2`) or all-zero. It is applied per layer at the fold site, scaled by its
-**residual** (`--dir-steering-residual` / the profile slot's `scale`). Raw
+**residual** (the profile slot's `scale`). Raw
 direction files are not shipped: a profile embeds its matrices, and the
 provenance of each embedded direction is recorded in [`README.md`](README.md),
 "Directions (provenance)".
 
 ## Two slots, and how they compose
 
-A session can remove up to two directions at the same site (slot 1 and slot 2,
-`--dir-steering-file` / `--dir-steering-file-2`, or a profile's two slots).
+A session can remove up to two directions at the same site (a profile's
+slot 1 and slot 2).
 Geometry decides what the pair does:
 
 - **Orthogonal** directions compose as an exact rank-2 removal — a clean 2D

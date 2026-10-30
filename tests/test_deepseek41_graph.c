@@ -1905,6 +1905,93 @@ done:
     return rc;
 }
 
+/* sf: 630 FNV-1a over the logits, Engram history and KV state after each of
+ * a prefill of PREFIX prompt tokens and 64 teacher-forced decode steps. */
+enum { STEER_PREFIX = 2047, STEER_STEPS = 65 };
+
+static uint64_t steer_hash(uint64_t h, const void *p, size_t n) {
+    const unsigned char *b = p;
+    for (size_t i = 0; i < n; i++) h = (h ^ b[i]) * 1099511628211ull;
+    return h;
+}
+
+static bool steer_digest(ds4_session *s, const ds4_tokens *tokens, uint64_t *out,
+                         char *err, size_t errlen) {
+    ds4_tokens input = {.v = tokens->v, .len = STEER_PREFIX, .cap = STEER_PREFIX};
+    if (ds4_session_sync(s, &input, err, errlen) != 0) return false;
+    for (int step = 0; step < STEER_STEPS; step++) {
+        ds41_gpu_graph *g = &s->ds41_graph;
+        ds41_state_span spans[64];
+        const uint32_t n = ds41_state_spans(g, g->pos, spans);
+        uint64_t h = 1469598103934665603ull;
+        h = steer_hash(h, s->logits, DS4_N_VOCAB * sizeof(float));
+        h = steer_hash(h, &g->history, sizeof(g->history));
+        for (uint32_t j = 0; j < n; j++)
+            h = steer_hash(h, ds4_gpu_tensor_contents(spans[j].tensor), (size_t)spans[j].bytes);
+        out[step] = h;
+        if (step + 1 == STEER_STEPS) break;
+        if (ds4_session_eval(s, tokens->v[STEER_PREFIX + step], err, errlen) != 0) return false;
+    }
+    return true;
+}
+
+/* sf: 630 a session with steering off is the unsteered model, bitwise, and
+ * switching a steered session off drops its state and recomputes it unsteered. */
+static int check_steering_session(const char *path, const char *profile, const char *prompt_path) {
+    ds4_engine *engine = NULL;
+    ds4_session *s = NULL;
+    ds4_tokens tokens = {0};
+    char *prompt = NULL, err[256] = "";
+    size_t prompt_bytes;
+    int rc = 1;
+    uint64_t plain[STEER_STEPS], off[STEER_STEPS], steered[STEER_STEPS], switched[STEER_STEPS];
+    ds4_engine_options opt = {.model_path = path, .backend = DS4_BACKEND_METAL,
+        .context_size = 4096, .power_percent = 100, .ssd_streaming = true,
+        .ssd_streaming_cache_bytes = UINT64_C(32) << 30};
+    REQUIRE(read_text_file(prompt_path, &prompt, &prompt_bytes));
+
+    REQUIRE(ds4_engine_open(&engine, &opt) == 0);
+    ds4_tokenize_text(engine, prompt, &tokens);
+    REQUIRE(tokens.len > STEER_PREFIX + STEER_STEPS);
+    REQUIRE(ds4_session_create(&s, engine, 4096) == 0);
+    REQUIRE(!ds4_session_steering(s));
+    REQUIRE(ds4_session_set_steering(s, true) == 1);
+    REQUIRE(steer_digest(s, &tokens, plain, err, sizeof(err)));
+    ds4_session_free(s); s = NULL;
+    ds4_engine_close(engine); engine = NULL;
+    fprintf(stderr, "V4.1 steering session: engine without a profile digested\n");
+
+    opt.steering_profile = profile;
+    REQUIRE(ds4_engine_open(&engine, &opt) == 0);
+    REQUIRE(ds4_session_create(&s, engine, 4096) == 0);
+    REQUIRE(ds4_session_steering(s));
+    REQUIRE(ds4_session_set_steering(s, false) == 0);
+    REQUIRE(steer_digest(s, &tokens, off, err, sizeof(err)));
+    for (int i = 0; i < STEER_STEPS; i++) REQUIRE(off[i] == plain[i]);
+    ds4_session_free(s); s = NULL;
+    fprintf(stderr, "V4.1 steering session: profile loaded, session off == no profile, 65 states PASS\n");
+
+    REQUIRE(ds4_session_create(&s, engine, 4096) == 0);
+    REQUIRE(steer_digest(s, &tokens, steered, err, sizeof(err)));
+    REQUIRE(steered[0] != plain[0]);
+    REQUIRE(ds4_session_set_steering(s, false) == 0);
+    REQUIRE(ds4_session_pos(s) == 0);
+    REQUIRE(steer_digest(s, &tokens, switched, err, sizeof(err)));
+    for (int i = 0; i < STEER_STEPS; i++) REQUIRE(switched[i] == plain[i]);
+    fprintf(stderr, "V4.1 steering session: steered state differs; switched off, the whole prompt "
+                    "was evaluated again and matches no profile, 65 states PASS\n");
+    puts("V4.1 steering session switch: PASS");
+    rc = 0;
+done:
+    if (err[0]) fprintf(stderr, "%s\n", err);
+    if (ds4_gpu_commands_active()) ds4_gpu_end_commands();
+    ds4_session_free(s);
+    ds4_engine_close(engine);
+    ds4_tokens_free(&tokens);
+    free(prompt);
+    return rc;
+}
+
 static int check_decoder_suffix(const char *path, const char *prompt_path) {
     ds4_engine *engine = NULL;
     ds4_session *control = NULL, *candidate = NULL;
@@ -2700,6 +2787,8 @@ int main(int argc, char **argv) {
         return check_prefill_alias_fallback(argv[1], argv[3]);
     if (argc == 4 && !strcmp(argv[2], "--chunk-prefill"))
         return check_wide_prefill(argv[1], argv[3], false, false, "DS4_METAL_DISABLE_V41_WIDE_CHUNK");
+    if (argc == 5 && !strcmp(argv[2], "--steering-session"))
+        return check_steering_session(argv[1], argv[3], argv[4]);
     if (argc == 5 && !strcmp(argv[2], "--decode-switch"))
         return check_decode_control(argv[1], argv[3], argv[4]);
     if (argc == 4 && !strcmp(argv[2], "--decoder-suffix"))

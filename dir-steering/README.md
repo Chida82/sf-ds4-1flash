@@ -12,26 +12,20 @@ y = y - scale * direction[layer] * dot(direction[layer], y)
 Positive scale removes the represented direction. Negative scale amplifies it.
 With no steering file or zero scales, ds4 follows the normal inference path.
 
-**DeepSeek V4.1 Flash refuses steering by default.** The engine refuses to start
-when `--dir-steering-file` is passed, exactly as it does upstream:
+**DeepSeek V4.1 Flash is steered only through a profile.** The engine refuses
+to start when `--dir-steering-file` is passed, exactly as it does upstream:
 
 ```text
 ds4: V4.1 requires Metal, single-GPU CUDA or ROCm (network TP on Metal/CUDA); steering and legacy diagnostics are not supported (maximum context 1048576)
 ```
 
-`--allow-v41-steering` on the CLI or the server lifts only this refusal, on
-single-box Metal. `DS4_ALLOW_V41_STEERING` does the same whenever it is set, to
-any value: empty and `0` opt in too, `=1` is only the usual spelling. Every other
-unsupported condition still refuses, and without the opt-in the message above is
-byte-for-byte unchanged. The bench has no steering options.
-
-The opt-in is admission only: it lets the engine load a file and applies nothing.
-On V4.1 the one live site is the residual one, `--dir-steering-residual` (change
-`401`, [contract](../openspec/changes/401-residual-steering-hook-msuiche/specs/directional-steering/spec.md),
-described below). `--dir-steering-ffn` and `--dir-steering-attn` are hooks of
-the older V4 graph, which V4.1 never allocates: a nonzero value is refused at
-startup rather than accepted without effect, and since a file alone implies
-`--dir-steering-ffn 1` in the CLI and server, name the residual scale explicitly.
+A loaded `--steering-profile` (CLI, server, eval) is the only admission: on
+single-box Metal it lifts this one term of the support check, and every other
+unsupported condition still refuses with the message above. The bench has no
+steering options. The profile's slots act at the one live V4.1 site, the
+attention-input fold (change `401`, described below). `--dir-steering-ffn` and
+`--dir-steering-attn` are hooks of the older V4 graph, which V4.1 never
+allocates; only the CLI keeps them, with upstream's `--dir-steering-file`.
 
 The tooling, the file format and the runtime options below are kept unchanged
 (SPEC.md §B: steering stays in every child even where the model rejects it), so
@@ -43,30 +37,26 @@ format example.
 ## Runtime Options
 
 ```text
---dir-steering-file FILE   load one f32 direction per normal model layer (40x5120 on V4.1)
---dir-steering-ffn F       apply steering after FFN outputs; default is 1 when a file is provided (V4 hook; V4.1 refuses a nonzero value)
---dir-steering-attn F      apply steering after attention outputs; default is 0 (V4 hook; V4.1 refuses a nonzero value)
---dir-steering-residual F  steer the V4.1 attention-input fold; default is 0
---dir-steering-file-2 FILE  rank-2: a second direction file (should be orthogonal to the first)
---dir-steering-residual-2 F rank-2: constant scale for the second direction at the same site; default 0 (off)
---steering-profile NAME|FILE  one .sfsteer file (or a name in com-steering/profiles) with both slots' vectors, scales and think/answer gates; implies the V4.1 opt-in and replaces the options above
+--steering-profile NAME|FILE  one .sfsteer file (or a name in com-steering/profiles) with both slots' vectors, scales and think/answer gates (CLI, server, eval)
+--dir-steering-file FILE   CLI only, upstream's: one f32 direction per layer; V4.1 refuses it at startup
+--dir-steering-ffn F       CLI only, upstream's V4 hook: after FFN outputs; default is 1 when a file is provided
+--dir-steering-attn F      CLI only, upstream's V4 hook: after attention outputs; default is 0
 ```
 
-Three application sites, each with its own scale:
+Three application sites:
 
-| Site | Flag | Model |
+| Site | Set by | Model |
 |---|---|---|
 | FFN output (pre-residual) | `--dir-steering-ffn` | V4 graph only |
 | Attention output | `--dir-steering-attn` | V4 graph only |
-| Attention-input fold | `--dir-steering-residual` | V4.1 (`401`) |
+| Attention-input fold | a profile slot's `scale` | V4.1 (`401`) |
 
-Setting `--dir-steering-residual` does not enable the FFN site, and a control
-vector is only meaningful at a site whose tensor it was derived for, which is
-the caveat of the next section.
+A control vector is only meaningful at a site whose tensor it was derived for,
+which is the caveat of the next section.
 
 ### The V4.1 site (`401`)
 
-`--dir-steering-residual F` edits the **weighted HC attention-input fold** of
+A profile slot at scale `F` edits the **weighted HC attention-input fold** of
 layers 1-39: the four residual streams folded into one 5120-wide row by the
 previous sublayer's mixer weights, after Engram on layers 1 and 14, before the
 attention norm. The runtime names it `v41_attn_input_weighted_fold_post_engram`,
@@ -78,14 +68,14 @@ decode, batch prefill and the rows the wide-sweep decoder suffix reconstructs.
 With a unit `d`, F=1 removes the
 component along `d`, 2 reflects it, 4 and 8 multiply it by -3 and -7.
 
-**Rank-2 (`--dir-steering-file-2 FILE2 --dir-steering-residual-2 G`).** A second
+**Rank-2 (a profile's second slot, scale `G`).** A second
 direction is removed at the same site with its own constant scale, as a second
 in-place fold right after the first: `h -= G*d2*dot(d2,h)`. When `d2` is
 orthogonal to `d` per layer — `d2 = unit(b - (d.b)d)` — the two sequential removals equal projecting out their
 2D span exactly, so the first direction's effect is untouched. Non-orthogonal
 pairs still run, but compose as two rank-1 removals rather than a clean 2D
-projection. The second slot has a constant scale, shares the opt-in and the disable env, and the persistence/KV guards apply when
-either scale is nonzero. Motivation: one vector (rank-1) can only rotate the
+projection. The second slot shares the disable env, and the persistence/KV guards apply
+while a profile is loaded. Motivation: one vector (rank-1) can only rotate the
 removed direction; a second orthogonal direction adds a dimension, which is what
 reaches refusals the single direction leaves (see `com-steering/result.md`).
 
@@ -102,9 +92,11 @@ finite, row 0 zero, every other row unit within 1e-2 or all zero (a masked
 layer). Nothing is normalized on your behalf. A raw `.f32` carries no
 provenance: keep the converter's `.json` sidecar with it.
 
-While a nonzero residual scale is active, session payloads and snapshots are
-refused and the server does not open `--kv-disk-dir` (cache entries record no
-steering identity; existing entries are left untouched). `/steer` and the live
+A steered session refuses payloads and snapshots (cache entries record no
+steering identity), except in the server, which keeps steered entries in their
+own store, `<kv-disk-dir>/steering`, bound to the profile's bytes
+(`docs/SERVER.md`, Disk KV cache). A session switched off is the unsteered
+model and persists as one. `/steer` and the live
 FFN setter refuse a nonzero value on V4.1. `DS4_METAL_DISABLE_V41_RESIDUAL_STEERING=1`
 turns the edit off, and a zero vector at any scale exercises the steered path
 without changing anything: both are meant to be bitwise the unsteered run. Only
@@ -113,10 +105,8 @@ the switch's inertness without a direction file is checked
 the zero-vector and switch-over-a-loaded-direction checks were removed by `416`.
 
 **Think/answer gates.** Each slot can be gated to one reasoning phase, keyed on
-the `<think>`/`</think>` boundary: it runs at its constant scale in that phase
-and at 0 in the other. With the raw options the gates come from
-`DS4_STEERING_THINK_PHASE` (slot 1) and `DS4_STEERING_THINK_PHASE2` (slot 2),
-`think` or `answer`, default both; a steering profile carries its own. Gated
+the `<think>`/`</think>` boundary: it runs at its scale in that phase
+and at 0 in the other. The profile header carries each slot's gate. Gated
 sessions decode one at a time: a native batched decode folds every row with one
 session's scale, so the batch takes the serialized path.
 
@@ -142,16 +132,13 @@ The FFN output is usually the best first target because it is late enough in
 each layer to represent behavior, style, and topic signals. Attention steering
 is available for experiments, but it can be more fragile.
 
-The examples below use the FFN site. On V4.1 they refuse to start: without the
-opt-in with upstream's line, with it because the FFN site is a V4 hook. They
-document the tooling and the file format.
+The examples below use the FFN site. On V4.1 they refuse to start with
+upstream's line. They document the tooling and the file format.
 
 ### Second direction (`412`)
 
-`--dir-steering-file-2 FILE --dir-steering-residual-2 F` folds a second direction
-at the same site, right after the first, with a constant scale. Same file format and the same
-validation at engine open. A scale of 0, the default, leaves the second slot
-unloaded, whatever file is named.
+A profile's second slot folds a second direction at the same site, right
+after the first. Same matrix format and the same validation at engine open.
 
 Order and angle decide what the pair does:
 
@@ -161,7 +148,7 @@ Order and angle decide what the pair does:
   |cos| 0.72): the second fold re-opens part of the first axis, so the order
   changes the result, and the pair over-doses the shared axis. After the two
   folds the second coordinate is zero and the first is not (the synthetic 0.72
-  test asserts both), so the second flag is the one removed completely.
+  test asserts both), so the second slot is the one removed completely.
 
 Engine open prints the median |cos| of the pair over the layers where both rows
 are nonzero (`median |cos(d1,d2)| 0.722 over 39 layers` for msuiche +
@@ -177,8 +164,8 @@ the single fold the open also prints `warning: the two folds over-dose`; 0.22 at
 the 2x2 composition of the two rank-1 folds in their shared plane, fixed by the
 per-layer cosine and the two scales.
 
-Off-path guarantee: the single-direction run, the same run with a second file
-named at scale 0, and the same run with the second fold active on an all-zero
+Off-path guarantee: the single-direction run, the same run with a second slot
+at scale 0, and the same run with the second fold active on an all-zero
 direction are meant to give bitwise equal logits, Engram history and KV state.
 No test checks it any more: the model-backed rank-2 test and the model-less
 geometry check were removed by `416`.
@@ -326,7 +313,7 @@ directions the shipped `candor` profile ended up with.
   validating the whole file (exactly `direction.1..39`, consistent metadata,
   finite unit rows). Its source hook is `residual_stream_post_layer` at alpha 0.5
   — recorded separately from the application site and never called equivalent to
-  it. Apply with `--dir-steering-residual`, never `--dir-steering-ffn` (V4.1
+  it. Apply it as a profile slot, never through `--dir-steering-ffn` (V4.1
   refuses it).
 
 - **Fusion with distributedcognition (404).** distributedcognition's

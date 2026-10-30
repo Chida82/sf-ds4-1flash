@@ -60,10 +60,27 @@ editing a file that contains them, they reach the client as text in whatever
 field they fall in: reasoning, content or a tool argument.
 
 The default sampling settings are temperature 1, top-p 1, and min-p 0.05.
-For DeepSeek, thinking is on by default. `reasoning_effort=max` selects Think
-Max only with sufficient context; otherwise it falls back to normal thinking.
-`xhigh` maps to normal thinking, not Think Max. Use `think:false`, a disabled
-thinking object, or a non-thinking model alias for direct answers.
+Thinking is on by default, at effort 75. Every API's effort name
+(`reasoning_effort`, `chat_template_kwargs.reasoning_effort`, Anthropic
+`output_config.effort`, Responses `reasoning.effort`) maps to the level the
+prompt's `Reasoning Effort: N` line carries:
+
+| Name | Level |
+|---|---|
+| `none`, `minimal` | thinking off |
+| `low` | 25 |
+| `medium` | 50 |
+| `high` | 75 |
+| `xhigh` | 90 |
+| `max` | 100 |
+
+A numeric string `"0"` to `"100"` sets the level directly; `"0"` turns
+thinking off. `minimal` used to mean a little thinking: it now means none.
+
+Precedence: an explicit disable (`think:false`, `thinking:false`, a disabled
+thinking object) always wins; then an effort that means no thinking; then the
+model alias (`deepseek-chat` off, `deepseek-reasoner` on), only when no
+explicit thinking control was sent; then the effort, `high` by default.
 
 ## Multiple sessions
 
@@ -87,6 +104,46 @@ Fallback executes the rows separately. It provides concurrency and scheduling
 fairness, not the aggregate speedup of native batching. Native grouping may
 change floating-point reduction order slightly. V4.1 sessions containing images
 use the ordered fallback.
+
+## Steering per request
+
+```sh
+./sf-ds4-1flash-server --ssd-streaming --steering-profile-on-request sf-ds4-1flash-candor
+```
+
+`--steering-profile-on-request NAME|FILE` loads a steering profile
+(`com-steering/`) and leaves it off. A request turns it on by asking for a
+model id with the `-steering` suffix:
+
+| Model id | Thinking | Steering |
+|---|---|---|
+| `deepseek-v4.1-flash-steering` | on | on |
+| `deepseek-chat-steering` | off | on |
+| `deepseek-reasoner-steering` | on | on |
+
+The suffix only adds steering: the base id keeps its thinking rule, and an
+explicit thinking control or effort still wins over it as for the base id.
+The response reports the id the request sent. `/v1/models` lists
+`deepseek-v4.1-flash-steering` only while a profile is loaded. Requests
+without the suffix run the unsteered model, bitwise the same as a server
+started without a profile.
+
+A `-steering` id on a server without a profile, or with an unknown base
+(`foo-steering`), is answered with a 400: a client must never believe it is
+steered when it is not. `--steering-profile` is the CLI and eval flag, which
+means always on; the server refuses it at startup and names the new flag.
+Tensor-parallel and distributed roles refuse the flag too: the per-request
+switch is not carried to other ranks.
+
+A slot's live state belongs to one setting. A request routes away from slots
+computed under the other setting, and a slot that changes setting drops its
+live KV first, so the request evaluates its whole prompt. With one slot,
+clients that alternate steered and unsteered requests re-prefill every time;
+`--batched-session N` keeps both kinds resident. A Responses or Anthropic
+continuation that relies on live tool state of the other setting gets the
+usual 409 and must replay its history. The disk cache keeps the two kinds
+apart (Disk KV cache, below). The request log carries `STEER` and the trace
+`steering: on`.
 
 ## Images
 
@@ -135,6 +192,19 @@ directory cannot be created, for example because the drive is not mounted, the
 server logs it and runs without a disk cache.
 Cache files contain prompt text and model state: treat the directory as
 private. It is disposable; stop the server before clearing it.
+
+With `--steering-profile-on-request`, steered requests look up, load, store
+and evict only under `<dir>/steering/`, and unsteered requests only in `<dir>`
+itself; the root store never lists the subfolder. Entries carry no steering
+identity, so the folder is bound to the profile's bytes: `<dir>/steering/PROFILE`
+records the profile file's SHA-1 (and its name, for humans). At startup, when
+the recorded digest differs, or is missing while entries exist, the server
+deletes the entry files in `<dir>/steering/` (`<40 hex>.kv` only, nothing else)
+and logs `steering KV store: profile changed, removed N entries`. Each store
+applies `--kv-disk-space-mb` on its own, so the cache can use up to twice the
+budget. A profile replaced on disk in the instant between the engine loading it
+and the server hashing it is recorded with the new bytes; the next restart then
+empties the store.
 
 Files written before content became literal text (payload ABI 2) may hold
 control tokens taken from content, so this build does not read them: the

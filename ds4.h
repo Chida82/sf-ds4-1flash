@@ -138,11 +138,7 @@ typedef struct {
     const char *expert_profile_path;
     float directional_steering_attn;
     float directional_steering_ffn;
-    float directional_steering_residual;  /* sf: 401 V4.1 attention-input fold site, constant scale */
-    bool allow_v41_steering;    /* sf: opt into V4.1 steering, lifting its startup refusal */
-    const char *directional_steering_file2;  /* sf: rank-2 second direction file; should be orthogonal to the first (e.g. fuse_directions.py 'ortho') for an exact 2D removal */
-    float directional_steering_residual2;    /* sf: rank-2 second direction constant scale at the residual site (0 = off) */
-    const char *steering_profile; /* sf: one .sfsteer file (or a name in com-steering/profiles) carrying both slots' vectors, scales and think/answer gates; implies the V4.1 opt-in and replaces the --dir-steering-* options */
+    const char *steering_profile; /* sf: one .sfsteer file (or a name in com-steering/profiles) carrying both slots' vectors, scales and think/answer gates; the only V4.1 steering admission */
     int power_percent;
     uint32_t ssd_streaming_cache_experts;
     uint64_t ssd_streaming_cache_bytes;
@@ -272,6 +268,7 @@ int ds4_engine_model_id(ds4_engine *e);
 const char *ds4_backend_name(ds4_backend backend);
 bool ds4_think_mode_enabled(ds4_think_mode mode);
 int ds4_think_mode_level(ds4_think_mode mode);
+int ds4_think_mode_effort_level(ds4_think_mode mode); /* sf: level in the V4.1 prompt */
 bool ds4_think_mode_parse_level(const char *text, ds4_think_mode *out);
 const char *ds4_think_mode_name(ds4_think_mode mode);
 const char *ds4_think_max_prefix(void);
@@ -384,6 +381,14 @@ int ds4_session_set_think_level(ds4_session *s, int level);
 float ds4_session_directional_steering_ffn(ds4_session *s);
 /* Change steering for future evaluation without rebuilding the existing KV
  * state. Live changes are currently limited to non-distributed sessions. */
+/* sf: 630 per-session steering switch: on by default when a profile is loaded;
+ * a change drops the session's live KV. Returns 0 on success. */
+int ds4_session_set_steering(ds4_session *s, bool on);
+bool ds4_session_steering(const ds4_session *s);
+/* sf: 650 the server keeps steered disk entries in a store bound to the
+ * profile's bytes; only a frontend that does so may allow steered payloads. */
+void ds4_session_set_persist_steered(ds4_session *s, bool on);
+const char *ds4_engine_steering_profile_path(const ds4_engine *e);
 int ds4_session_set_directional_steering_ffn(ds4_session *s, float scale);
 void ds4_session_set_progress(ds4_session *s, ds4_session_progress_fn fn, void *ud);
 /* UI-only progress. It may report fine-grained progress inside a prefill chunk;
@@ -456,6 +461,7 @@ ds4_session *ds4_session_new_test_checkpoint(const int *tokens, int n);
 void ds4_session_free_test_checkpoint(ds4_session *s);
 /* Attach synthetic image identities to a test checkpoint (copies
  * token_start/row-count/fingerprint per span).  Not usable for inference. */
+void ds4_session_set_test_steering(ds4_session *s, bool on);
 void ds4_session_set_test_images(ds4_session *s,
                                  const ds4_vision_span *images, size_t n);
 int ds4_session_argmax(ds4_session *s);

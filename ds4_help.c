@@ -208,16 +208,18 @@ static void print_sampling(FILE *fp, const help_colors *c, bool full, ds4_help_t
     fputc('\n', fp);
 }
 
-static void print_steering(FILE *fp, const help_colors *c) {
+static void print_steering(FILE *fp, const help_colors *c, ds4_help_tool tool) {
     title(fp, c, "Directional Steering");
-    opt(fp, c, "--dir-steering-file FILE", "Load one f32 direction per layer: 40x5120 on V4.1, row 0 zero, other rows unit or zero.");
-    opt(fp, c, "--dir-steering-ffn F", "Apply steering after FFN outputs (V4 hook; V4.1 refuses a nonzero value). Default with file: 1");
-    opt(fp, c, "--dir-steering-residual F", "Steer the V4.1 attention-input fold (weighted HC fold, after Engram, before the norm): h -= F*d*dot(d,h). Default 0. 4 and 8 were screening candidates, not a validated default.");
-    opt(fp, c, "--dir-steering-file-2 FILE", "V4.1 second direction (same format), folded after the first at the same site. Needs --dir-steering-residual-2.");
-    opt(fp, c, "--dir-steering-residual-2 F", "Scale of the second fold, constant over layers. Default 0 (second file unused). Engine open prints the median |cos| to the first direction: near 0 composes as an exact 2D removal, near 1 folds one axis twice.");
-    opt(fp, c, "--dir-steering-attn F","Apply steering after attention outputs (V4 hook; V4.1 refuses a nonzero value). Default: 0");
-    opt(fp, c, "--steering-profile NAME|FILE", "One .sfsteer file (or a name in com-steering/profiles) carrying both slots' vectors, scales and think/answer gates; implies --allow-v41-steering and replaces the options above.");
-    opt(fp, c, "--allow-v41-steering", "Lift the V4.1 startup refusal for --dir-steering-file (single-box Metal); admits the file, --dir-steering-residual applies the edit.");
+    if (tool == DS4_HELP_DS4) {
+        opt(fp, c, "--dir-steering-file FILE", "Load one f32 direction vector per layer. V4.1 refuses it at startup: steer V4.1 with --steering-profile.");
+        opt(fp, c, "--dir-steering-ffn F", "Apply steering after FFN outputs. Default with file: 1");
+        opt(fp, c, "--dir-steering-attn F", "Apply steering after attention outputs. Default: 0");
+    }
+    if (tool == DS4_HELP_SERVER) {
+        opt(fp, c, "--steering-profile-on-request NAME|FILE", "Load one .sfsteer file (or a name in com-steering/profiles), off by default: a request turns it on with a -steering model id (deepseek-v4.1-flash-steering, deepseek-chat-steering, deepseek-reasoner-steering). Not with TP or distributed roles. The CLI/eval --steering-profile means always on.");
+    } else {
+        opt(fp, c, "--steering-profile NAME|FILE", "One .sfsteer file (or a name in com-steering/profiles) carrying both slots' vectors, scales and think/answer gates, applied to every prompt; the only way to steer V4.1 (com-steering/make.md builds one).");
+    }
     fputc('\n', fp);
 }
 
@@ -319,8 +321,8 @@ static void print_server_thinking(FILE *fp, const help_colors *c) {
 
 static void print_kv_cache(FILE *fp, const help_colors *c) {
     title(fp, c, "Disk KV Cache");
-    opt(fp, c, "--kv-disk-dir DIR", "Enable disk KV checkpoints in DIR.");
-    opt(fp, c, "--kv-disk-space-mb N", "Disk budget. Default when enabled: 4096");
+    opt(fp, c, "--kv-disk-dir DIR", "Enable disk KV checkpoints in DIR. With --steering-profile-on-request, steered requests use DIR/steering, emptied when the profile's bytes change.");
+    opt(fp, c, "--kv-disk-space-mb N", "Disk budget, applied to each store (so up to twice N with a steering profile). Default when enabled: 4096");
     opt(fp, c, "--kv-cache-min-tokens N", "Do not save/load checkpoints shorter than N. Default: 512");
     opt(fp, c, "--kv-cache-cold-max-tokens N", "Save cold first prompts up to N tokens. 0 disables. Default: 30000");
     opt(fp, c, "--kv-cache-continued-interval-tokens N", "Save aligned continued frontiers. 0 disables. Default: 10000");
@@ -383,7 +385,7 @@ static bool tool_has_topic(ds4_help_tool tool, const char *topic) {
     if (streq(topic, "sampling"))
         return tool == DS4_HELP_DS4 || tool == DS4_HELP_EVAL;
     if (streq(topic, "steering"))
-        return tool == DS4_HELP_DS4 || tool == DS4_HELP_SERVER;
+        return tool == DS4_HELP_DS4 || tool == DS4_HELP_SERVER || tool == DS4_HELP_EVAL;
     switch (tool) {
     case DS4_HELP_DS4:
         return streq(topic, "diagnostics") || streq(topic, "commands");
@@ -474,7 +476,7 @@ static void print_topic(FILE *fp, const help_colors *c, ds4_help_tool tool, cons
     if (streq(topic, "all")) {
         print_model_runtime(fp, c, tool, true);
         if (tool_has_topic(tool, "sampling")) print_sampling(fp, c, true, tool);
-        if (tool_has_topic(tool, "steering")) print_steering(fp, c);
+        if (tool_has_topic(tool, "steering")) print_steering(fp, c, tool);
         print_distributed(fp, c);
         if (tool == DS4_HELP_DS4) {
             print_cli_specific(fp, c, true);
@@ -493,7 +495,7 @@ static void print_topic(FILE *fp, const help_colors *c, ds4_help_tool tool, cons
 
     if (streq(topic, "runtime")) print_model_runtime(fp, c, tool, true);
     else if (streq(topic, "sampling")) print_sampling(fp, c, true, tool);
-    else if (streq(topic, "steering")) print_steering(fp, c);
+    else if (streq(topic, "steering")) print_steering(fp, c, tool);
     else if (streq(topic, "distributed")) print_distributed(fp, c);
     else if (tool == DS4_HELP_DS4 && streq(topic, "diagnostics")) print_cli_diagnostics(fp, c);
     else if (tool == DS4_HELP_DS4 && streq(topic, "commands")) print_cli_commands(fp, c);

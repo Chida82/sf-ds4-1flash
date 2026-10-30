@@ -210,6 +210,7 @@ static void buf_puts_content(buf *b, text_ranges *r, const char *s) {
 /* Tokenize `text`, which starts at byte `offset` of the render `r` describes. */
 static void tokenize_rendered(ds4_engine *e, const char *text, size_t offset,
                               const text_ranges *r, ds4_tokens *out) {
+    if (!e) return; /* sf: request parsers run without an engine in the unit tests */
     ds4_tokenize_rendered_chat_ranges(e, text, offset, r ? r->v : NULL, r ? r->len : 0, out);
 }
 
@@ -813,7 +814,7 @@ typedef struct {
 static void tool_memory_attach_to_messages(server *s, chat_msgs *msgs,
                                            tool_replay_stats *stats);
 static bool tool_memory_has_id(server *s, const char *id);
-static void kv_cache_restore_tool_memory_for_messages(server *s, const chat_msgs *msgs);
+static void kv_cache_restore_tool_memory_for_messages(server *s, bool steering, const chat_msgs *msgs);
 
 typedef struct {
     char **v;
@@ -840,6 +841,7 @@ typedef struct {
     size_t image_count;
     char *model;
     bool model_from_request;
+    bool steering;  /* sf: 640 the model id asked for the loaded steering profile */
     stop_list stops;
     char *raw_body;
     char *prompt_text;
@@ -1077,26 +1079,20 @@ static ds4_think_mode think_mode_from_enabled(bool enabled, ds4_think_mode effor
 
 static bool parse_reasoning_effort_name(const char *s, ds4_think_mode *out) {
     if (!s) return false;
-    if (!strcmp(s, "max")) {
-        *out = DS4_THINK_MAX;
-        return true;
-    }
-    if (!strcmp(s, "xhigh") || !strcmp(s, "high")) {
-        *out = DS4_THINK_HIGH;
-        return true;
-    }
-    if (!strcmp(s, "medium")) {
-        *out = DS4_THINK_MEDIUM;
-        return true;
-    }
-    if (!strcmp(s, "low") || !strcmp(s, "minimal")) {
-        /* "minimal" is the smallest non-zero level; callers that need *no*
-         * reasoning must use "none" instead. */
-        *out = DS4_THINK_LOW;
-        return true;
-    }
-    if (!strcmp(s, "none")) {
-        *out = DS4_THINK_NONE;
+    /* sf: one V4.1 level per name (OpenSpec 610). minimal means no thinking,
+     * like none; high and max keep their modes, which render 75 and 100. */
+    static const struct { const char *name; ds4_think_mode mode; } names[] = {
+        {"none",    DS4_THINK_NONE},
+        {"minimal", DS4_THINK_NONE},
+        {"low",     (ds4_think_mode)(DS4_THINK_LEVEL_BASE + 25)},
+        {"medium",  (ds4_think_mode)(DS4_THINK_LEVEL_BASE + 50)},
+        {"high",    DS4_THINK_HIGH},
+        {"xhigh",   (ds4_think_mode)(DS4_THINK_LEVEL_BASE + 90)},
+        {"max",     DS4_THINK_MAX},
+    };
+    for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
+        if (strcmp(s, names[i].name)) continue;
+        *out = names[i].mode;
         return true;
     }
     return false;
@@ -1225,12 +1221,28 @@ static bool parse_output_config_effort(const char **p, ds4_think_mode *effort) {
     return true;
 }
 
+/* sf: 640 a "-steering" suffix asks for the loaded steering profile; the
+ * base id keeps its own meaning. Returns whether the suffix is present. */
+static bool model_id_split(const char *id, size_t *base_len) {
+    static const char suffix[] = "-steering";
+    const size_t n = id ? strlen(id) : 0, k = sizeof(suffix) - 1;
+    const bool steering = n > k && !strcmp(id + n - k, suffix);
+    if (base_len) *base_len = steering ? n - k : n;
+    return steering;
+}
+
+static bool model_base_is(const char *id, const char *base) {
+    size_t n;
+    model_id_split(id, &n);
+    return id && strlen(base) == n && !strncmp(id, base, n);
+}
+
 static bool model_alias_disables_thinking(const char *model) {
-    return model && !strcmp(model, "deepseek-chat");
+    return model_base_is(model, "deepseek-chat");
 }
 
 static bool model_alias_enables_thinking(const char *model) {
-    return model && !strcmp(model, "deepseek-reasoner");
+    return model_base_is(model, "deepseek-reasoner");
 }
 
 static server_model_syntax server_model_syntax_for_engine(ds4_engine *engine) {
@@ -1245,10 +1257,9 @@ static const char *server_model_id_from_engine(ds4_engine *engine) {
 
 /* sf-ablate(server): the Qwen3.8, GLM and V4 Flash/PRO model ids are gone; one model, one id (deepseek-chat/-reasoner stay as thinking switches) */
 static bool server_model_alias_known(const char *id) {
-    return id &&
-           (!strcmp(id, "deepseek-v4.1-flash") ||
-            !strcmp(id, "deepseek-chat") ||
-            !strcmp(id, "deepseek-reasoner"));
+    return model_base_is(id, "deepseek-v4.1-flash") ||
+           model_base_is(id, "deepseek-chat") ||
+           model_base_is(id, "deepseek-reasoner");
 }
 
 static void stop_list_clear(stop_list *stops) {
@@ -3726,7 +3737,7 @@ static bool parse_chat_request(ds4_engine *e, server *s, const char *body, int d
     if (!got_thinking && model_alias_enables_thinking(r->model)) thinking_enabled = true;
     r->think_mode = ds4_think_mode_for_context(
         think_mode_from_enabled(thinking_enabled, reasoning_effort), ctx_size);
-    kv_cache_restore_tool_memory_for_messages(s, &msgs);
+    kv_cache_restore_tool_memory_for_messages(s, model_id_split(r->model, NULL), &msgs);
     tool_memory_attach_to_messages(s, &msgs, &r->tool_replay);
     const char *active_tool_schemas = r->has_tools ? tool_schemas : NULL;
     r->prompt_preserves_reasoning =
@@ -3952,7 +3963,7 @@ static bool parse_anthropic_request(ds4_engine *e, server *s, const char *body, 
         request_free(r);
         return false;
     }
-    kv_cache_restore_tool_memory_for_messages(s, &msgs);
+    kv_cache_restore_tool_memory_for_messages(s, model_id_split(r->model, NULL), &msgs);
     tool_memory_attach_to_messages(s, &msgs, &r->tool_replay);
     anthropic_prepare_live_continuation(s, r, &msgs);
     const char *active_tool_schemas = r->has_tools ? tool_schemas : NULL;
@@ -4983,7 +4994,7 @@ static bool parse_responses_request(ds4_engine *e, server *s, const char *body, 
         request_free(r);
         return false;
     }
-    kv_cache_restore_tool_memory_for_messages(s, &msgs);
+    kv_cache_restore_tool_memory_for_messages(s, model_id_split(r->model, NULL), &msgs);
     tool_memory_attach_to_messages(s, &msgs, &r->tool_replay);
     r->prompt_preserves_reasoning =
         chat_history_uses_tool_context(&msgs, active_tool_schemas);
@@ -9386,9 +9397,11 @@ struct server {
     pthread_t decode_thread;
     int default_tokens;
     kv_disk_cache kv;
+    kv_disk_cache kv_steering;  /* sf: 650 <kv>/steering, open only with a profile */
     tool_memory tool_mem;
     server_image_cache image_cache; /* Protected by inference_mu. */
     bool disable_exact_dsml_tool_replay;
+    bool steering_on_request;  /* sf: 640 a profile is loaded, off until a request asks */
     bool enable_cors;
     pthread_mutex_t tool_mu;
     pthread_mutex_t kv_mu;
@@ -10328,8 +10341,84 @@ static bool kv_read_header(FILE *fp, kv_entry *e, uint32_t *text_bytes) {
 
 
 
-static void kv_cache_restore_tool_memory_for_messages(server *s, const chat_msgs *msgs) {
-    if (!s || s->disable_exact_dsml_tool_replay || !s->kv.enabled || !msgs) return;
+/* sf: 650 bind the steering store <dir> to the profile file's bytes. The
+ * marker <dir>/PROFILE holds "sha1 <40 hex>" and "name <basename>". When the
+ * recorded digest differs, or is missing while entries exist, every entry file
+ * (only names the store itself would list) in <dir> is deleted; nothing else
+ * is ever unlinked. The marker is then rewritten through a rename. */
+static bool kv_steering_store_bind(const char *dir, const char *profile_path) {
+    if (!dir || !profile_path) return false;
+    FILE *fp = fopen(profile_path, "rb");
+    if (!fp) return false;
+    buf bytes = {0};
+    char chunk[65536];
+    size_t n;
+    while ((n = fread(chunk, 1, sizeof(chunk), fp)) > 0) buf_append(&bytes, chunk, n);
+    const bool read_ok = !ferror(fp);
+    fclose(fp);
+    if (!read_ok) {
+        buf_free(&bytes);
+        return false;
+    }
+    char sha[41];
+    ds4_kvstore_sha1_bytes_hex(bytes.ptr ? bytes.ptr : "", bytes.len, sha);
+    buf_free(&bytes);
+    if (mkdir(dir, 0700) != 0 && errno != EEXIST) return false;
+
+    char *marker = path_join(dir, "PROFILE");
+    char recorded[41] = "";
+    FILE *mf = fopen(marker, "r");
+    if (mf) {
+        char line[128];
+        if (fgets(line, sizeof(line), mf) && !strncmp(line, "sha1 ", 5) &&
+            strlen(line) >= 45) {
+            memcpy(recorded, line + 5, 40);
+            recorded[40] = '\0';
+        }
+        fclose(mf);
+    }
+    if (strcmp(recorded, sha) != 0) {
+        int removed = 0;
+        DIR *d = opendir(dir);
+        struct dirent *de;
+        while (d && (de = readdir(d)) != NULL) {
+            char entry_sha[41];
+            if (!sha_hex_name(de->d_name, entry_sha)) continue;
+            char *path = path_join(dir, de->d_name);
+            if (unlink(path) == 0) removed++;
+            free(path);
+        }
+        if (d) closedir(d);
+        if (removed > 0 || recorded[0])
+            server_log(DS4_LOG_DEFAULT,
+                       "ds4-server: steering KV store: profile changed, removed %d entries", removed);
+        char *tmp = path_join(dir, "PROFILE.tmp");
+        FILE *out = fopen(tmp, "w");
+        const char *base = strrchr(profile_path, '/');
+        bool ok = out && fprintf(out, "sha1 %s\nname %s\n", sha, base ? base + 1 : profile_path) > 0;
+        if (out && fclose(out) != 0) ok = false;
+        ok = ok && rename(tmp, marker) == 0;
+        if (!ok) unlink(tmp);
+        free(tmp);
+        if (!ok) {
+            free(marker);
+            return false;
+        }
+    }
+    free(marker);
+    return true;
+}
+
+/* sf: 650 steered and unsteered sessions never share disk entries: a steered
+ * session's store is <kv>/steering, bound to the loaded profile's bytes. */
+static kv_disk_cache *server_kv(server *s, bool steering) {
+    return steering ? &s->kv_steering : &s->kv;
+}
+
+static void kv_cache_restore_tool_memory_for_messages(server *s, bool steering,
+                                                      const chat_msgs *msgs) {
+    if (!s || s->disable_exact_dsml_tool_replay || !server_kv(s, steering)->enabled || !msgs) return;
+    const kv_disk_cache *kc = server_kv(s, steering);
     stop_list wanted = {0};
     collect_tool_call_ids(msgs, &wanted);
     if (wanted.len == 0) return;
@@ -10338,7 +10427,7 @@ static void kv_cache_restore_tool_memory_for_messages(server *s, const chat_msgs
      * Flash/Pro shapes even when the rendered chat text is identical. */
     uint8_t model_id = s->engine ? (uint8_t)ds4_engine_model_id(s->engine) : 0;
 
-    DIR *d = opendir(s->kv.dir);
+    DIR *d = opendir(kc->dir);
     if (!d) {
         id_list_free(&wanted);
         return;
@@ -10348,7 +10437,7 @@ static void kv_cache_restore_tool_memory_for_messages(server *s, const chat_msgs
         char sha[41];
         if (!sha_hex_name(de->d_name, sha)) continue;
         (void)sha;
-        char *path = path_join(s->kv.dir, de->d_name);
+        char *path = path_join(kc->dir, de->d_name);
         FILE *fp = fopen(path, "rb");
         free(path);
         if (!fp) continue;
@@ -10512,7 +10601,7 @@ static bool kv_cache_store_live_prefix_text(server *s, server_slot *slot,
         return false;
     }
     pthread_mutex_lock(&s->kv_mu);
-    bool ok = ds4_kvstore_store_live_prefix_text(&s->kv, s->engine,
+    bool ok = ds4_kvstore_store_live_prefix_text(server_kv(s, ds4_session_steering(slot->session)), s->engine,
                                                   slot->session,
                                                   tokens, store_len, reason,
                                                   cache_text_override,
@@ -10590,7 +10679,7 @@ static void kv_cache_restore_suppressed_continued(kv_disk_cache *kc,
 static int kv_cache_slot_continued_target(server *s, server_slot *slot,
                                           int live_tokens) {
     if (!s || !slot) return 0;
-    kv_disk_cache view = s->kv;
+    kv_disk_cache view = *server_kv(s, ds4_session_steering(slot->session));
     view.continued_last_store_tokens = slot->continued_last_store_tokens;
     return kv_cache_continued_store_target(&view, live_tokens);
 }
@@ -10640,7 +10729,7 @@ static void kv_cache_discard_failed_disk_entry(server *s, server_slot *slot,
 
 static void kv_cache_maybe_store_continued(server *s, server_slot *slot) {
     if (!s || !slot) return;
-    kv_disk_cache *kc = &s->kv;
+    kv_disk_cache *kc = server_kv(s, ds4_session_steering(slot->session));
     const ds4_tokens *tokens = ds4_session_tokens(slot->session);
     if (!tokens) return;
     const int target = kv_cache_slot_continued_target(s, slot, tokens->len);
@@ -10678,7 +10767,7 @@ static int kv_cache_try_load_text(server *s, server_slot *slot,
         ds4_session_invalidate(slot->session);
     }
     pthread_mutex_lock(&s->kv_mu);
-    int loaded = ds4_kvstore_try_load_text(&s->kv, s->engine, slot->session,
+    int loaded = ds4_kvstore_try_load_text(server_kv(s, ds4_session_steering(slot->session)), s->engine, slot->session,
                                            prompt_text, ranges ? ranges->v : NULL,
                                            ranges ? ranges->len : 0, effective_prompt, &lr,
                                            &hooks, responses_protocol);
@@ -10853,6 +10942,9 @@ static slot_reuse slot_probe_reuse_locked(server *s, server_slot *slot,
                                                        req->images,
                                                        req->image_count))
         return pr;
+    /* sf: 640 live state computed under the other steering setting is never
+     * reused; the switch in generate_job drops it before the request runs. */
+    if (ds4_session_steering(slot->session) != req->steering) return pr;
     const char *ptext = req->prompt_text;
     const size_t plen = ptext ? strlen(ptext) : 0;
 
@@ -11237,6 +11329,7 @@ static uint64_t trace_begin(
             j->req.min_p,
             j->req.ignore_eos ? 1 : 0,
             (unsigned long long)j->req.seed);
+    fprintf(s->trace, "steering: %s\n", j->req.steering ? "on" : "off");  /* sf: 640 */
     fprintf(s->trace, "stream_include_usage: %d\n",
             j->req.stream_include_usage ? 1 : 0);
     trace_write_cache_diag(s, cache_diag, &j->req.tool_replay, cached,
@@ -12471,6 +12564,8 @@ static void *decode_worker_main(void *arg) {
  * immediately continue to the real prompt.  The live graph therefore always
  * moves forward. */
 static void generate_job_inner(server *s, server_slot *slot, job *j) {
+    /* sf: 650 the store of the slot's steering, set by generate_job */
+    kv_disk_cache *kv = server_kv(s, ds4_session_steering(slot->session));
     char err[160];
     err[0] = '\0';
     const bool multimodal = j->req.image_count != 0;
@@ -12677,8 +12772,8 @@ static void generate_job_inner(server *s, server_slot *slot, job *j) {
                    j->req.image_count, cached, prompt_for_sync->len);
     }
     if (cached == 0) slot->continued_last_store_tokens = 0;
-    if (!multimodal && s->kv.enabled && cached == 0 &&
-        old_pos >= s->kv.opt.min_tokens) {
+    if (!multimodal && kv->enabled && cached == 0 &&
+        old_pos >= kv->opt.min_tokens) {
         /* Loading a disk snapshot replaces the live Metal session.  Persist the
          * current checkpoint first, otherwise a cache hit for an older prefix
          * would silently discard the newer conversation state. */
@@ -12734,6 +12829,10 @@ static void generate_job_inner(server *s, server_slot *slot, job *j) {
     char req_flags[64];
     log_flags(req_flags, sizeof(req_flags), responses_protocol,
               j->req.has_tools, false, false, false);
+    if (j->req.steering) {  /* sf: 640 */
+        const size_t used = strlen(req_flags);
+        snprintf(req_flags + used, sizeof(req_flags) - used, "%sSTEER", used ? " " : "");
+    }
     if (responses_live_continuation) {
         server_log(DS4_LOG_PREFILL,
                    "ds4-server: responses live continuation RESPPROTO match=%s ids=%d cached=%d prompt=%d",
@@ -12781,19 +12880,19 @@ static void generate_job_inner(server *s, server_slot *slot, job *j) {
 
     int cold_store_len = 0;
     if (!multimodal && cached == 0 &&
-        s->kv.enabled &&
-        prompt_for_sync->len >= s->kv.opt.min_tokens &&
-        s->kv.opt.cold_max_tokens > 0 &&
-        prompt_for_sync->len <= s->kv.opt.cold_max_tokens)
+        kv->enabled &&
+        prompt_for_sync->len >= kv->opt.min_tokens &&
+        kv->opt.cold_max_tokens > 0 &&
+        prompt_for_sync->len <= kv->opt.cold_max_tokens)
     {
-        const int anchor = kv_cache_chat_anchor_pos(&s->kv, prompt_for_sync,
+        const int anchor = kv_cache_chat_anchor_pos(kv, prompt_for_sync,
                                                     ds4_token_user(s->engine),
                                                     ds4_token_assistant(s->engine));
-        cold_store_len = anchor >= s->kv.opt.min_tokens ?
-                         anchor : kv_cache_store_len(&s->kv, prompt_for_sync->len);
+        cold_store_len = anchor >= kv->opt.min_tokens ?
+                         anchor : kv_cache_store_len(kv, prompt_for_sync->len);
     }
     int suppressed_continued_last = -1;
-    if (cold_store_len >= s->kv.opt.min_tokens) {
+    if (cold_store_len >= kv->opt.min_tokens) {
         /* A cold checkpoint can land exactly on the continued-checkpoint
          * frontier.  The prefill progress callback would then write the same
          * prefix as "continued" while we are intentionally stopping there to
@@ -12804,8 +12903,8 @@ static void generate_job_inner(server *s, server_slot *slot, job *j) {
             kv_cache_slot_suppress_continued(s, slot, cold_store_len);
     }
 
-    if (s->kv.enabled &&
-        cold_store_len >= s->kv.opt.min_tokens &&
+    if (kv->enabled &&
+        cold_store_len >= kv->opt.min_tokens &&
         cold_store_len < prompt_for_sync->len)
     {
         ds4_tokens prefix = {0};
@@ -13813,8 +13912,16 @@ static void generate_job(server *s, server_slot *slot, job *j) {
     pthread_mutex_unlock(&s->model_mu);
 
     ds4_session_set_cancel(slot->session, job_cancelled, j);
-    ds4_session_set_think_level(slot->session, ds4_think_mode_level(j->req.think_mode));  /* sf: 419 */
-    if (!job_cancelled(j)) generate_job_inner(s, slot, j);
+    ds4_session_set_think_level(slot->session, ds4_think_mode_effort_level(j->req.think_mode));  /* sf: 419 */
+    /* sf: 640 the request's steering, before any sync: a change drops the
+     * slot's live KV and the live tool state that described it. */
+    bool steering_ok = true;
+    if (ds4_session_steering(slot->session) != j->req.steering) {
+        request_live_state_clear(s, slot);
+        steering_ok = ds4_session_set_steering(slot->session, j->req.steering) == 0;
+        if (!steering_ok) http_error(j->fd, s->enable_cors, 500, "cannot set the session's steering");
+    }
+    if (steering_ok && !job_cancelled(j)) generate_job_inner(s, slot, j);
     ds4_session_set_cancel(slot->session, NULL, NULL);
 
     pthread_mutex_lock(&s->model_mu);
@@ -14200,13 +14307,41 @@ static bool send_model(server *s, int fd, const char *id) {
     return ok;
 }
 
+/* sf: 640 the steering id is listed only while a profile is loaded. */
+static void append_models_list(buf *b, const server *s) {
+    buf_puts(b, "{\"object\":\"list\",\"data\":[");
+    append_model_json(b, s, server_model_id_from_engine(s->engine));
+    if (s->steering_on_request) {
+        buf_putc(b, ',');
+        append_model_json(b, s, "deepseek-v4.1-flash-steering");
+    }
+    buf_puts(b, "]}\n");
+}
+
+/* sf: 640 a -steering id needs the loaded profile and a known base id. Sets
+ * r->steering; false with a message for a 400. */
+static bool request_steering_check(const server *s, request *r, char *err, size_t errlen) {
+    r->steering = model_id_split(r->model, NULL);
+    if (!r->steering) return true;
+    if (!server_model_alias_known(r->model)) {
+        snprintf(err, errlen, "unknown model: %s", r->model);
+        return false;
+    }
+    if (!s->steering_on_request) {
+        snprintf(err, errlen, "model %s needs a server started with --steering-profile-on-request",
+                 r->model);
+        return false;
+    }
+    return true;
+}
+
+static bool server_model_id_served(const server *s, const char *id) {
+    return server_model_alias_known(id) && (!model_id_split(id, NULL) || s->steering_on_request);
+}
+
 static bool send_models(server *s, int fd) {
     buf b = {0};
-    buf_puts(&b, "{\"object\":\"list\",\"data\":[");
-    {
-        append_model_json(&b, s, server_model_id_from_engine(s->engine));
-    }
-    buf_puts(&b, "]}\n");
+    append_models_list(&b, s);
     bool ok = http_response(fd, s->enable_cors, 200, "application/json", b.ptr);
     buf_free(&b);
     return ok;
@@ -14342,7 +14477,7 @@ static void *client_main(void *arg) {
     const size_t model_path_prefix_len = strlen(model_path_prefix);
     if (!strcmp(hr.method, "GET") &&
         !strncmp(hr.path, model_path_prefix, model_path_prefix_len) &&
-        server_model_alias_known(hr.path + model_path_prefix_len))
+        server_model_id_served(s, hr.path + model_path_prefix_len))
     {
         send_model(s, fd, hr.path + model_path_prefix_len);
         http_request_free(&hr);
@@ -14379,6 +14514,11 @@ static void *client_main(void *arg) {
     if (!req.model_from_request) {
         free(req.model);
         req.model = xstrdup(server_model_id_from_engine(s->engine));
+    }
+    if (!request_steering_check(s, &req, err, sizeof(err))) {
+        http_error(fd, s->enable_cors, 400, err);
+        request_free(&req);
+        goto done;
     }
     if (request_exceeds_context(&req, ctx_size)) {
         http_error_context_length_exceeded(fd, s->enable_cors, &req, req.prompt.len, ctx_size);
@@ -14472,7 +14612,26 @@ typedef struct {
     bool enable_cors;
     int batched_sessions;
     int mixed_prefill_quantum;
+    bool steering_on_request;      /* sf: 640 --steering-profile-on-request */
+    bool steering_profile_legacy;  /* sf: 640 the CLI flag, refused on the server */
 } server_config;
+
+/* sf: 640 the steering configurations the server refuses before loading. */
+static bool server_config_check_steering(const server_config *c, char *err, size_t errlen) {
+    if (c->steering_profile_legacy) {
+        snprintf(err, errlen, "--steering-profile is not a server option; use "
+                 "--steering-profile-on-request NAME|FILE, then select steering per request "
+                 "with a -steering model id (e.g. deepseek-v4.1-flash-steering)");
+        return false;
+    }
+    if (c->steering_on_request &&
+        (c->engine.tp.role != DS4_TP_NONE || c->engine.distributed.role != DS4_DISTRIBUTED_NONE)) {
+        snprintf(err, errlen, "--steering-profile-on-request is not supported with tensor-parallel "
+                 "or distributed roles: the per-request switch does not reach other ranks");
+        return false;
+    }
+    return true;
+}
 
 static int parse_int_arg(const char *s, const char *opt) {
     char *end = NULL;
@@ -14494,15 +14653,7 @@ static int parse_nonneg_int_arg(const char *s, const char *opt) {
     return (int)v;
 }
 
-static float parse_float_arg(const char *s, const char *opt, float minv, float maxv) {
-    char *end = NULL;
-    float v = strtof(s, &end);
-    if (!s[0] || *end || v < minv || v > maxv) {
-        server_log(DS4_LOG_DEFAULT, "ds4-server: invalid value for %s: %s", opt, s);
-        exit(2);
-    }
-    return v;
-}
+/* sf-ablate(steering): parse_float_arg removed with the server's --dir-steering-ffn/-attn, its only callers */
 
 static const char *need_arg(int *i, int argc, char **argv, const char *opt) {
     if (*i + 1 >= argc) {
@@ -14549,6 +14700,7 @@ static void server_close_resources(server *s) {
         s->trace = NULL;
     }
     kv_cache_close(&s->kv);
+    kv_cache_close(&s->kv_steering);
     tool_memory_free(&s->tool_mem);
     server_image_cache_clear(&s->image_cache);
     for (int i = 0; i < s->slot_count; i++) {
@@ -14611,7 +14763,6 @@ static server_config parse_options(int argc, char **argv) {
     };
     c.kv_cache = kv_cache_default_options();
 
-    bool directional_steering_scale_set = false;
     for (int i = 1; i < argc; i++) {
         const char *arg = argv[i];
         if (!strcmp(arg, "-h") || !strcmp(arg, "--help")) {
@@ -14748,31 +14899,15 @@ static server_config parse_options(int argc, char **argv) {
                 server_log(DS4_LOG_DEFAULT, "ds4-server: --power must be between 1 and 100");
                 exit(2);
             }
-        } else if (!strcmp(arg, "--dir-steering-file")) {
-            c.engine.directional_steering_file = need_arg(&i, argc, argv, arg);
-        } else if (!strcmp(arg, "--dir-steering-file-2")) {
-            /* sf: rank-2 second direction file (orthogonal to the first) */
-            c.engine.directional_steering_file2 = need_arg(&i, argc, argv, arg);
-        } else if (!strcmp(arg, "--allow-v41-steering")) {
-            c.engine.allow_v41_steering = true;
-        } else if (!strcmp(arg, "--steering-profile")) {
-            /* sf: one .sfsteer file or a name in com-steering/profiles: vectors, scales, gates */
+        /* sf-ablate(steering): upstream's --dir-steering-file/-ffn/-attn removed; the server steers only through a profile */
+        } else if (!strcmp(arg, "--steering-profile-on-request")) {
+            /* sf: 640 one .sfsteer file or a name in com-steering/profiles, loaded
+             * and off; a request turns it on with a -steering model id */
             c.engine.steering_profile = need_arg(&i, argc, argv, arg);
-        } else if (!strcmp(arg, "--dir-steering-ffn")) {
-            c.engine.directional_steering_ffn = parse_float_arg(need_arg(&i, argc, argv, arg), arg, -100.0f, 100.0f);
-            directional_steering_scale_set = true;
-        } else if (!strcmp(arg, "--dir-steering-attn")) {
-            c.engine.directional_steering_attn = parse_float_arg(need_arg(&i, argc, argv, arg), arg, -100.0f, 100.0f);
-            directional_steering_scale_set = true;
-        } else if (!strcmp(arg, "--dir-steering-residual")) {
-            /* sf: 401 post-HC-fold residual site; setting it suppresses the ffn=1
-             * default so a residual-hook vector is not also applied at ffn. */
-            c.engine.directional_steering_residual = parse_float_arg(need_arg(&i, argc, argv, arg), arg, -100.0f, 100.0f);
-            directional_steering_scale_set = true;
-        } else if (!strcmp(arg, "--dir-steering-residual-2")) {
-            /* sf: rank-2 second orthogonal direction, constant scale at the residual site */
-            c.engine.directional_steering_residual2 = parse_float_arg(need_arg(&i, argc, argv, arg), arg, -100.0f, 100.0f);
-            directional_steering_scale_set = true;
+            c.steering_on_request = true;
+        } else if (!strcmp(arg, "--steering-profile")) {
+            (void)need_arg(&i, argc, argv, arg);
+            c.steering_profile_legacy = true;
         } else if (!strcmp(arg, "--warm-weights")) {
             c.engine.warm_weights = true;
         } else if (!strcmp(arg, "--metal")) {
@@ -14793,9 +14928,6 @@ static server_config parse_options(int argc, char **argv) {
         server_log(DS4_LOG_DEFAULT,
                    "ds4-server: --kv-cache-cold-max-tokens must be 0 or >= --kv-cache-min-tokens");
         exit(2);
-    }
-    if (c.engine.directional_steering_file && !directional_steering_scale_set) {
-        c.engine.directional_steering_ffn = 1.0f;
     }
     char tp_err[256];
     if (!ds4_tp_adopt_distributed_options(&c.engine.tp,
@@ -14822,6 +14954,11 @@ static server_config parse_options(int argc, char **argv) {
     if (c.engine.tp.role == DS4_TP_WORKER) {
         server_log(DS4_LOG_DEFAULT,
                    "ds4-server: --role worker is a serving mode; start tensor-parallel workers with ./ds4");
+        exit(2);
+    }
+    char steer_err[256];
+    if (!server_config_check_steering(&c, steer_err, sizeof(steer_err))) {
+        server_log(DS4_LOG_DEFAULT, "ds4-server: %s", steer_err);
         exit(2);
     }
     return c;
@@ -14922,6 +15059,7 @@ int main(int argc, char **argv) {
     s.last_prefill_slot = slot_count - 1;
     s.default_tokens = cfg.default_tokens;
     s.disable_exact_dsml_tool_replay = cfg.disable_exact_dsml_tool_replay;
+    s.steering_on_request = cfg.steering_on_request;
     s.tool_mem.max_entries = cfg.tool_memory_max_ids;
     s.enable_cors = cfg.enable_cors;
     s.slots = xmalloc((size_t)slot_count * sizeof(*s.slots));
@@ -14956,20 +15094,37 @@ int main(int argc, char **argv) {
             server_close_resources(&s);
             return 1;
         }
+        /* sf: 640 a loaded profile starts off: requests opt in */
+        if (ds4_session_set_steering(slot->session, false) != 0) {
+            server_close_resources(&s);
+            return 1;
+        }
     }
-
-    if (cfg.kv_disk_dir && (cfg.engine.directional_steering_residual != 0.0f ||
-                            cfg.engine.directional_steering_residual2 != 0.0f ||
-                            (cfg.engine.steering_profile && cfg.engine.steering_profile[0]))) {
-        /* sf: 401 cache entries carry no steering identity: a steered server
-         * runs without the disk cache, never reads or writes under its root,
-         * and leaves existing entries untouched. */
+    if (cfg.steering_on_request)
         server_log(DS4_LOG_DEFAULT,
-                   "ds4-server: persistent KV cache is not supported while directional steering is active; "
-                   "not opening %s (existing entries are left untouched)", cfg.kv_disk_dir);
-    } else if (cfg.kv_disk_dir) {
+                   "ds4-server: steering profile %s loaded, off by default; "
+                   "requests turn it on with a -steering model id", cfg.engine.steering_profile);
+
+    if (cfg.kv_disk_dir) {
         kv_cache_open(&s.kv, cfg.kv_disk_dir, cfg.kv_disk_space_mb,
                       cfg.kv_cache_reject_different_quant, cfg.kv_cache);
+    }
+    /* sf: 650 cache entries carry no steering identity, so steered sessions get
+     * their own store, <kv>/steering, emptied whenever the profile's bytes
+     * change; the root store never lists it. Same budget, applied per store. */
+    if (s.kv.enabled && s.steering_on_request) {
+        char *sdir = path_join(cfg.kv_disk_dir, "steering");
+        if (kv_steering_store_bind(sdir, ds4_engine_steering_profile_path(engine)) &&
+            kv_cache_open(&s.kv_steering, sdir, cfg.kv_disk_space_mb,
+                          cfg.kv_cache_reject_different_quant, cfg.kv_cache)) {
+            for (int i = 0; i < slot_count; i++)
+                ds4_session_set_persist_steered(s.slots[i].session, true);
+        } else {
+            server_log(DS4_LOG_WARNING,
+                       "ds4-server: steering KV store %s not opened; steered requests run without a disk cache",
+                       sdir);
+        }
+        free(sdir);
     }
     if (s.disable_exact_dsml_tool_replay) {
         server_log(DS4_LOG_DEFAULT,
@@ -15099,10 +15254,11 @@ int main(int argc, char **argv) {
     while (s.clients > 0) pthread_cond_wait(&s.clients_cv, &s.mu);
     pthread_mutex_unlock(&s.mu);
 
-    for (int i = 0; s.kv.enabled && i < s.slot_count; i++) {
+    for (int i = 0; i < s.slot_count; i++) {
         server_slot *slot = &s.slots[i];
+        const kv_disk_cache *kv = server_kv(&s, ds4_session_steering(slot->session));
         const ds4_tokens *tokens = ds4_session_tokens(slot->session);
-        if (!tokens || tokens->len < s.kv.opt.min_tokens) continue;
+        if (!kv->enabled || !tokens || tokens->len < kv->opt.min_tokens) continue;
         server_log(DS4_LOG_KVCACHE,
                    "ds4-server: persisting resident KV cache before shutdown slot=%d tokens=%d",
                    i, tokens->len);
@@ -15173,6 +15329,102 @@ static void test_mixed_prefill_quantum_option(void) {
 /* Reuse-aware slot routing: the probe must recognize every way a request
  * can reuse a slot's live state, and the router must steer requests that can
  * reuse nothing away from resident checkpoints. */
+static char *test_effort_render(const char *api, const char *model, const char *controls);
+static bool test_prompt_has_effort(const char *prompt, int level);
+
+/* sf: 640 steering selected by the model id: the ids, the 400s, the model
+ * list, the startup checks and the probe gate. */
+static void test_steering_on_request(void) {
+    size_t n = 0;
+    TEST_ASSERT(!model_id_split("deepseek-v4.1-flash", &n) && n == 19);
+    TEST_ASSERT(model_id_split("deepseek-v4.1-flash-steering", &n) && n == 19);
+    TEST_ASSERT(model_id_split("deepseek-chat-steering", &n) && n == 13);
+    TEST_ASSERT(!model_id_split("-steering", &n));
+    const char *known[] = {"deepseek-v4.1-flash", "deepseek-chat", "deepseek-reasoner",
+                           "deepseek-v4.1-flash-steering", "deepseek-chat-steering",
+                           "deepseek-reasoner-steering"};
+    for (size_t i = 0; i < sizeof(known) / sizeof(known[0]); i++)
+        TEST_ASSERT(server_model_alias_known(known[i]));
+    TEST_ASSERT(!server_model_alias_known("foo-steering"));
+    TEST_ASSERT(!server_model_alias_known("deepseek-chat-steering-steering"));
+    TEST_ASSERT(model_alias_disables_thinking("deepseek-chat-steering"));
+    TEST_ASSERT(model_alias_enables_thinking("deepseek-reasoner-steering"));
+    TEST_ASSERT(!model_alias_disables_thinking("deepseek-v4.1-flash-steering"));
+
+    /* The suffix keeps the base alias' thinking rule and 610's precedence. */
+    char *p = test_effort_render("chat", "deepseek-chat-steering", "");
+    TEST_ASSERT(test_prompt_has_effort(p, -1));
+    free(p);
+    p = test_effort_render("chat", "deepseek-chat-steering", "\"thinking\":true");
+    TEST_ASSERT(test_prompt_has_effort(p, 75));
+    free(p);
+
+    server s = {0};
+    char err[160];
+    request r = {0};
+    r.model = (char *)"deepseek-v4.1-flash";
+    TEST_ASSERT(request_steering_check(&s, &r, err, sizeof(err)) && !r.steering);
+    r.model = (char *)"deepseek-v4.1-flash-steering";
+    TEST_ASSERT(!request_steering_check(&s, &r, err, sizeof(err)));
+    TEST_ASSERT(strstr(err, "--steering-profile-on-request") != NULL);
+    r.model = (char *)"foo-steering";
+    TEST_ASSERT(!request_steering_check(&s, &r, err, sizeof(err)));
+    s.steering_on_request = true;
+    TEST_ASSERT(!request_steering_check(&s, &r, err, sizeof(err)));
+    TEST_ASSERT(strstr(err, "unknown model") != NULL);
+    r.model = (char *)"deepseek-reasoner-steering";
+    TEST_ASSERT(request_steering_check(&s, &r, err, sizeof(err)) && r.steering);
+    r.model = (char *)"deepseek-v4.1-flash";
+    TEST_ASSERT(request_steering_check(&s, &r, err, sizeof(err)) && !r.steering);
+
+    buf b = {0};
+    s.steering_on_request = false;
+    append_models_list(&b, &s);
+    TEST_ASSERT(strstr(b.ptr, "\"deepseek-v4.1-flash\"") && !strstr(b.ptr, "-steering"));
+    TEST_ASSERT(!server_model_id_served(&s, "deepseek-v4.1-flash-steering"));
+    buf_free(&b);
+    memset(&b, 0, sizeof(b));
+    s.steering_on_request = true;
+    append_models_list(&b, &s);
+    TEST_ASSERT(strstr(b.ptr, "\"deepseek-v4.1-flash\"") &&
+                strstr(b.ptr, "\"deepseek-v4.1-flash-steering\""));
+    TEST_ASSERT(server_model_id_served(&s, "deepseek-chat-steering"));
+    buf_free(&b);
+
+    server_config c = {0};
+    TEST_ASSERT(server_config_check_steering(&c, err, sizeof(err)));
+    c.steering_on_request = true;
+    TEST_ASSERT(server_config_check_steering(&c, err, sizeof(err)));
+    c.engine.tp.role = DS4_TP_LEADER;
+    TEST_ASSERT(!server_config_check_steering(&c, err, sizeof(err)));
+    c.engine.tp.role = DS4_TP_NONE;
+    c.engine.distributed.role = DS4_DISTRIBUTED_WORKER;
+    TEST_ASSERT(!server_config_check_steering(&c, err, sizeof(err)));
+    c.engine.distributed.role = DS4_DISTRIBUTED_NONE;
+    c.steering_profile_legacy = true;
+    TEST_ASSERT(!server_config_check_steering(&c, err, sizeof(err)));
+    TEST_ASSERT(strstr(err, "--steering-profile-on-request") != NULL);
+
+    /* Probe gate: a slot whose live state was computed under the other
+     * steering setting is reused by nothing; a matching slot keeps its score. */
+    int live_tok[64], ext_tok[65];
+    for (int i = 0; i < 64; i++) live_tok[i] = ext_tok[i] = i + 1;
+    ext_tok[64] = 500;
+    server_slot slot = {0};
+    slot.session = ds4_session_new_test_checkpoint(live_tok, 64);
+    job ext = {0};
+    for (int i = 0; i < 65; i++) ds4_tokens_push(&ext.req.prompt, ext_tok[i]);
+    TEST_ASSERT(slot_probe_reuse_locked(&s, &slot, &ext.req).reuse_tokens == 64);
+    ext.req.steering = true;
+    TEST_ASSERT(slot_probe_reuse_locked(&s, &slot, &ext.req).kind == REUSE_NONE);
+    ds4_session_set_test_steering(slot.session, true);
+    TEST_ASSERT(slot_probe_reuse_locked(&s, &slot, &ext.req).reuse_tokens == 64);
+    ext.req.steering = false;
+    TEST_ASSERT(slot_probe_reuse_locked(&s, &slot, &ext.req).kind == REUSE_NONE);
+    ds4_tokens_free(&ext.req.prompt);
+    ds4_session_free_test_checkpoint(slot.session);
+}
+
 static void test_slot_probe_and_routing_scores(void) {
     server s = {0};
     server_slot slots[3] = {0};
@@ -17075,12 +17327,15 @@ static void test_chat_ignore_eos_contract(void) {
 }
 
 static void test_reasoning_effort_mapping(void) {
-    ds4_think_mode mode = DS4_THINK_NONE;
-    TEST_ASSERT(parse_reasoning_effort_name("low", &mode) && mode == DS4_THINK_LOW);
-    TEST_ASSERT(parse_reasoning_effort_name("minimal", &mode) && mode == DS4_THINK_LOW);
-    TEST_ASSERT(parse_reasoning_effort_name("medium", &mode) && mode == DS4_THINK_MEDIUM);
+    ds4_think_mode mode = DS4_THINK_HIGH;
+    /* sf: OpenSpec 610 name table */
+    TEST_ASSERT(parse_reasoning_effort_name("none", &mode) && mode == DS4_THINK_NONE);
+    mode = DS4_THINK_HIGH;
+    TEST_ASSERT(parse_reasoning_effort_name("minimal", &mode) && mode == DS4_THINK_NONE);
+    TEST_ASSERT(parse_reasoning_effort_name("low", &mode) && ds4_think_mode_level(mode) == 25);
+    TEST_ASSERT(parse_reasoning_effort_name("medium", &mode) && ds4_think_mode_level(mode) == 50);
     TEST_ASSERT(parse_reasoning_effort_name("high", &mode) && mode == DS4_THINK_HIGH);
-    TEST_ASSERT(parse_reasoning_effort_name("xhigh", &mode) && mode == DS4_THINK_HIGH);
+    TEST_ASSERT(parse_reasoning_effort_name("xhigh", &mode) && ds4_think_mode_level(mode) == 90);
     TEST_ASSERT(parse_reasoning_effort_name("max", &mode) && mode == DS4_THINK_MAX);
     TEST_ASSERT(!parse_reasoning_effort_name("banana", &mode));
     TEST_ASSERT(think_mode_from_enabled(true, DS4_THINK_LOW) == DS4_THINK_LOW);
@@ -17091,6 +17346,139 @@ static void test_reasoning_effort_mapping(void) {
     TEST_ASSERT(ds4_think_mode_for_context(DS4_THINK_MAX, 32768) == DS4_THINK_MAX);
     TEST_ASSERT(ds4_think_mode_for_context(DS4_THINK_MAX,
                                            (int)ds4_think_max_min_context()) == DS4_THINK_MAX);
+}
+
+/* sf: OpenSpec 610 -- the level a session reports equals the prompt's. */
+static void test_think_mode_effort_level(void) {
+    const struct { ds4_think_mode mode; int level; } rows[] = {
+        {DS4_THINK_NONE, -1}, {DS4_THINK_HIGH, 75}, {DS4_THINK_MAX, 100},
+        {(ds4_think_mode)(DS4_THINK_LEVEL_BASE + 0), 0},
+        {(ds4_think_mode)(DS4_THINK_LEVEL_BASE + 25), 25},
+        {(ds4_think_mode)(DS4_THINK_LEVEL_BASE + 100), 100},
+        {DS4_THINK_LOW, -1}, {DS4_THINK_MEDIUM, -1},
+    };
+    for (size_t i = 0; i < sizeof(rows) / sizeof(rows[0]); i++)
+        TEST_ASSERT(ds4_think_mode_effort_level(rows[i].mode) == rows[i].level);
+}
+
+/* Renders one chat request; the caller frees the prompt text. */
+static char *test_effort_render(const char *api, const char *model,
+                                const char *controls) {
+    char body[1024];
+    char err[128];
+    request r;
+    bool ok;
+    if (!strcmp(api, "anthropic")) {
+        snprintf(body, sizeof(body),
+                 "{\"model\":\"%s\",\"max_tokens\":1,%s%s"
+                 "\"messages\":[{\"role\":\"user\",\"content\":\"hello\"}]}",
+                 model, controls, controls[0] ? "," : "");
+        ok = parse_anthropic_request(NULL, NULL, body, 1, 32768, &r, err, sizeof(err));
+    } else if (!strcmp(api, "responses")) {
+        snprintf(body, sizeof(body),
+                 "{\"model\":\"%s\",\"max_output_tokens\":1,%s%s\"input\":\"hello\"}",
+                 model, controls, controls[0] ? "," : "");
+        ok = parse_responses_request(NULL, NULL, body, 1, 32768, &r, err, sizeof(err));
+    } else {
+        snprintf(body, sizeof(body),
+                 "{\"model\":\"%s\",\"max_tokens\":1,%s%s"
+                 "\"messages\":[{\"role\":\"user\",\"content\":\"hello\"}]}",
+                 model, controls, controls[0] ? "," : "");
+        ok = parse_chat_request(NULL, NULL, body, 1, 32768, &r, err, sizeof(err));
+    }
+    if (!ok) return NULL;
+    char *text = r.prompt_text;
+    r.prompt_text = NULL;
+    request_free(&r);
+    return text;
+}
+
+static bool test_prompt_has_effort(const char *prompt, int level) {
+    if (!prompt) return false;
+    if (level < 0) return !strstr(prompt, "Reasoning Effort:") && strstr(prompt, "</think>");
+    char line[64];
+    snprintf(line, sizeof(line), "Reasoning Effort: %d (range 1-100", level);
+    return strstr(prompt, line) && !strstr(prompt, "</think>");
+}
+
+/* sf: OpenSpec 610 -- each name renders its level on every API, existing
+ * levels keep their bytes, and the thinking controls keep their precedence. */
+static void test_reasoning_effort_render(void) {
+    /* The V4.1 render of "hello" at high, captured before 610. */
+    static const char high_prompt[] =
+        "<｜begin▁of▁sentence｜><｜System｜>Reasoning Effort: 75 (range 1-100, the higher the value, "
+        "the more thorough the reasoning)\n\n<｜User｜>hello<｜Assistant｜><think>";
+    const struct { const char *name; int level; } names[] = {
+        {"none", -1}, {"minimal", -1}, {"low", 25}, {"medium", 50},
+        {"high", 75}, {"xhigh", 90}, {"max", 100}, {"0", -1},
+    };
+    for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
+        char c[256];
+        snprintf(c, sizeof(c), "\"reasoning_effort\":\"%s\"", names[i].name);
+        char *chat = test_effort_render("chat", "deepseek-v4.1-flash", c);
+        TEST_ASSERT(test_prompt_has_effort(chat, names[i].level));
+        snprintf(c, sizeof(c), "\"chat_template_kwargs\":{\"reasoning_effort\":\"%s\"}", names[i].name);
+        char *kwargs = test_effort_render("chat", "deepseek-v4.1-flash", c);
+        snprintf(c, sizeof(c), "\"output_config\":{\"effort\":\"%s\"}", names[i].name);
+        char *anth = test_effort_render("anthropic", "deepseek-v4.1-flash", c);
+        snprintf(c, sizeof(c), "\"reasoning\":{\"effort\":\"%s\"}", names[i].name);
+        char *resp = test_effort_render("responses", "deepseek-v4.1-flash", c);
+        TEST_ASSERT(chat && kwargs && anth && resp);
+        if (chat && kwargs && anth && resp) {
+            TEST_ASSERT(!strcmp(chat, kwargs));
+            TEST_ASSERT(!strcmp(chat, anth));
+            TEST_ASSERT(!strcmp(chat, resp));
+        }
+        free(chat);
+        free(kwargs);
+        free(anth);
+        free(resp);
+    }
+
+    char *high = test_effort_render("chat", "deepseek-v4.1-flash", "\"reasoning_effort\":\"high\"");
+    char *n75 = test_effort_render("chat", "deepseek-v4.1-flash", "\"reasoning_effort\":\"75\"");
+    char *max = test_effort_render("chat", "deepseek-v4.1-flash", "\"reasoning_effort\":\"max\"");
+    char *n100 = test_effort_render("chat", "deepseek-v4.1-flash", "\"reasoning_effort\":\"100\"");
+    char *dflt = test_effort_render("chat", "deepseek-v4.1-flash", "");
+    TEST_ASSERT(high && !strcmp(high, high_prompt));
+    TEST_ASSERT(n75 && !strcmp(n75, high_prompt));
+    TEST_ASSERT(dflt && !strcmp(dflt, high_prompt));
+    TEST_ASSERT(max && n100 && !strcmp(max, n100));
+    free(high);
+    free(n75);
+    free(max);
+    free(n100);
+    free(dflt);
+
+    char *bad = test_effort_render("chat", "deepseek-v4.1-flash", "\"reasoning_effort\":\"banana\"");
+    TEST_ASSERT(bad == NULL);
+    free(bad);
+
+    /* Precedence: an explicit disable beats any effort. */
+    const char *disables[][2] = {
+        {"chat", "\"thinking\":false,\"reasoning_effort\":\"max\""},
+        {"chat", "\"think\":false,\"reasoning_effort\":\"max\""},
+        {"anthropic", "\"thinking\":{\"type\":\"disabled\"},\"output_config\":{\"effort\":\"max\"}"},
+    };
+    for (size_t i = 0; i < sizeof(disables) / sizeof(disables[0]); i++) {
+        char *p = test_effort_render(disables[i][0], "deepseek-v4.1-flash", disables[i][1]);
+        TEST_ASSERT(test_prompt_has_effort(p, -1));
+        free(p);
+    }
+    /* A no-thinking effort beats an enabling alias. */
+    char *p = test_effort_render("chat", "deepseek-reasoner", "\"reasoning_effort\":\"minimal\"");
+    TEST_ASSERT(test_prompt_has_effort(p, -1));
+    free(p);
+    p = test_effort_render("responses", "deepseek-reasoner", "\"reasoning\":{\"effort\":\"minimal\"}");
+    TEST_ASSERT(test_prompt_has_effort(p, -1));
+    free(p);
+    /* An explicit enable beats a disabling alias; the alias alone disables. */
+    p = test_effort_render("chat", "deepseek-chat", "\"thinking\":true");
+    TEST_ASSERT(test_prompt_has_effort(p, 75));
+    free(p);
+    p = test_effort_render("chat", "deepseek-chat", "");
+    TEST_ASSERT(test_prompt_has_effort(p, -1));
+    free(p);
 }
 
 static void test_model_alias_thinking_controls(void) {
@@ -17122,7 +17510,7 @@ static void test_api_thinking_controls_parse(void) {
     const char *openai_effort = "\"xhigh\"";
     mode = DS4_THINK_HIGH;
     TEST_ASSERT(parse_reasoning_effort_value(&openai_effort, &mode));
-    TEST_ASSERT(mode == DS4_THINK_HIGH);
+    TEST_ASSERT(ds4_think_mode_level(mode) == 90);  /* sf: OpenSpec 610 */
 
     const int levels[] = {0, 1, 25, 50, 99, 100};
     for (size_t i = 0; i < sizeof(levels) / sizeof(levels[0]); i++) {
@@ -19750,6 +20138,122 @@ static void test_kv_cache_lookup_rejects_stale_payload_abi(void) {
     rmdir(dir);
 }
 
+/* sf: 650 writes one store entry named by its text's SHA-1. */
+static char *test_kv_write_entry(const char *dir, const char *text) {
+    char sha[41], name[44];
+    sha1_bytes_hex(text, strlen(text), sha);
+    snprintf(name, sizeof(name), "%.40s.kv", sha);
+    char *path = path_join(dir, name);
+    FILE *fp = fopen(path, "wb");
+    if (fp) {
+        uint8_t h[KV_CACHE_FIXED_HEADER];
+        kv_fill_header(h, 2, KV_REASON_COLD, 0, 512, 0, 32768, 100, 100, 0);
+        uint8_t text_len[4];
+        le_put32(text_len, (uint32_t)strlen(text));
+        fwrite(h, 1, sizeof(h), fp);
+        fwrite(text_len, 1, sizeof(text_len), fp);
+        fwrite(text, 1, strlen(text), fp);
+        fclose(fp);
+    }
+    return path;
+}
+
+static void test_write_file(const char *path, const char *text) {
+    FILE *fp = fopen(path, "w");
+    if (fp) {
+        fputs(text, fp);
+        fclose(fp);
+    }
+}
+
+/* sf: 650 the steering store: marker decisions, a wipe limited to entry files,
+ * store selection, and listing and eviction that stay inside one store. */
+static void test_kv_steering_store(void) {
+    char tmpl[] = "/tmp/ds4-kv-steering-test.XXXXXX";
+    char *root = mkdtemp(tmpl);
+    TEST_ASSERT(root != NULL);
+    if (!root) return;
+    char *sdir = path_join(root, "steering");
+    char *marker = path_join(sdir, "PROFILE");
+    char *prof_a = path_join(root, "a.sfsteer");
+    char *prof_b = path_join(root, "b.sfsteer");
+    test_write_file(prof_a, "profile A bytes");
+    test_write_file(prof_b, "profile B bytes");
+    char *root_entry = test_kv_write_entry(root, "root prefix");
+
+    /* Missing marker, empty store: bound, nothing removed. */
+    TEST_ASSERT(kv_steering_store_bind(sdir, prof_a));
+    TEST_ASSERT(access(marker, R_OK) == 0);
+    char *e1 = test_kv_write_entry(sdir, "steered prefix one");
+    char *stray = path_join(sdir, "notes.txt");
+    char *sub = path_join(sdir, "keep");
+    test_write_file(stray, "keep me");
+    TEST_ASSERT(mkdir(sub, 0700) == 0);
+
+    /* Same bytes: entries kept. */
+    TEST_ASSERT(kv_steering_store_bind(sdir, prof_a));
+    TEST_ASSERT(access(e1, R_OK) == 0);
+
+    /* Different bytes: only entry files go, the marker records the new digest. */
+    TEST_ASSERT(kv_steering_store_bind(sdir, prof_b));
+    TEST_ASSERT(access(e1, R_OK) != 0);
+    TEST_ASSERT(access(stray, R_OK) == 0 && access(sub, R_OK) == 0);
+    TEST_ASSERT(access(root_entry, R_OK) == 0);
+    char sha_b[41];
+    ds4_kvstore_sha1_bytes_hex("profile B bytes", strlen("profile B bytes"), sha_b);
+    FILE *mf = fopen(marker, "r");
+    char line[128] = "";
+    if (mf) {
+        TEST_ASSERT(fgets(line, sizeof(line), mf) != NULL);
+        fclose(mf);
+    }
+    TEST_ASSERT(!strncmp(line, "sha1 ", 5) && !strncmp(line + 5, sha_b, 40));
+
+    /* Missing marker with entries: wiped as for a changed profile. */
+    char *e2 = test_kv_write_entry(sdir, "steered prefix two");
+    TEST_ASSERT(unlink(marker) == 0);
+    TEST_ASSERT(kv_steering_store_bind(sdir, prof_b));
+    TEST_ASSERT(access(e2, R_OK) != 0 && access(marker, R_OK) == 0);
+    TEST_ASSERT(access(root_entry, R_OK) == 0);
+
+    /* Selection: the session's switch picks the store. */
+    server s = {0};
+    TEST_ASSERT(server_kv(&s, false) == &s.kv);
+    TEST_ASSERT(server_kv(&s, true) == &s.kv_steering);
+
+    /* The root store never lists steering/ entries, and an over-budget
+     * steering store evicts only its own entries. */
+    char *e3 = test_kv_write_entry(sdir, "steered prefix three");
+    kv_disk_cache rootkc = {0};
+    rootkc.enabled = true;
+    rootkc.dir = xstrdup(root);
+    rootkc.opt = kv_cache_default_options();
+    rootkc.budget_bytes = UINT64_C(1) << 40;     /* lists the store, evicts nothing */
+    ds4_kvstore_evict(&rootkc, NULL, 0, NULL);
+    TEST_ASSERT(rootkc.len == 1);
+    kv_disk_cache steerkc = {0};
+    steerkc.enabled = true;
+    steerkc.dir = xstrdup(sdir);
+    steerkc.opt = kv_cache_default_options();
+    steerkc.budget_bytes = 1;
+    ds4_kvstore_evict(&steerkc, NULL, 0, NULL);
+    TEST_ASSERT(access(e3, R_OK) != 0);
+    TEST_ASSERT(access(root_entry, R_OK) == 0);
+    kv_cache_close(&rootkc);
+    kv_cache_close(&steerkc);
+
+    unlink(stray);
+    rmdir(sub);
+    unlink(marker);
+    rmdir(sdir);
+    unlink(root_entry);
+    unlink(prof_a);
+    unlink(prof_b);
+    rmdir(root);
+    free(e1); free(e2); free(e3); free(stray); free(sub);
+    free(root_entry); free(prof_a); free(prof_b); free(marker); free(sdir);
+}
+
 static void test_kv_tool_map_filters_by_dsml_text(void) {
     const char *dsml_keep =
         "\n\n<｜DSML｜tool_calls>\n"
@@ -19863,7 +20367,7 @@ static void test_kv_tool_map_restores_before_prompt_render(void) {
     tool_calls_push(&a.calls, tc);
     chat_msgs_push(&msgs, a);
 
-    kv_cache_restore_tool_memory_for_messages(&dst, &msgs);
+    kv_cache_restore_tool_memory_for_messages(&dst, false, &msgs);
     tool_replay_stats stats = {0};
     tool_memory_attach_to_messages(&dst, &msgs, &stats);
     TEST_ASSERT(msgs.v[0].calls.raw_tool_text != NULL);
@@ -20883,6 +21387,10 @@ static void ds4_server_unit_tests_run(void) {
     test_request_defaults_use_min_p_filtering();
     test_chat_ignore_eos_contract();
     test_reasoning_effort_mapping();
+    test_think_mode_effort_level();
+    test_reasoning_effort_render();
+    test_steering_on_request();
+    test_kv_steering_store();
     test_model_alias_thinking_controls();
     test_api_thinking_controls_parse();
     test_render_think_max_prompt_prefix();

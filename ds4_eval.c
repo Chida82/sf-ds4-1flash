@@ -1208,10 +1208,7 @@ typedef struct {
     bool ssd_streaming;
     bool ssd_streaming_cold;
     /* sf: 402 (6.3) steering for axis-D capability A/B: both arms use the same
-     * eval cases, differing only by the residual site. */
-    const char *directional_steering_file;
-    float directional_steering_residual;
-    bool allow_v41_steering;
+     * eval cases, differing only by the profile. */
     const char *steering_profile;
     bool self_test_extractors;
     bool validate_cases;
@@ -1696,13 +1693,6 @@ static eval_config parse_options(int argc, char **argv) {
             c.ssd_streaming = true;
         } else if (!strcmp(arg, "--ssd-streaming-cold")) {
             c.ssd_streaming_cold = true;
-        } else if (!strcmp(arg, "--dir-steering-file")) {
-            c.directional_steering_file = need_arg(&i, argc, argv, arg);
-        } else if (!strcmp(arg, "--dir-steering-residual")) {
-            c.directional_steering_residual =
-                parse_float_arg(need_arg(&i, argc, argv, arg), arg, -100.0f, 100.0f);
-        } else if (!strcmp(arg, "--allow-v41-steering")) {
-            c.allow_v41_steering = true;
         } else if (!strcmp(arg, "--steering-profile")) {
             c.steering_profile = need_arg(&i, argc, argv, arg);
         } else if (!strcmp(arg, "--ssd-streaming-cache-experts")) {
@@ -4761,9 +4751,6 @@ int main(int argc, char **argv) {
         .quality = cfg.quality,
         .ssd_streaming = cfg.ssd_streaming,
         .ssd_streaming_cold = cfg.ssd_streaming_cold,
-        .directional_steering_file = cfg.directional_steering_file,
-        .directional_steering_residual = cfg.directional_steering_residual,
-        .allow_v41_steering = cfg.allow_v41_steering,
         .steering_profile = cfg.steering_profile,
         .distributed = cfg.dist,
         .tp = cfg.tp,
