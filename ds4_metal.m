@@ -8877,7 +8877,7 @@ static void ds4_gpu_fanboost_cause(int rc, int err, char *buf, size_t n) {
  * a server runs) is reported once and the run goes on. */
 static void ds4_gpu_fan_hint(double now_ms) {
     static double last_ms;
-    if (!g_boost || now_ms - last_ms < 1000.0) return;
+    if (!__atomic_load_n(&g_boost, __ATOMIC_RELAXED) || now_ms - last_ms < 1000.0) return;
     last_ms = now_ms;
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
         static int warned;
@@ -10049,28 +10049,40 @@ static void *ds4_gpu_tp_keepalive_thread(void *arg) {
     return NULL;
 }
 
-int ds4_gpu_set_boost(bool enabled) {
-    g_boost = 0;
-    if (!enabled) return 1;
+/* `flag` names the option in the refusal: --boost, or the server's
+ * --boost-on-max-effort, which checks at open and switches per request. */
+int ds4_gpu_boost_check(const char *flag) {
     const int rc = ds4_gpu_fanboost("check");
     if (rc != 0) {
         const int err = errno;
         if (rc < 0 && err == ENOENT) {
-            fprintf(stderr, "ds4: --boost needs fanboost, which is not installed (" DS4_FANBOOST "): "
+            fprintf(stderr, "ds4: %s needs fanboost, which is not installed (" DS4_FANBOOST "): "
                             "install it with ./fanboost/install.sh (see fanboost/README.md), "
-                            "or run without --boost\n");
+                            "or run without %s\n", flag, flag);
         } else if (rc == 1) {
-            fprintf(stderr, "ds4: --boost needs the fanboost daemon, which is not running: "
-                            "reinstall it with ./fanboost/install.sh, or run without --boost\n");
+            fprintf(stderr, "ds4: %s needs the fanboost daemon, which is not running: "
+                            "reinstall it with ./fanboost/install.sh, or run without %s\n", flag, flag);
         } else {
             char cause[64];
             ds4_gpu_fanboost_cause(rc, err, cause, sizeof(cause));
-            fprintf(stderr, "ds4: --boost: fanboost check failed (%s): see fanboost/README.md, "
-                            "or run without --boost\n", cause);
+            fprintf(stderr, "ds4: %s: fanboost check failed (%s): see fanboost/README.md, "
+                            "or run without %s\n", flag, cause, flag);
         }
         return 0;
     }
-    g_boost = 1;
+    return 1;
+}
+
+/* Written by a server thread, read by the decode thread and the fan hint. */
+void ds4_gpu_boost_active(bool on) {
+    __atomic_store_n(&g_boost, on ? 1 : 0, __ATOMIC_RELAXED);
+}
+
+int ds4_gpu_set_boost(bool enabled) {
+    ds4_gpu_boost_active(false);
+    if (!enabled) return 1;
+    if (!ds4_gpu_boost_check("--boost")) return 0;
+    ds4_gpu_boost_active(true);
     ds4_gpu_fan_hint(ds4_gpu_now_ms()); /* fans up before the model loads */
     return 1;
 }
@@ -10084,7 +10096,7 @@ int ds4_gpu_set_boost(bool enabled) {
  * It writes only its own buffer. */
 void ds4_gpu_decode_keepalive(int active) {
     const char *env = active ? getenv("DS4_METAL_V41_DECODE_KEEPALIVE") : NULL;
-    active = active && (env ? strcmp(env, "0") != 0 : g_boost);
+    active = active && (env ? strcmp(env, "0") != 0 : __atomic_load_n(&g_boost, __ATOMIC_RELAXED));
     if (active && !g_tp_keepalive_running) {
         g_tp_keepalive_paused = 1;
         g_tp_keepalive_burst_us = (uint32_t)ds4_gpu_env_u64("DS4_METAL_V41_DECODE_KEEPALIVE_BURST_US",

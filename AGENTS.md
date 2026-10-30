@@ -13,6 +13,7 @@ what this repo is and how to work in it. For code-quality rules read
 | Model | see `README.md` first line |
 | Shape (`ds4.c`) | `DS4_SHAPE_FLASH41`, the only profile in the binary. `g_ds4_shape` stays **writable** (see below); `config_validate_model` refuses any GGUF whose `general.architecture` is not `deepseek41` |
 | Backend | Metal only. No CUDA, no ROCm. CPU path kept as reference/debug and for model-less tests |
+| Service | `sfctl`, port `8910`, serve worktree `~/.sf/ds4-1flash/serve` at local `main` (see "Serving (sfctl)") |
 | Binaries | `sf-ds4-1flash`, `sf-ds4-1flash-server`, `sf-ds4-1flash-bench`, `sf-ds4-1flash-eval`. No agent binary |
 | Server default port | `8002` |
 | Home dir | `~/.sf/ds4-1flash` (CLI history; suggested `--kv-disk-dir ~/.sf/ds4-1flash/kv`, or `/Volumes/<drive>/sf-ds4-1flash/kv` when a second drive is in use, see `README.md`) |
@@ -194,6 +195,12 @@ Prefetch with a cheaper guess is change `170`.
   200 us bursts. This measured +0.5% decode at thermal pressure Nominal and 0
   at Heavy. `DS4_METAL_V41_DECODE_KEEPALIVE=0|1` overrides the flag per
   token, and `_BURST_US` sets the burst.
+
+The server's `--boost-on-max-effort` (`670`) runs the same check at open and
+then switches boost per request: on while a job at effort level 100
+(`ds4_think_mode_effort_level`) is generating, off when the last one ends
+(`boost_jobs` in `generate_job`, `ds4_engine_set_boost`). It excludes
+`--boost`.
 
 `fanboost/` is a copy of the owner's `fanboost` repository: `fanboost.c`, the
 `Makefile` and the launchd plist verbatim (their comments and messages stay
@@ -436,6 +443,16 @@ the TP rank that does not own the shared expert ran four wasted kernels per
 layer, and no test reaches that path. Check each fold site with a diff
 against upstream at the site, not by reading the child alone; fixed in
 `15-shared-expert-guard`.
+
+## Serving (sfctl)
+
+`sfctl/` runs this model as an on-demand launchd service from a serve worktree,
+`~/.sf/ds4-1flash/serve`, detached at local `main`. A request to "sync sfctl" or
+"sync serve" means the "Syncing serve" procedure in `sfctl/README.md`, run only
+after the change is merged into `main`; never update serve from a work branch
+and never edit it. `install` and `uninstall` change the machine: ask the owner
+first. `sfctl/` stays generic: no user name or machine path in it
+(`tests/test_sfctl.sh` checks).
 
 ## Syncing with upstream
 

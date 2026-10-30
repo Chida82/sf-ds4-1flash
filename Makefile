@@ -428,6 +428,11 @@ test: env-check ds4_test $(BIN)-eval q4k-dot-test mxfp4-dot-test test-session-st
 	./tests/test_deepseek41_graph --prefill-expert-discard
 	./tests/test_deepseek41_graph --prefill-expert-stream
 	./tests/test_deepseek41_graph --candidate-mask
+	sh tests/test_sfctl.sh
+
+.PHONY: test-sfctl
+test-sfctl:
+	sh tests/test_sfctl.sh
 
 .PHONY: test-download-model
 test-download-model:

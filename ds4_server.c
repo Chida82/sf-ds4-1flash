@@ -9402,6 +9402,7 @@ struct server {
     server_image_cache image_cache; /* Protected by inference_mu. */
     bool disable_exact_dsml_tool_replay;
     bool steering_on_request;  /* sf: 640 a profile is loaded, off until a request asks */
+    bool boost_on_request;     /* sf: 670 --boost-on-max-effort */
     bool enable_cors;
     pthread_mutex_t tool_mu;
     pthread_mutex_t kv_mu;
@@ -9412,6 +9413,7 @@ struct server {
     /* sf-ablate(specdec): qwen4_batch_mtp dropped; no MTP batch in this child */
     bool model_stopping;
     int decode_pending;
+    int boost_jobs;  /* sf: 670 max-effort jobs generating; model_mu */
     int active_generations;
     int mixed_prefill_quantum;
     int last_prefill_slot;
@@ -13903,12 +13905,31 @@ decode_again:
     ds4_tokens_free(&effective_prompt);
 }
 
+/* sf: 670 --boost-on-max-effort boosts a request at effort level 100: max on
+ * any API or the numeric "100", after the thinking precedence (a disable has
+ * already turned max into no thinking). */
+static bool request_boosts(const request *r) {
+    return ds4_think_mode_effort_level(r->think_mode) == 100;
+}
+
+/* sf: 670 counts one boosting job in or out (model_mu held); true when boost
+ * must switch, at 0->1 and 1->0. */
+static bool boost_jobs_step(int *jobs, bool start) {
+    return start ? ++*jobs == 1 : --*jobs == 0;
+}
+
 /* Keep cancellation installed for the entire request, including every early
  * return in the large protocol/generation path. The callback is cleared before
  * the client thread can destroy its stack-owned job. */
 static void generate_job(server *s, server_slot *slot, job *j) {
+    const bool boost = s->boost_on_request && request_boosts(&j->req);
     pthread_mutex_lock(&s->model_mu);
     slot->running = j;
+    if (boost && boost_jobs_step(&s->boost_jobs, true)) {
+        ds4_engine_set_boost(s->engine, true);
+        server_log(DS4_LOG_DEFAULT, "ds4-server: boost on: max effort request on slot %d (model=%s, prompt=%d tokens)",
+                   slot->id, j->req.model ? j->req.model : "", j->req.prompt.len);
+    }
     pthread_mutex_unlock(&s->model_mu);
 
     ds4_session_set_cancel(slot->session, job_cancelled, j);
@@ -13925,6 +13946,10 @@ static void generate_job(server *s, server_slot *slot, job *j) {
     ds4_session_set_cancel(slot->session, NULL, NULL);
 
     pthread_mutex_lock(&s->model_mu);
+    if (boost && boost_jobs_step(&s->boost_jobs, false)) {
+        ds4_engine_set_boost(s->engine, false);
+        server_log(DS4_LOG_DEFAULT, "ds4-server: boost off: no max effort request is generating");
+    }
     if (slot->running == j) slot->running = NULL;
     pthread_cond_broadcast(&s->model_cv);
     pthread_mutex_unlock(&s->model_mu);
@@ -14616,8 +14641,14 @@ typedef struct {
     bool steering_profile_legacy;  /* sf: 640 the CLI flag, refused on the server */
 } server_config;
 
-/* sf: 640 the steering configurations the server refuses before loading. */
-static bool server_config_check_steering(const server_config *c, char *err, size_t errlen) {
+/* sf: 640 the steering and 670 boost configurations the server refuses
+ * before loading. */
+static bool server_config_check(const server_config *c, char *err, size_t errlen) {
+    if (c->engine.boost && c->engine.boost_on_request) {
+        snprintf(err, errlen, "--boost and --boost-on-max-effort exclude each other: "
+                 "--boost keeps boost on for every request");
+        return false;
+    }
     if (c->steering_profile_legacy) {
         snprintf(err, errlen, "--steering-profile is not a server option; use "
                  "--steering-profile-on-request NAME|FILE, then select steering per request "
@@ -14859,6 +14890,8 @@ static server_config parse_options(int argc, char **argv) {
             c.engine.ssd_streaming_cold = true;
         } else if (!strcmp(arg, "--boost")) {
             c.engine.boost = true;
+        } else if (!strcmp(arg, "--boost-on-max-effort")) {
+            c.engine.boost_on_request = true;
         } else if (!strcmp(arg, "--ssd-streaming-cache-experts")) {
             uint32_t experts = 0;
             uint64_t bytes = 0;
@@ -14957,7 +14990,7 @@ static server_config parse_options(int argc, char **argv) {
         exit(2);
     }
     char steer_err[256];
-    if (!server_config_check_steering(&c, steer_err, sizeof(steer_err))) {
+    if (!server_config_check(&c, steer_err, sizeof(steer_err))) {
         server_log(DS4_LOG_DEFAULT, "ds4-server: %s", steer_err);
         exit(2);
     }
@@ -15060,6 +15093,7 @@ int main(int argc, char **argv) {
     s.default_tokens = cfg.default_tokens;
     s.disable_exact_dsml_tool_replay = cfg.disable_exact_dsml_tool_replay;
     s.steering_on_request = cfg.steering_on_request;
+    s.boost_on_request = cfg.engine.boost_on_request;
     s.tool_mem.max_entries = cfg.tool_memory_max_ids;
     s.enable_cors = cfg.enable_cors;
     s.slots = xmalloc((size_t)slot_count * sizeof(*s.slots));
@@ -15392,17 +15426,17 @@ static void test_steering_on_request(void) {
     buf_free(&b);
 
     server_config c = {0};
-    TEST_ASSERT(server_config_check_steering(&c, err, sizeof(err)));
+    TEST_ASSERT(server_config_check(&c, err, sizeof(err)));
     c.steering_on_request = true;
-    TEST_ASSERT(server_config_check_steering(&c, err, sizeof(err)));
+    TEST_ASSERT(server_config_check(&c, err, sizeof(err)));
     c.engine.tp.role = DS4_TP_LEADER;
-    TEST_ASSERT(!server_config_check_steering(&c, err, sizeof(err)));
+    TEST_ASSERT(!server_config_check(&c, err, sizeof(err)));
     c.engine.tp.role = DS4_TP_NONE;
     c.engine.distributed.role = DS4_DISTRIBUTED_WORKER;
-    TEST_ASSERT(!server_config_check_steering(&c, err, sizeof(err)));
+    TEST_ASSERT(!server_config_check(&c, err, sizeof(err)));
     c.engine.distributed.role = DS4_DISTRIBUTED_NONE;
     c.steering_profile_legacy = true;
-    TEST_ASSERT(!server_config_check_steering(&c, err, sizeof(err)));
+    TEST_ASSERT(!server_config_check(&c, err, sizeof(err)));
     TEST_ASSERT(strstr(err, "--steering-profile-on-request") != NULL);
 
     /* Probe gate: a slot whose live state was computed under the other
@@ -17361,9 +17395,9 @@ static void test_think_mode_effort_level(void) {
         TEST_ASSERT(ds4_think_mode_effort_level(rows[i].mode) == rows[i].level);
 }
 
-/* Renders one chat request; the caller frees the prompt text. */
-static char *test_effort_render(const char *api, const char *model,
-                                const char *controls) {
+/* Parses one request on `api`; the caller frees it when this returns true. */
+static bool test_effort_parse(const char *api, const char *model,
+                              const char *controls, request *out) {
     char body[1024];
     char err[128];
     request r;
@@ -17386,7 +17420,15 @@ static char *test_effort_render(const char *api, const char *model,
                  model, controls, controls[0] ? "," : "");
         ok = parse_chat_request(NULL, NULL, body, 1, 32768, &r, err, sizeof(err));
     }
-    if (!ok) return NULL;
+    if (ok) *out = r;
+    return ok;
+}
+
+/* Renders one chat request; the caller frees the prompt text. */
+static char *test_effort_render(const char *api, const char *model,
+                                const char *controls) {
+    request r;
+    if (!test_effort_parse(api, model, controls, &r)) return NULL;
     char *text = r.prompt_text;
     r.prompt_text = NULL;
     request_free(&r);
@@ -17479,6 +17521,48 @@ static void test_reasoning_effort_render(void) {
     p = test_effort_render("chat", "deepseek-chat", "");
     TEST_ASSERT(test_prompt_has_effort(p, -1));
     free(p);
+}
+
+/* sf: OpenSpec 670 -- only level 100 after the thinking precedence boosts,
+ * and only the first job in and the last job out switch boost. */
+static void test_boost_on_max_effort(void) {
+    const struct { const char *api; const char *controls; bool boosts; } rows[] = {
+        {"chat", "\"reasoning_effort\":\"max\"", true},
+        {"chat", "\"reasoning_effort\":\"100\"", true},
+        {"chat", "\"chat_template_kwargs\":{\"reasoning_effort\":\"max\"}", true},
+        {"anthropic", "\"output_config\":{\"effort\":\"max\"}", true},
+        {"responses", "\"reasoning\":{\"effort\":\"max\"}", true},
+        {"chat", "\"reasoning_effort\":\"xhigh\"", false},
+        {"chat", "\"reasoning_effort\":\"99\"", false},
+        {"chat", "\"reasoning_effort\":\"high\"", false},
+        {"chat", "", false},
+        {"chat", "\"thinking\":false,\"reasoning_effort\":\"max\"", false},
+        {"anthropic", "\"thinking\":{\"type\":\"disabled\"},\"output_config\":{\"effort\":\"max\"}", false},
+    };
+    for (size_t i = 0; i < sizeof(rows) / sizeof(rows[0]); i++) {
+        request r;
+        TEST_ASSERT(test_effort_parse(rows[i].api, "deepseek-v4.1-flash", rows[i].controls, &r));
+        TEST_ASSERT(request_boosts(&r) == rows[i].boosts);
+        request_free(&r);
+    }
+
+    int jobs = 0;
+    TEST_ASSERT(boost_jobs_step(&jobs, true));    /* 0->1 */
+    TEST_ASSERT(!boost_jobs_step(&jobs, true));   /* 1->2 */
+    TEST_ASSERT(!boost_jobs_step(&jobs, false));  /* 2->1 */
+    TEST_ASSERT(boost_jobs_step(&jobs, false));   /* 1->0 */
+    TEST_ASSERT(jobs == 0);
+
+    char err[256];
+    server_config c = {0};
+    c.engine.boost = true;
+    TEST_ASSERT(server_config_check(&c, err, sizeof(err)));
+    c.engine.boost = false;
+    c.engine.boost_on_request = true;
+    TEST_ASSERT(server_config_check(&c, err, sizeof(err)));
+    c.engine.boost = true;
+    TEST_ASSERT(!server_config_check(&c, err, sizeof(err)));
+    TEST_ASSERT(strstr(err, "--boost and --boost-on-max-effort") != NULL);
 }
 
 static void test_model_alias_thinking_controls(void) {
@@ -21389,6 +21473,7 @@ static void ds4_server_unit_tests_run(void) {
     test_reasoning_effort_mapping();
     test_think_mode_effort_level();
     test_reasoning_effort_render();
+    test_boost_on_max_effort();
     test_steering_on_request();
     test_kv_steering_store();
     test_model_alias_thinking_controls();

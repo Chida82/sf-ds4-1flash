@@ -149,6 +149,7 @@ typedef struct {
     bool ssd_streaming;
     bool ssd_streaming_cold;
     bool boost;   /* decode keep-alive and fanboost hint */
+    bool boost_on_request; /* sf: 670 fanboost checked at open, boost off until ds4_engine_set_boost */
     bool inspect_only;
     /* Multi-GPU placement uses this to price per-layer KV storage. */
     /* Number of independently allocated session graphs/caches to reserve. */
@@ -229,6 +230,9 @@ uint64_t ds4_engine_hidden_f32_values(ds4_engine *e);
 int ds4_engine_embd_dim(ds4_engine *e);
 uint64_t ds4_engine_model_bytes(ds4_engine *e);
 bool ds4_engine_has_vision(ds4_engine *e);
+/* sf: 670 turns boost on or off between tokens; a no-op unless the engine
+ * was opened with boost_on_request, and in the CPU build. */
+void ds4_engine_set_boost(ds4_engine *e, bool on);
 int ds4_engine_vision_encode_file(ds4_engine *e,
                                   const char *path,
                                   ds4_vision_embedding *out,

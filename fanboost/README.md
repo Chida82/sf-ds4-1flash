@@ -126,7 +126,9 @@ request the fans stay at full speed for about 10 seconds, then go back to
 Apple's curve. Before loading the model it runs `fanboost check` and refuses
 to start when fanboost is missing or its daemon is down. How a request
 reaches the daemon is fanboost's business; the engine only runs the commands
-and reads their exit status.
+and reads their exit status. `sf-ds4-1flash-server --boost-on-max-effort`
+runs the same `check` at startup, then sends `max` only while a request with
+reasoning effort `max` is generating.
 
 ## Commands
 

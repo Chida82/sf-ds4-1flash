@@ -172,6 +172,8 @@ static void print_model_runtime(FILE *fp, const help_colors *c,
     opt(fp, c, "--ssd-streaming-cold", "SSD streaming: skip default popularity-based expert-cache preload.");
     if (tool != DS4_HELP_EVAL)
         opt(fp, c, "--boost", "Faster interactive use: asks the fanboost daemon for full fans while the GPU works, and keeps the GPU busy while a decode token reads missing experts (SSD streaming). Requests about 4-5% faster in a typical session; same output. Needs fanboost (./fanboost/install.sh): without its daemon running the engine refuses to start.");
+    if (tool == DS4_HELP_SERVER)
+        opt(fp, c, "--boost-on-max-effort", "Boost per request: the same fans and keep-alive as --boost, but only while at least one request with reasoning effort max (or \"100\") is generating; other requests run without it. Needs fanboost like --boost, checked at startup. Excludes --boost.");
     opt(fp, c, "--ssd-streaming-cache-experts N|NGB", "SSD streaming cache target. N requests dynamic expert slots; NGB also reserves two full prefill layers. Either may be reduced to fit the model, graph, context, and backend working set.");
     opt(fp, c, "--ssd-streaming-preload-experts N", "SSD streaming: upfront popularity preload count. Auto-seeded by default.");
     opt(fp, c, "--simulate-used-memory NGB", "Diagnostic: lock N GiB before model load to simulate a smaller-memory machine.");

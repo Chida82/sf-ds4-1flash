@@ -25673,6 +25673,7 @@ struct ds4_engine {
     ds4_ssd_memory_lock simulated_memory;
     bool quality;
     bool cuda_tensor_parallel;
+    bool boost_on_request; /* sf: 670 */
     bool ssd_streaming;
     bool ssd_streaming_cold;
     bool ssd_streaming_static_decode_map;
@@ -30861,11 +30862,13 @@ static int ds4_engine_open_internal(ds4_engine **out,
         }
         ds4_gpu_set_quality(e->quality);
         ds4_gpu_set_ssd_streaming(e->ssd_streaming);
-        if (!ds4_gpu_set_boost(opt->boost)) {
+        if (!ds4_gpu_set_boost(opt->boost) ||
+            (opt->boost_on_request && !ds4_gpu_boost_check("--boost-on-max-effort"))) {
             ds4_engine_close(e);
             *out = NULL;
             return 1;
         }
+        e->boost_on_request = opt->boost_on_request;
         if (!ds4_engine_configure_streaming_auto_cache(e, opt->context_size)) {
             ds4_engine_close(e);
             *out = NULL;
@@ -31286,6 +31289,15 @@ uint64_t ds4_engine_model_bytes(ds4_engine *e) {
 
 bool ds4_engine_has_vision(ds4_engine *e) {
     return e && e->vision_ready;
+}
+
+void ds4_engine_set_boost(ds4_engine *e, bool on) {
+#ifndef DS4_NO_GPU
+    if (e && e->boost_on_request) ds4_gpu_boost_active(on);
+#else
+    (void)e;
+    (void)on;
+#endif
 }
 
 void ds4_vision_embedding_free(ds4_vision_embedding *embedding) {

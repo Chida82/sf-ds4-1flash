@@ -453,6 +453,14 @@ Run each binary with `--help` for its full options.
 For Pi, OpenCode, Codex CLI, or Claude Code, use `sf-ds4-1flash-server` and
 follow the [client setup guide](docs/CLIENTS.md).
 
+### Running as a service
+
+`sfctl` runs the server as an on-demand launchd service on port 8910
+(`sfctl start ds4-1flash`, `sfctl stop ds4-1flash`, `sfctl status`). It runs
+from its own worktree at `main`, never from your development branch, and never
+starts on its own. Install, commands and keeping it in sync with `main`:
+[sfctl/README.md](sfctl/README.md).
+
 ### Model, images, and memory
 
 [The model guide](docs/MODELS.md) lists the downloads and memory requirements.
@@ -493,6 +501,15 @@ same with and without it. It does two things:
 - Under SSD streaming, it keeps the GPU busy while a decode token waits for
   missing experts. That is worth a few tenths of a percent of decode on a
   cool machine.
+
+The server also has a per-request variant, `--boost-on-max-effort`. It checks
+fanboost at startup like `--boost`, then keeps boost off and turns it on only
+while at least one request with reasoning effort `max` (or the numeric
+`"100"`) is generating, on any API. `xhigh` and lower levels, and a `max`
+request with thinking disabled, run without it. Under `--batched-session` the
+other requests in the batch share the boost while a max request runs. The log
+shows one line when boost turns on and one when it turns off. It cannot be
+combined with `--boost`.
 
 `fanboost` ships in [fanboost/](fanboost/README.md); install it with
 `./fanboost/install.sh` and remove it with `./fanboost/install.sh uninstall`.

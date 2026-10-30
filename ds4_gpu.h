@@ -153,6 +153,10 @@ int ds4_gpu_device_is_m5_apple_silicon(void);
 int ds4_gpu_set_decode_pipeline_fast_lookup(int enabled);
 /* 0 when --boost is asked and fanboost is missing (the reason printed). */
 int ds4_gpu_set_boost(bool enabled);
+/* The two halves of ds4_gpu_set_boost: the fanboost check (0 when it fails,
+ * the reason printed naming `flag`) and the switch, which checks nothing. */
+int ds4_gpu_boost_check(const char *flag);
+void ds4_gpu_boost_active(bool on);
 void ds4_gpu_decode_keepalive(int active);
 /* Strict test oracle for the fixed decode mul_mv pipeline lookup cache. */
 int ds4_gpu_test_decode_pipeline_fast_lookup(void);
