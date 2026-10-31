@@ -1,0 +1,26 @@
+{
+  "name": "candor-video",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "prep": "node scripts/prep.mjs",
+    "studio": "npm run prep && remotion studio src/index.ts",
+    "render": "npm run prep && remotion render src/index.ts Candor out/candor.mp4",
+    "stills": "npm run prep && node scripts/stills.mjs",
+    "presenter": "npm run prep && vite --config presenter/vite.config.ts"
+  },
+  "dependencies": {
+    "@remotion/cli": "4.0.539",
+    "@remotion/player": "4.0.539",
+    "react": "19.3.1",
+    "react-dom": "19.3.1",
+    "remotion": "4.0.539"
+  },
+  "devDependencies": {
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "@vitejs/plugin-react": "6.1.2",
+    "typescript": "7.0.2",
+    "vite": "8.3.5"
+  }
+}

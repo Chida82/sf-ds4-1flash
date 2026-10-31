@@ -1,0 +1,83 @@
+{
+ "upstream": "ee7e840",
+ "groups": [
+  {
+   "id": "Tests",
+   "label": "tests/",
+   "up": 76998,
+   "ch": 25412
+  },
+  {
+   "id": "CUDA",
+   "label": "CUDA kernels + backend",
+   "up": 80612,
+   "ch": 0
+  },
+  {
+   "id": "ROCm",
+   "label": "ROCm backend",
+   "up": 33171,
+   "ch": 0
+  },
+  {
+   "id": "Agent",
+   "label": "ds4-agent + web",
+   "up": 15122,
+   "ch": 0
+  },
+  {
+   "id": "Hotlists",
+   "label": "other-model expert hotlists",
+   "up": 19843,
+   "ch": 0
+  },
+  {
+   "id": "Core",
+   "label": "ds4.c (engine core)",
+   "up": 87538,
+   "ch": 33889
+  },
+  {
+   "id": "Metal",
+   "label": "ds4_metal.m",
+   "up": 50537,
+   "ch": 40149
+  },
+  {
+   "id": "Kernels",
+   "label": "metal/*.metal",
+   "up": 33033,
+   "ch": 20981
+  },
+  {
+   "id": "Server",
+   "label": "ds4_server.c",
+   "up": 23115,
+   "ch": 21616
+  },
+  {
+   "id": "TP",
+   "label": "TP / RDMA",
+   "up": 12916,
+   "ch": 11817
+  },
+  {
+   "id": "Frontends",
+   "label": "CLI · eval · bench",
+   "up": 10276,
+   "ch": 9772
+  },
+  {
+   "id": "Docs",
+   "label": "docs · QA · README",
+   "up": 5757,
+   "ch": 3798
+  },
+  {
+   "id": "Other",
+   "label": "libs · KV store · image · misc",
+   "up": 17996,
+   "ch": 14729
+  }
+ ]
+}
