@@ -34,6 +34,7 @@ figures are in the named section.
 | Engram cross-partition dedup or a raw-row cache | Duplicates are 4-8% of rows and already read once per partition; the sweep waits 0.2-0.8 s on Engram in total. | Engram reads after 110 |
 | More Engram readers (32 or 64 instead of 16) | Exposed wait 0.37-0.40 s against 0.43 s on `cold-2500`, inside noise: the drive is shared with expert reads at full rate. | Engram reads after 110 |
 | Expert pass pre-committed behind a CPU-signalled shared event | The GPU restarts 102-105 us after the signal, like after a commit; the encode it would save is about 8 us per layer. | Expert pass submission after 131 |
+| Routed pass committed ahead of the selected ids, ungated (`680`: GPU-side ids and address table, CPU only on miss layers) | Closed at its gate: since `210` the CPU commits the routed batch about 25 us before the shared batch drains and the GPU starts it 2.3 us (p50) after, so all-hit layers have no restart to remove (gaps under 10 us are 0.3% of decode). Decode idle is in miss loads (9.4%) and the token boundary (about 2%). | Expert pass ahead of the ids after 675 |
 | GPU kernel spin-waiting on a CPU store (or the CPU on a GPU store) in shared memory | Neither side sees the other's store while the kernel runs; the CPU sees a GPU store about 20 us after the end of its command buffer, not of its kernel (`210` gate). | Expert pass submission after 131; Selected-id mailbox after 200 |
 | Starting a decode expert's compute before all its bytes arrive (first bytes from one drive, last from the other) | One expert's decode compute is about 29 us (gate/up 18, down 11); each extra GPU restart costs about 100 us. | Decode misses after 140 |
 | Minimal decode route-prediction prefetch (CPU guess from the layer before, 1 read per layer, layers 20-39) | Catches 0.48 misses per token, but decode 2048 -2.1% and 8192 -1.7% (CIs below zero): the guess (85 us per layer, 7.9 MB of router weights) and the wasted reads cost more than the hidden reads. | Decode misses after 140 |
@@ -2182,6 +2183,32 @@ Even a perfectly copied answer is held near 1/c, about 1.3x. Edit blocks copy 45
 - **Why the read wins.** As in "Prefill routed experts after 80": reading a layer's experts costs about 250-330 ms against about 100 ms of unprofiled GPU work on 2048-row sweeps, so a shorter decoder only lengthens the read wait. cold-2500 also spends 16 of its 30 s in the token-by-token tail, which the change does not touch.
 - **Verdict for task 1.2.** cold-2500 and cold-5000: no ceiling. cold-10000: at most about 3% of time to first token, above the harness's resolution on ttft, so by D1 the change does not stop by itself: the ceiling goes to the owner before any code. The typical mix's end-to-end ceiling is well under 1% (answers of 200-2000 tokens dominate).
 - **Decision (2026-10-29): no-go, change archived.** About 3% on one shape does not pay for the exception to identical output. Re-evaluate without SSD streaming (main weights resident, or two boxes with TP/RDMA): the prefill is then compute-bound and the "ceiling ignoring reads" column is the relevant one.
+
+## Expert pass ahead of the ids after 675 (2026-11-05, `680-expert-pass-ahead` S0)
+
+`main` at `a8fb0f8`, 1017 checkpoint, `sf-ds4-1flash-bench` with the harness flags (`82GB`, ctx 32768). A temporary probe (not landed) stamped every command buffer's commit on the host clock next to its `GPUStartTime`/`GPUEndTime`, and at each mailbox readback the layer, the CPU's missing mask and whether the layer's address table agreed with it. Runs: decode 2048 and 8192 with 256 tokens (29.7 and 30.4 t/s steady), then frontier 2048 with 128 tokens for the command-buffer trace (29.2 t/s; the trace keeps the last 60% of the buffers, decode only).
+
+A decode layer is three command buffers: the router batch (attention, router, mailbox publish, about 390 us), the shared-expert batch (about 50 us, committed with the router batch) and the batch the CPU fills after the readback (the routed pass and the rest of the layer, about 199 us). Gaps between consecutive buffers on the GPU:
+
+| Transition | Count | Gap p50 | Commit before the previous ends, p50 |
+|---|---|---|---|
+| router batch -> shared batch | 3097 | -0.2 us | 595 us |
+| shared batch -> routed batch | 2958 | 2.3 us (p90 123) | 24.9 us |
+| routed batch -> next router batch | 3208 | 0.5 us | 208 us |
+| token boundary (owned command buffers) | 247 | 149-201 us | after the end |
+
+| Gap size | Transitions | Share of the decode span |
+|---|---|---|
+| under 10 us | 8627 | 0.3% |
+| 10-150 us | 278 | 0.5% |
+| 150-400 us | 376 | 3.8% |
+| over 400 us | 369 | 9.4% |
+
+- **No restart left on all-hit layers.** The mailbox shows the ids about 13 us after the router batch ends (`210`); the CPU commits the routed batch about 25 us before the shared batch drains, and the GPU starts it 2.3 us after. The 121.6 us of `132`'s probe is gone. The GPU is busy for 86% of the decode span. Its idle sits in miss loads (gaps over 400 us, 9.4%) and in gaps of 150-400 us (3.8%), mostly the token boundary (owned command buffers, about 2%) and short misses.
+- **The first reading was wrong.** The probe's first pass took the next router batch as the routed pass and read its constant 199 us start delay after the shared batch as idle. That delay is the routed batch running in between. Padding the shared batch with an ALU kernel (+53, +157 and +312 us) moved the commit lead to 50-350 us and left the 199 us unchanged. Dropping the slab `useResource` calls (all 19 slabs are in the queue's residency set) did not change it either.
+- **Address table.** 0 disagreements between "address non-zero" and the CPU's hit decision over 20472 readbacks, the first tokens after a 2048 and an 8192 sweep included. The masked kernels with `active_mask = 0x3f` are what all-hit layers run once the split is ready (4 decode tokens, 1024 entries).
+- **Readback split off** (`DS4_METAL_DISABLE_V41_READBACK_SPLIT=1`, one run): the routed batch starts 148 us (p50) after the router batch, and decode is 27.3 t/s against 29.2. That is what `132` and `210` hold today.
+- **Verdict: closed at gate 1.** The change could remove at most the all-hit gaps, 0.3-0.5% of decode, under the 2% gate. Rejected-ideas row added.
 
 ## Adding a row
 
