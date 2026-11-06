@@ -23,6 +23,7 @@ figures are in the named section.
 | Idea | Why it does not help here | Section |
 |---|---|---|
 | Decode Q8 matvecs: rows per threadgroup (NR0 1/2/4), output exact | The gap to the vocabulary head's 605 GB/s comes from NSG and dispatch size. Changing NSG changes the summation order. The best row mix predicted 0.16 ms per token and measured decode 2048 -0.57% (CI below zero). | Decode kernels after 70 |
+| Long decode index rows scored from bf16 keys (upstream `64ceeea`, change `740`) | Bitwise and ported, but neutral: after 40000 / 72000 tokens the steady decode stayed within 0.3% of `690`'s over clean A B B A pairs, while the copy costs 256 bytes per index key. The scorer is not on the critical path at these lengths. | 690 long-context index |
 | Faster decode indexer scorer (#1061 rewrite) | 0.18 ms per token at 2K and 0.45 ms at 8K, under the harness resolution. It matters only past 32K. | Decode kernels after 70 |
 | Faster routed-expert kernels for 2048-row prefill sweeps (prompts up to about 5K) | The sweep waits on SSD reads: about 250-330 ms per layer against about 100 ms of GPU. Any kernel gain becomes read wait. | Prefill routed experts after 80 |
 | Expert-local / Morton threadgroup order in `kernel_mul_mm_id_mpp_packed` | The routed share is 3-5% slower at every chunk shape (CI below zero). The default order already reuses well. | Prefill routed experts after 80 |
@@ -2353,6 +2354,57 @@ alone, same flags, 2100 s, 26 pairs per kind (GPU median 1420 MHz, thermal
 Heavy to Nominal): ttft 3500 -0.4% (-1.0..-0.2), ttft 7500 -0.8% (-2.3..-0.2),
 first token 3500 140 -> 189 ms, 7500 173 -> 185 ms. The bundle's own -0.4% at
 3500 (above), not a new loss; the -7.8% / -8.5% of the full run were noise.
+
+## 690 long-context index (2026-11-06)
+
+Upstream's long-context decode indexer as `b3f5018` has it: radix top-k
+(`af7c02b`, `ff95f53`), decode top-512 (`4ff3af6`), candidate-block scoring
+(`2d5ef0d`) and the wide FP4 scorer (`4b1b151`, `4f80638`). Kernel checks pass
+(radix against the merge ladder at 16K-256K keys, decode top-512 fused ==
+staged == ladder, candidate rows == full rows with ties, wide scorer == rows4
+with gap 0 at 8192 and 131072 keys); the decode-switch test passes for
+`DS4_METAL_DISABLE_V41_DECODE_TOPK`.
+
+Long context, bench with `--ctx-alloc 81920`, `60GB` cache (82GB does not fit
+next to 81920 of context), frontiers 40000 then 72000, 16 tokens, one run each:
+
+| Build | prefill to 40000 / +32000 | decode after 40000 / 72000 | frontier logits vs upstream |
+|---|---|---|---|
+| upstream `b3f5018` | 622.6 / 473.3 t/s | 21.75 / 21.70 t/s | - |
+| sync tree | 720.2 / 674.8 t/s | 30.19 / 28.63 t/s | identical |
+| `690` | 721.5 / 680.3 t/s | 27.21 / 29.98 t/s | identical |
+
+The decode logits after both frontiers are byte-identical between `690` and
+the sync tree, and the first line of the 32-token decoded text equals
+upstream's at both frontiers (upstream's bench dumps no decode logits). On this
+prompt the port changes no output: the radix select and the candidate path
+reorder only exactly tied scores, and none decided a token here. At typical
+sizes, against the sync tree, `--bitwise`, 26 pairs: decode 2048 / 8192
++0.0% / +0.0%, ttft 5000 +0.8% (-4.3..+3.1), guard 16896 -2.6% (1 pair).
+At long context, the same bench (40000 then 72000, 16 tokens, `60GB`,
+`--ctx-alloc 81920`) as A B B A twice, sync tree A and `690` B, cooled to
+55 C before each run: steady decode after 40000 A 26.76 / 30.42 / 30.96 /
+30.86, B 31.51 / 31.39 / 31.30 / 31.54 t/s (medians 30.64 -> 31.45, +2.6%);
+after 72000 A 26.47 / 29.86 / 30.04 / 30.09, B 31.22 / 31.04 / 31.16 / 31.31
+(29.95 -> 31.19, +4.1%); every B run above every A run. Prefill equal (774 and
+730 t/s on both). The single first runs above (-10% / +5%) were noise.
+
+`740` (upstream `64ceeea`, long index rows scored from a bf16 copy of the
+keys) was ported on top: kernel check bitwise (split-4, split-2 and full bf16
+scorers == the wide scorer, 8200 to 131077 keys), bench logits at 40000 and
+72000 byte-identical to `690`'s with and without
+`DS4_METAL_DISABLE_V41_INDEX_BF16`. Long-context A B B A against `690`: steady
+decode after 40000 A 31.47 / 26.50 / 31.14 / 31.20, B 31.52 / 26.39 / 31.27 /
+30.91; after 72000 A 31.19 / 26.47 / 31.11 / 31.08, B 31.18 / 25.38 / 31.15 /
+31.14 t/s (runs 3-4 disturbed on both). Neutral, so not kept (rejected ideas).
+
+Parity against `b3f5018`: prompts 1-10 token-identical; the 5025-token prompt
+differed, but `690`'s output equals the sync tree's of the previous night, and
+upstream's own output had changed: in that run upstream reported 8073.52 MiB of
+static context buffers and prefilled 4096 + 928 tokens, where every other
+upstream run (the previous night, and two reruns right after) reported 8094.45
+MiB, prefilled the 5024 tokens in one sweep and gave the child's output. Same
+binary, flags and prompt; the cause of that one run's other plan is not found.
 
 ## Adding a row
 

@@ -261,6 +261,19 @@ identical (`make test-deepseek41-decode-switch SWITCH=<env>`):
   sync) and `_NARROW_BLEND` (their 16-byte-load kernels);
 - `DS4_METAL_DISABLE_V41_SCORE_ROWS4` (four indexer rows per SIMD group,
   upstream `345d7f4`; `make test-v41-indexer-score` checks it on 1M rows).
+- `DS4_METAL_DISABLE_V41_DECODE_TOPK` (the decode top-512: prefix merges
+  that keep only each pair's best 512, and a 512-wide sort of the radix
+  winners, upstream `4ff3af6`, `690`; same ids, from about 2K tokens).
+
+Above 32K tokens of context the decode indexer follows upstream (`690`): from
+8192 index rows the FP4 keys are scored one key per thread
+(`DS4_METAL_DISABLE_V41_INDEX_SCORE_WIDE`, same bits as rows4), from 16384 rows
+the top-k is a radix select (`DS4_METAL_DISABLE_V41_TOPK_SELECT`; it orders
+exactly tied scores by id, so it changes the output, as upstream's does), and
+above 2048 blocks the index layers after layer 20 score only their 2048
+candidate blocks (`DS4_METAL_DISABLE_V41_INDEX_CANDIDATES`, same ids).
+`tests/test_deepseek41_metal.c` checks each against the path it replaces
+(`--topk-select`, `--decode-topk`, `--index-score-wide`, `--index-candidates`).
 
 The narrow copies are GPU memory on top of the model (0.48 GiB on the 1017
 Q2), wired with `mlock` and taken out of the streaming cache target: with
@@ -390,7 +403,7 @@ child has established:
 | `DS4_GLM_LOGIT_DUMP`, `glm_debug_dump_prefill_logits` | a model-agnostic dump of the post-prefill logits | it writes `s->logits`, which every model fills |
 | `metal/deepseek4_vision.metal`, `metal/glm53_bf16.metal`, `metal/glm53_vision.metal` | required by the V4.1 vision encoder; only the kernels it dispatches remain (`glm53_mul_mv/mm_bf16_f32`, `glm53_vision_attention`, `_add_bias`, `_rms_bf16`, `_bias_residual`) | deleting them breaks vision, not GLM |
 | `glm53_vision_dispatch_*`, `ds4_gpu_glm53_matmul_bf16` (in `ds4_metal.m`) | helpers of `ds4_gpu_deepseek4_vision_encode` | its only callers; `nm` keeps them |
-| `ds4_gpu_glm_indexer_score_one_tensor` | the V4.1 indexer scorer | called from the `ds41_*` graph and `tests/test_deepseek41_metal.c` |
+| `ds4_gpu_glm_indexer_score_one_tensor` | the V4.1 indexer scorer without the wide path (rows4 or one row); the graph calls `ds4_gpu_dsv41_indexer_score_one_tensor`, which adds the wide scorer from 8192 rows, as upstream splits them | called from `tests/test_v41_indexer_score.c`, which checks rows4 on 1M rows |
 | `append_glm_tag_body_text` (`ds4_server.c`, under `DS4_SERVER_TEST`) | test fixture that exercises the live `ds4_tool_text_unescape` and stream-safe length helpers | only the server unit tests call it |
 | `sample_build_probabilities` (under `DS4_NO_GPU`) | CPU and test-hook sampling; the Metal build samples elsewhere | removing it breaks `make cpu` and the sampling tests |
 | `tests/vision-fixtures/glm53/` | plain PNG/JPEG test data read by four kept tests | see that directory's README |

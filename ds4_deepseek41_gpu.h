@@ -178,6 +178,30 @@ int ds4_gpu_dsv41_indexer_topk_batch(ds4_gpu_tensor *selected,
                                     const ds4_gpu_tensor *scores,
                                     uint32_t width, uint32_t rows,
                                     uint32_t start, uint32_t ratio);
+/* The V4.1 decode index scores of FP4 keys: ds4_gpu_glm_indexer_score_one_tensor
+ * plus the exact one-key-per-thread scorer from 8192 rows. */
+int ds4_gpu_dsv41_indexer_score_one_tensor(ds4_gpu_tensor *scores,
+                                           const ds4_gpu_tensor *q,
+                                           const ds4_gpu_tensor *weights,
+                                           const ds4_gpu_tensor *indexer_key_cache,
+                                           uint32_t n_rows, uint32_t n_head, uint32_t head_dim,
+                                           float scale, bool cache_f16);
+/* The top-k of a row filtered by a block mask of more than 2048 blocks, from
+ * the scores of its 2048 candidate blocks only: the same ids in the same order.
+ * list_ready != 0: list already holds block_mask's candidates (built by an
+ * earlier call since the mask was written), so it is not rebuilt. Returns 0,
+ * leaving the full row to the caller, where unavailable. */
+int ds4_gpu_dsv41_indexer_candidates_tensor(ds4_gpu_tensor *selected, ds4_gpu_tensor *scores,
+                                           ds4_gpu_tensor *list, const ds4_gpu_tensor *q,
+                                           const ds4_gpu_tensor *weights, const ds4_gpu_tensor *keys,
+                                           const ds4_gpu_tensor *block_mask, uint32_t n_comp,
+                                           float scale, uint32_t top_k, int list_ready);
+/* The indexer top-k, plus the radix select for wide rows (Metal); the
+ * pipeline-graph callers keep the merge ladder and its tie order. */
+int ds4_gpu_dsv41_indexer_topk_tensor(ds4_gpu_tensor *selected,
+                                      const ds4_gpu_tensor *scores,
+                                      uint32_t n_comp, uint32_t n_tokens,
+                                      uint32_t top_k);
 /* Rows with at most 512 visible keys select all of them, in key order. */
 int ds4_gpu_dsv41_indexer_all_batch(ds4_gpu_tensor *selected, uint32_t rows,
                                    uint32_t start, uint32_t ratio);

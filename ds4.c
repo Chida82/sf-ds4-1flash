@@ -22929,7 +22929,7 @@ static uint32_t ds41_carry_cap(uint32_t ctx) {
     X(selected_kv, DS4_N_INDEXER_TOP_K * DS4_N_HEAD_DIM) \
     X(block_scores, DS41_INDEX_BATCH * ((g->ctx + 7u) / 8u)) \
     X(block_selected, DS41_INDEX_BATCH * 2048u) \
-    X(block_mask, (g->ctx + 7u) / 8u) \
+    X(block_mask, (g->ctx + 7u) / 8u) X(block_list, 2048u) \
     X(heads, DS4_N_HEAD * DS4_N_HEAD_DIM) X(low, DS4_N_OUT_GROUP * DS4_N_LORA_O) \
     X(route_logits, DS4_N_EXPERT) X(route_probs, DS4_N_EXPERT) \
     X(selected, DS4_N_EXPERT_USED) X(route_weights, DS4_N_EXPERT_USED) \
@@ -22978,6 +22978,9 @@ typedef struct {
     ds41_prefill_row batch, *rows_view;
     ds41_prefill_row carry;
     ds4_gpu_tensor *prefill_tokens;
+    /* the mask whose candidates block_list holds (cleared when layer 20 writes a
+     * mask); prefill rows are graph copies that read their own mask views */
+    const ds4_gpu_tensor *block_list_mask;
 #define DS41_FIELD(name, count) ds4_gpu_tensor *name;
     DS41_SCRATCH(DS41_FIELD)
 #undef DS41_FIELD
@@ -23862,11 +23865,12 @@ static bool ds41_attention_candidates(ds41_gpu_graph *g, uint32_t il) {
     if (n_comp && ds41_index_source(il)) {
         if (il == 20) {
             const uint32_t blocks = (n_comp + 7u) / 8u, top = blocks < 2048u ? blocks : 2048u;
+            g->block_list_mask = NULL;
             /* Below the block cap every block survives. Their sorted order
              * is unused; only the mask is consumed by subsequent layers. */
             if (top == blocks) return ds4_gpu_tensor_fill_f32(g->block_mask, 0, blocks) != 0;
             if (!ds4_gpu_dsv41_candidate_blocks(g->block_scores, g->index_scores, n_comp, 1, pos, ratio) ||
-                !ds4_gpu_indexer_topk_tensor(g->block_selected, g->block_scores, blocks, 1, top) ||
+                !ds4_gpu_dsv41_indexer_topk_tensor(g->block_selected, g->block_scores, blocks, 1, top) ||
                 !ds4_gpu_dsv4_topk_mask_tensor(g->block_mask, g->block_selected, blocks, 1, top)) return false;
         } else if (il > 20 &&
             !ds4_gpu_dsv41_candidate_filter(g->index_scores, g->block_mask, n_comp, 1, pos, ratio, 0)) return false;
@@ -23879,7 +23883,7 @@ static bool ds41_attention_pick(ds41_gpu_graph *g, uint32_t il) {
     const uint32_t n_comp = ratio ? (g->pos + 1u) / ratio : 0;
     const uint32_t top = n_comp < DS4_N_INDEXER_TOP_K ? n_comp : DS4_N_INDEXER_TOP_K;
     return ds41_attention_candidates(g, il) && (!n_comp || !ds41_index_source(il) ||
-        ds4_gpu_indexer_topk_tensor(g->selected_comp, g->index_scores, n_comp, 1, top));
+        ds4_gpu_dsv41_indexer_topk_tensor(g->selected_comp, g->index_scores, n_comp, 1, top));
 }
 
 /* The index-source q projection, BF16-rounded: from the E4M3 copy when it is
@@ -23905,8 +23909,17 @@ static bool ds41_attention_select_published(ds41_gpu_graph *g, const ds4_model *
         if (!ds41_index_q_project(g, m, l, il) ||
             !ds41_rope(g->index_q, DS4_N_INDEXER_HEAD, 128, il, pos, false) ||
             !ds4_gpu_dsv41_quantize(g->index_q, 128, DS4_N_INDEXER_HEAD, DS4_V41_FP4_E8M0) ||
-            !ds41_matmul(g->index_weights, m, l->indexer_proj, g->norm, true) ||
-            !ds4_gpu_glm_indexer_score_one_tensor(g->index_scores, g->index_q, g->index_weights,
+            !ds41_matmul(g->index_weights, m, l->indexer_proj, g->norm, true)) return false;
+        /* past layer 20 only its candidate blocks can be selected; the list is
+         * built once per mask (upstream 2d5ef0d, 4ff3af6) */
+        if (il > 20u && (n_comp + 7u) / 8u > 2048u &&
+            ds4_gpu_dsv41_indexer_candidates_tensor(g->selected_comp, g->index_scores, g->block_list,
+                g->index_q, g->index_weights, g->index_cache[owner], g->block_mask, n_comp,
+                1.0f / 64.0f, DS4_N_INDEXER_TOP_K, g->block_list_mask == g->block_mask)) {
+            g->block_list_mask = g->block_mask;
+            return true;
+        }
+        if (!ds4_gpu_dsv41_indexer_score_one_tensor(g->index_scores, g->index_q, g->index_weights,
                 g->index_cache[owner], n_comp, DS4_N_INDEXER_HEAD, 128, 1.0f / 64.0f, false)) return false;
     }
     return ds41_attention_pick(g, il);
@@ -24394,6 +24407,9 @@ static bool ds41_attention_batch(ds41_gpu_graph *g, const ds4_model *m,
 #define DS41_SELECT_ROW(name, width) row.name = g->rows_view[t].name;
         DS41_PREFILL_ROWS(DS41_SELECT_ROW)
 #undef DS41_SELECT_ROW
+        /* the views are re-aimed, not reallocated: a list built for another
+         * row or tile is not this row's mask (upstream reuses it) */
+        row.block_list_mask = NULL;
         if (!batch_publish && !ds41_attention_publish(&row, m, l, il)) return false;
         if (!batch_index && !ds41_attention_select_published(&row, m, l, il)) return false;
     }
@@ -25615,6 +25631,7 @@ static bool ds41_graph_prefill_sweep(ds41_gpu_graph *g, const ds4_model *m,
 #define DS41_USE_ROW(name, width) row.name = g->rows_view[t].name;
                 DS41_PREFILL_ROWS(DS41_USE_ROW)
 #undef DS41_USE_ROW
+                row.block_list_mask = NULL;
                 ok = batch_attention ? ds41_graph_before_attention(&row, m, &w->layer[il], il) :
                     batch_moe ? ds41_graph_before_moe(&row, m, &w->layer[il], il) :
                     ds41_graph_layer(&row, m, &w->layer[il], il, tokens[off + t]);
@@ -25629,6 +25646,7 @@ static bool ds41_graph_prefill_sweep(ds41_gpu_graph *g, const ds4_model *m,
 #define DS41_USE_ATTN_ROW(name, width) row.name = g->rows_view[t].name;
                     DS41_PREFILL_ROWS(DS41_USE_ATTN_ROW)
 #undef DS41_USE_ATTN_ROW
+                    row.block_list_mask = NULL;
                     ok = ds41_attention(&row, m, l, il, true);
                 }
                 DS41_STAGE("attention core/index");
@@ -25831,6 +25849,7 @@ static DS4_MAYBE_UNUSED bool ds41_graph_step_batch(ds41_gpu_graph *const *graphs
 #define DS41_SESSION_ROW(name, width) row.name = g->rows_view[i].name;
             DS41_PREFILL_ROWS(DS41_SESSION_ROW)
 #undef DS41_SESSION_ROW
+            row.block_list_mask = NULL;
             row.q = queries[i];
             row.heads = heads[i];
             ok = ds41_attention(&row, model, l, il, true) &&
