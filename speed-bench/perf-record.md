@@ -2406,6 +2406,20 @@ upstream run (the previous night, and two reruns right after) reported 8094.45
 MiB, prefilled the 5024 tokens in one sweep and gave the child's output. Same
 binary, flags and prompt; the cause of that one run's other plan is not found.
 
+## 730 cost of the cache report (2026-11-06)
+
+Does `--cache-stats` (the per-frontier `ds4_engine_memory_report` the harness
+reads its cache counters from) slow the next first token? A temporary
+`--b-no-cache-stats` option ran B without it on the same tree: A/A,
+`cold-2500,append,decode`, ABBA, 2100 s, 25 pairs, GPU median 1515 MHz,
+Nominal. B against A: first token 2500 +6.2% (-14.2..+24.8), 2048 -7.8%
+(-19.4..+21.6), 8192 +15.6% (-16.2..+33.6); ttft 2500 -2.7% (-7.5..+0.8),
+append prefill 5000 -6.3% (-10.4..+5.0); decode and appends within 0.5%.
+No cost is established: every first-token interval crosses zero. The option
+was removed again. The same run measures what two identical builds give: the
+first token after a sweep moves by 10-30% and a 5000-token sweep by up to 10%
+between pairs, so single-change differences of that size there are noise.
+
 ## Adding a row
 
 1. `SF_PARITY_FLAGS=--ssd-streaming tools/parity-check.sh sf-ds4-1flash` from
