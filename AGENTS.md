@@ -264,6 +264,11 @@ identical (`make test-deepseek41-decode-switch SWITCH=<env>`):
 - `DS4_METAL_DISABLE_V41_DECODE_TOPK` (the decode top-512: prefix merges
   that keep only each pair's best 512, and a 512-wide sort of the radix
   winners, upstream `4ff3af6`, `690`; same ids, from about 2K tokens).
+- `DS4_METAL_DISABLE_V41_LITERAL_SHAPES` (the q_a/kv pair and the output-B
+  expand with V4.1's shapes compiled in, upstream `b66c926`, `700`) and
+  `DS4_METAL_DISABLE_V41_SPLIT_REDUCE` (the Engram gate over 256 threads,
+  upstream `e99dc21`); `check_literal_shapes` and `check_engram` compare them
+  with the generic kernels bit for bit.
 
 Above 32K tokens of context the decode indexer follows upstream (`690`): from
 8192 index rows the FP4 keys are scored one key per thread

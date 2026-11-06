@@ -19205,8 +19205,12 @@ int ds4_gpu_dsv41_project_pair_q8(ds4_gpu_tensor *out_a, ds4_gpu_tensor *out_b,
         ds4_gpu_q8_0_matvec_args args_a = ds4_gpu_make_q8_0_mv_args(in_dim, out_a_dim);
         ds4_gpu_q8_0_matvec_args args_b = ds4_gpu_make_q8_0_mv_args(in_dim, out_b_dim);
         args_a.nr0 = args_b.nr0 = dispatch.nr0;
+        /* the V4.1 q_a/kv shape: the kernel with that shape's arguments as literals (upstream b66c926) */
+        const bool literal = in_dim == 5120u && out_a_dim == 1280u && out_b_dim == 512u && dispatch.nr0 == 2 &&
+            !getenv("DS4_METAL_DISABLE_V41_LITERAL_SHAPES");
         id<MTLComputePipelineState> pipeline =
-            ds4_gpu_get_mul_mv_pipeline("kernel_mul_mv_q8_0_f32_bf16_pair", dispatch.nsg);
+            ds4_gpu_get_mul_mv_pipeline(literal ? "kernel_mul_mv_q8_0_f32_bf16_pair_qa_kv"
+                                                : "kernel_mul_mv_q8_0_f32_bf16_pair", dispatch.nsg);
         if (!pipeline) return 0;
         const NSUInteger nr0 = (NSUInteger)dispatch.nr0;
         const NSUInteger groups = ((NSUInteger)out_a_dim + nr0 - 1u) / nr0 +
@@ -40202,8 +40206,12 @@ int ds4_gpu_dsv41_matmul_expand_rows(ds4_gpu_tensor *out_hc, const void *model_m
         const ds4_gpu_tensor *add_or_x = add ? add : x;
         const NSUInteger split_offset = ds4_gpu_tensor_offset(split);
         /* sf-ablate(dspark): the rows_seq and MMA rows kernels for rows > 1 serve DSpark verify rows; the single-token graph passes one row */
+        /* the one-row 8192 -> 5120 call without an add (the attention output-B), its shape as literals (upstream b66c926) */
+        const bool literal = in_dim == 8192u && out_dim == 5120u && !add &&
+            !getenv("DS4_METAL_DISABLE_V41_LITERAL_SHAPES");
         id<MTLComputePipelineState> pipeline = ds4_gpu_get_mul_mv_pipeline(
-            "kernel_mul_mv_q8_0_f32_bf16io_hc_expand4", dispatch.nsg);
+            literal ? "kernel_mul_mv_q8_0_f32_bf16io_hc_expand4_static" : "kernel_mul_mv_q8_0_f32_bf16io_hc_expand4",
+            dispatch.nsg);
         if (!pipeline) return 0;
         int owned = 0;
         id<MTLCommandBuffer> cb = ds4_gpu_command_buffer(&owned);
@@ -40314,7 +40322,10 @@ int ds4_gpu_dsv41_engram_add(ds4_gpu_tensor *residual,
         (mask && ds4_gpu_tensor_bytes(mask) < rows)) return 0;
     if (!g_initialized && !ds4_gpu_init()) return 0;
     @autoreleasepool {
-        id<MTLComputePipelineState> pipeline = ds4_gpu_get_pipeline("kernel_dsv41_engram_add");
+        /* a decode-sized unmasked gate takes one 256-thread group per stream (the same bits, upstream e99dc21) */
+        const bool tg = !mask && width == 5120u && rows <= 16u && !getenv("DS4_METAL_DISABLE_V41_SPLIT_REDUCE");
+        id<MTLComputePipelineState> pipeline = ds4_gpu_get_pipeline(
+            tg ? "kernel_dsv41_engram_add_tg256" : "kernel_dsv41_engram_add");
         if (!pipeline) return 0;
         const struct { uint32_t width, rows; float eps; uint32_t masked; } args =
             {width, rows, eps, mask != NULL};
@@ -40328,8 +40339,9 @@ int ds4_gpu_dsv41_engram_add(ds4_gpu_tensor *residual,
         for (NSUInteger i = 0; i < 5; i++)
             [enc setBuffer:ds4_gpu_tensor_buffer(inputs[i])
                     offset:ds4_gpu_tensor_offset(inputs[i]) atIndex:i + 1];
+        if (tg) [enc setThreadgroupMemoryLength:128u * sizeof(float) atIndex:0];
         [enc dispatchThreadgroups:MTLSizeMake(rows, 4, 1)
-             threadsPerThreadgroup:MTLSizeMake(32, 1, 1)];
+             threadsPerThreadgroup:MTLSizeMake(tg ? 256 : 32, 1, 1)];
         ds4_gpu_end_compute_encoder(cb, enc);
         return ds4_gpu_finish_command_buffer(cb, owned, "V4.1 Engram gate");
     }

@@ -444,6 +444,37 @@ kernel void kernel_mul_mv_q8_0_f32_bf16io_hc_expand4(
         args, src0, src1, dst, shmem, tgpig, tiisg, sgitg, nullptr, &hc, add, residual, post, comb);
 }
 
+/* A one-row Q8_0 matvec's arguments (nr0 2); called with literals, they fold into the address arithmetic. */
+static inline ds4_metal_args_mul_mv ds4_q8_0_static_args(int in, int out) {
+    const ulong row = (ulong)(in / 32) * 34;
+    return ds4_metal_args_mul_mv{in, out, 1, 34, row, row * out, row * out, in, 1, 1, 4,
+                                 (ulong)in * 4, (ulong)in * 4, (ulong)in * 4, out, 1, 2, 1, 1};
+}
+
+/* Attention output-B into the HC streams at its V4.1 shape (8192 -> 5120) as literals (upstream b66c926). */
+constant ds4_metal_args_mv_hc_expand4 ds4_hc_static_8192_5120 = { /*.n_embd =*/ 5120, /*.has_add =*/ 0, /*.split_stride =*/ 24 };
+
+[[host_name("kernel_mul_mv_q8_0_f32_bf16io_hc_expand4_static")]]
+kernel void kernel_mul_mv_q8_0_f32_bf16io_hc_expand4_static(
+        constant ds4_metal_args_mul_mv & args,
+        device const char * src0,
+        device const char * src1,
+        device       char * dst,
+        constant ds4_metal_args_mv_hc_expand4 & hc,
+        device const float * add,
+        device const float * residual,
+        device const float * post,
+        device const float * comb,
+        threadgroup  char * shmem [[threadgroup(0)]],
+        uint3  tgpig[[threadgroup_position_in_grid]],
+        ushort tiisg[[thread_index_in_simdgroup]],
+        ushort sgitg[[simdgroup_index_in_threadgroup]]) {
+    (void)args; (void)hc;
+    ds4_metal_args_mul_mv sa = ds4_q8_0_static_args(8192, 5120);
+    kernel_mul_mv_q8_0_f32_rope_impl<N_R0_Q8_0, thread ds4_metal_args_mul_mv &, true, true, false, true>(
+        sa, src0, src1, dst, shmem, tgpig, tiisg, sgitg, nullptr, &ds4_hc_static_8192_5120, add, residual, post, comb);
+}
+
 // Two Q8_0 matrices over one activation row in one dispatch: the leading
 // threadgroups take the first matrix's row groups, the rest the second's.
 [[host_name("kernel_mul_mv_q8_0_f32_bf16_pair")]]
@@ -465,6 +496,31 @@ kernel void kernel_mul_mv_q8_0_f32_bf16_pair(
     } else {
         tgpig.x -= groups_a;
         kernel_mul_mv_q8_0_f32_impl<N_R0_Q8_0, constant ds4_metal_args_mul_mv &, true>(args_b, src0_b, src1, dst_b, shmem, tgpig, tiisg, sgitg);
+    }
+}
+
+/* The q_a/kv pair at its V4.1 decode shape (5120 -> 1280, 5120 -> 512) as literals (upstream b66c926). */
+[[host_name("kernel_mul_mv_q8_0_f32_bf16_pair_qa_kv")]]
+kernel void kernel_mul_mv_q8_0_f32_bf16_pair_qa_kv(
+        constant ds4_metal_args_mul_mv & args_a,
+        constant ds4_metal_args_mul_mv & args_b,
+        device const char * src0_a,
+        device const char * src0_b,
+        device const char * src1,
+        device       char * dst_a,
+        device       char * dst_b,
+        threadgroup  char * shmem [[threadgroup(0)]],
+        uint3  tgpig[[threadgroup_position_in_grid]],
+        ushort tiisg[[thread_index_in_simdgroup]],
+        ushort sgitg[[simdgroup_index_in_threadgroup]]) {
+    (void)args_a; (void)args_b;
+    if (tgpig.x < 640u) {
+        ds4_metal_args_mul_mv sa = ds4_q8_0_static_args(5120, 1280);
+        kernel_mul_mv_q8_0_f32_impl<N_R0_Q8_0, thread ds4_metal_args_mul_mv &, true>(sa, src0_a, src1, dst_a, shmem, tgpig, tiisg, sgitg);
+    } else {
+        ds4_metal_args_mul_mv sa = ds4_q8_0_static_args(5120, 512);
+        tgpig.x -= 640u;
+        kernel_mul_mv_q8_0_f32_impl<N_R0_Q8_0, thread ds4_metal_args_mul_mv &, true>(sa, src0_b, src1, dst_b, shmem, tgpig, tiisg, sgitg);
     }
 }
 

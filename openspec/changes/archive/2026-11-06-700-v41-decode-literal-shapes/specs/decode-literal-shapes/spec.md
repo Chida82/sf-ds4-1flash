@@ -32,14 +32,14 @@ generic expand kernel, under the same switch.
 - **THEN** the generic kernel runs
 
 ### Requirement: Engram gate reduction over a threadgroup
-If this change keeps it, the unmasked Engram gate of width 5120 and at most 16
+The unmasked Engram gate of width 5120 and at most 16
 rows SHALL reduce over 256 threads and produce the same bits as the
 single-simdgroup kernel. `DS4_METAL_DISABLE_V41_SPLIT_REDUCE=1` SHALL restore
 that kernel.
 
 #### Scenario: Kernel equality on this machine
 - **WHEN** the kernel test runs the gate with both kernels on the M5 Max
-- **THEN** every output is bit-identical, or the kernel is not ported
+- **THEN** every output is bit-identical
 
 ### Requirement: Switches are exact end to end
 Each switch this change adds SHALL leave decoded logits, Engram history and KV

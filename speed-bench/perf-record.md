@@ -24,6 +24,7 @@ figures are in the named section.
 |---|---|---|
 | Decode Q8 matvecs: rows per threadgroup (NR0 1/2/4), output exact | The gap to the vocabulary head's 605 GB/s comes from NSG and dispatch size. Changing NSG changes the summation order. The best row mix predicted 0.16 ms per token and measured decode 2048 -0.57% (CI below zero). | Decode kernels after 70 |
 | Long decode index rows scored from bf16 keys (upstream `64ceeea`, change `740`) | Bitwise and ported, but neutral: after 40000 / 72000 tokens the steady decode stayed within 0.3% of `690`'s over clean A B B A pairs, while the copy costs 256 bytes per index key. The scorer is not on the critical path at these lengths. | 690 long-context index |
+| Untracked model views and narrow copies (upstream `890898c`/`9fe88cd`, change `710`) | Bitwise and decode-neutral (ABBA, 32 pairs: +0.3% / -0.1%). With a fixed start state (`purge`, then every static tensor read; 3 rounds, each change switched on one binary) the prefill to 2048 and the +300 append were unchanged, and the +2952 medium-sweep append took 1% longer: 7.55-7.64 s tracked, 7.59-7.72 s untracked. No gain to pay for it. | Sync b3f5018 |
 | Faster decode indexer scorer (#1061 rewrite) | 0.18 ms per token at 2K and 0.45 ms at 8K, under the harness resolution. It matters only past 32K. | Decode kernels after 70 |
 | Faster routed-expert kernels for 2048-row prefill sweeps (prompts up to about 5K) | The sweep waits on SSD reads: about 250-330 ms per layer against about 100 ms of GPU. Any kernel gain becomes read wait. | Prefill routed experts after 80 |
 | Expert-local / Morton threadgroup order in `kernel_mul_mm_id_mpp_packed` | The routed share is 3-5% slower at every chunk shape (CI below zero). The default order already reuses well. | Prefill routed experts after 80 |
@@ -2419,6 +2420,53 @@ No cost is established: every first-token interval crosses zero. The option
 was removed again. The same run measures what two identical builds give: the
 first token after a sweep moves by 10-30% and a 5000-token sweep by up to 10%
 between pairs, so single-change differences of that size there are noise.
+
+## 700 literal decode shapes and the Engram gate (2026-11-06)
+
+Upstream `b66c926`'s q_a/kv pair and output-B expand kernels with V4.1's shapes
+compiled in, and `e99dc21`'s Engram gate over 256 threads. Kernel checks:
+both literal kernels and the 256-thread gate give the generic kernels' bits on
+M5; `make test-deepseek41-decode-switch` passes for
+`DS4_METAL_DISABLE_V41_LITERAL_SHAPES` and `_SPLIT_REDUCE` (prefix 511 and
+2047, 65 exact tokens). An encoder timeline of a 51-token run shows the
+literal pair and expand on every layer (2040 each) and the 256-thread gate on
+both Engram layers (102).
+
+| Run | decode 2048 | decode 8192 | ttft 2500 | append prefill 5000 (detail) | append +300 / +1500 | pairs |
+|---|---|---|---|---|---|---|
+| `700` against the sync tree, `--bitwise` | +2.4% (+1.9..+3.2) | +1.3% (+1.2..+1.6) | -4.6% (-7.5..+3.1) | -8.8% (-15.0..-1.4) | +0.1% / -0.1% | 30 |
+| `LITERAL_SHAPES` off against on (B off) | -0.3% (-1.8..+0.2) | -0.4% (-0.8..-0.3) | | ttft 5000 -2.3% (-7.6..+1.8) | | 18 |
+| `SPLIT_REDUCE` off against on (B off) | -1.2% (-1.7..+0.6) | -0.7% (-2.6..-0.4) | | ttft 5000 -2.3% (-5.0..+2.2) | | 18 |
+
+The decode gain is real and splits about one third literal shapes, two thirds
+Engram gate. The 5000-token sweep moved by neither switch, and an A/A of two
+identical builds (`730`) moved it by -6.3% (-10.4..+5.0): the -8.8% detail is
+read as noise, not as a cost of this change. The intake rule ("no metric below
+zero") is met only with that reading.
+
+Noise check (task 5, 2026-11-06, against `main` at `75a206b`, `710` switched
+off in B with `DS4_METAL_MODEL_TRACKED=1`):
+- An encoder timeline of the 5000-token prompt counts no literal kernel and no
+  256-thread gate in the prefill sweep: 40 / 40 / 2 dispatches per decoded
+  token, nothing else. The prefill runs the same code with and without `700`.
+- The summed command-buffer GPU time of that prefill varies by 12% on one
+  tree (13.07-14.70 s on `main`), so it cannot resolve a few percent.
+- `--kinds append --bitwise`, A/B (`main` against `700`) and A/A' (`main`
+  against itself) alternated in four 1800 s blocks, 36 valid pairs per side:
+  prefill 5000 A/B -2.8%, A/A' +1.1%, permutation test on the medians
+  p = 0.25 (blocks: A/B -4.2% and +1.3%, A/A' +2.3% and -1.0%). The -8.8% of
+  the first run was noise. The same data give append +300 +1.4% over the A/A'
+  (p = 0.003), the token-by-token append that runs the decode kernels.
+
+On `main` at `75a206b` (2026-11-06 evening), same bench shape as the harness
+`decode` kind (2048 then 8192, 256 tokens), `710` off, 3 rounds: steady decode
+2048 31.32 -> 32.01 t/s (+2.2%; rounds +3.0 / +2.2 / +0.5), 8192 31.30 ->
+31.79 (+1.6%; +1.6 / +1.8 / +0.7). With a fixed start state (`purge`, then
+every static tensor read; each change switched on one binary, 3 rounds): prefill
+to 2048 12.60 s with and without `700`, the +2952 medium-sweep append 7.62 ->
+7.55 s, the +300 token-by-token append 9.49 -> 9.38 s (-1.2%, every pair). The
+switch tests (`LITERAL_SHAPES`, `SPLIT_REDUCE`, prefixes 511 and 2047, 65 exact
+tokens) pass on main + `700`.
 
 ## Adding a row
 
