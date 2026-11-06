@@ -1,5 +1,11 @@
 # Tasks
 
+Outcome 2026-11-06: implemented and measured, not landed. Tasks 1.1-2.3 were done
+(bitwise between two processes on main + 700; ABBA decode neutral). A fixed-start
+prefill check then measured the +2952-token medium-sweep append 1% slower
+untracked, with no gain elsewhere, so the change stops at 2.3 (perf-record,
+rejected ideas). The code is kept as `.claude/worktrees/710-untracked-model-views.patch`.
+
 ## 1. Default and switch
 
 - [ ] 1.1 `ds4_gpu_model_resource_options`: untracked unless `DS4_METAL_MODEL_TRACKED` is set; remove the `DS4_METAL_MODEL_UNTRACKED` read
