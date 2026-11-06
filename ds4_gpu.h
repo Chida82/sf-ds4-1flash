@@ -607,6 +607,13 @@ int ds4_gpu_dsv4_comp_row_finalize_tensor(
  * projection/store in one dispatch.  Bit-exact vs the separate dispatches.
  * Returns 1 when fused, 0 to fall back, -1 on error. */
 
+int ds4_gpu_weight_residency(ds4_gpu_tensor *const *tensors, uint32_t n);
+int ds4_gpu_matmul_e4m3_bf16_tensor(ds4_gpu_tensor *out, const ds4_gpu_tensor *codes,
+                                    const ds4_gpu_tensor *scales, uint64_t in_dim, uint64_t out_dim,
+                                    const ds4_gpu_tensor *x);
+int ds4_gpu_matmul_bf16_weights_tensor(ds4_gpu_tensor *out, const ds4_gpu_tensor *weights,
+                                       uint64_t in_dim, uint64_t out_dim,
+                                       const ds4_gpu_tensor *x);
 int ds4_gpu_matmul_f32_tensor(
         ds4_gpu_tensor       *out,
         const void             *model_map,

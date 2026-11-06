@@ -37,15 +37,22 @@ ACTIVE_PERCENT = 50.0
 # The fixed streaming configuration of every run (design D3): the cache flag is a total
 # from which the loader takes the prefill headroom; the window is what must come out.
 CACHE_FLAG = '82GB'
-CACHE_WINDOW = (74.5, 75.5)
+# 74.40 GiB since the b3f5018 sync reserves the narrow decode copies out of 82GB; 74.88 before
+CACHE_WINDOW = (73.9, 75.5)
 CTX_ALLOC = 32768
 # --b-cache NGB and --ctx-alloc N (270) replace these for one invocation; the defaults are today's.
 B_CACHE_FLAG = CACHE_FLAG
+# GiB B's engine reserves out of the same cache flag (--b-reserve): lowers B's dynamic-cache window.
+B_RESERVE_GIB = 0.0
 PREFILL_HEADROOM_GIB = 7.12
 
 
+class BFlag(str):
+    """B's cache flag, told apart from A's even when the text is the same (--b-reserve)."""
+
+
 def cache_flag(build):
-    return B_CACHE_FLAG if build == 'B' else CACHE_FLAG
+    return BFlag(B_CACHE_FLAG) if build == 'B' else CACHE_FLAG
 
 
 def cache_window(flag):
@@ -63,13 +70,15 @@ KINDS = {
     'cold-7500': {'frontiers': (7500,), 'gen': 16},
     'cold-10000': {'frontiers': (10000,), 'gen': 16},
     'append': {'frontiers': (5000, 5300, 6800), 'gen': 16},
+    # final tiles of 452 and 952 rows: one medium sweep each, or a sweep and a token-major tail
+    'append-medium': {'frontiers': (5000, 7500, 10500), 'gen': 16},
     'guard-16896': {'frontiers': (16896,), 'gen': 16},
     'guard-decode': {'frontiers': (8192,), 'gen': 2500},
 }
 GROUPS = {
     'cold': [k for k in KINDS if k.startswith('cold-')],
     'guards': [k for k in KINDS if k.startswith('guard-')],
-    'all': [k for k in KINDS if not k.startswith('guard-')],
+    'all': [k for k in KINDS if not k.startswith('guard-') and k != 'append-medium'],
 }
 # Seconds reserved for each guard's single A, B pair (design D6); measured in task 6.2.
 GUARD_SECONDS = {'guard-16896': 80.0, 'guard-decode': 180.0}
@@ -297,6 +306,11 @@ def metrics(kind, rows):
         m['prefill 5000'] = seconds(rows[5000])
         m['append +300'] = seconds(rows[5300])
         m['append +1500'] = seconds(rows[6800])
+    elif kind == 'append-medium':
+        m['prefill 5000'] = seconds(rows[5000])
+        for f, n in ((7500, 2500), (10500, 3000)):
+            m[f'append +{n}'] = seconds(rows[f])
+            m[f'first token {f} ms'] = float(rows[f]['gen_first_ms'])
     else:
         f = fs[0]
         m[f'guard ttft {f}' if kind.startswith('guard-') else f'ttft {f}'] = seconds(rows[f])
@@ -343,6 +357,8 @@ def parse_loader(err_text, kind, cache=CACHE_FLAG):
         raise Stop(2, f'{kind}: the loader printed no SSD streaming cache line (is --ssd-streaming on?)')
     gib, slots = float(m[1]), int(m[2])
     window = cache_window(cache)
+    if isinstance(cache, BFlag) and B_RESERVE_GIB:
+        window = (round(window[0] - B_RESERVE_GIB, 2), round(window[1] - B_RESERVE_GIB, 2))
     if not window[0] <= gib <= window[1]:
         raise Stop(2, f'{kind}: dynamic expert cache {gib} GiB is outside {window[0]}-{window[1]} GiB: '
                       f'{m[0].strip()}')
@@ -735,7 +751,7 @@ def write_samples(path, runs):
 # --- main --------------------------------------------------------------------
 
 def parse_args(argv):
-    global B_CACHE_FLAG, CTX_ALLOC
+    global B_CACHE_FLAG, B_RESERVE_GIB, CTX_ALLOC
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument('--a', required=True, help='baseline build tree')
     p.add_argument('--b', required=True, help='candidate build tree (may equal --a for an A/A run)')
@@ -745,6 +761,9 @@ def parse_args(argv):
     p.add_argument('--guards', help='comma list of kinds run once as one A, B pair after the quads')
     p.add_argument('--budget', type=int, default=1800, help=f'wall-clock seconds, at most {MAX_BUDGET}')
     p.add_argument('--bitwise', action='store_true', help='also require bit-identical logits')
+    p.add_argument('--output-change', action='store_true',
+                   help='B is expected to change the output: check each build against its own first run, not B '
+                        'against A (excludes --bitwise)')
     p.add_argument('--env', action='append', default=[], metavar='KEY=VALUE', help='set for both builds')
     p.add_argument('--b-env', action='append', default=[], metavar='KEY=VALUE',
                    help='set for B only, on top of --env (repeatable): measures a switch on one tree')
@@ -770,6 +789,9 @@ def parse_args(argv):
     p.add_argument('--b-cache', metavar='NGB',
                    help=f"B's --ssd-streaming-cache-experts (default {CACHE_FLAG}); B's dynamic cache must come "
                         f'out at N - {PREFILL_HEADROOM_GIB} GiB +- 0.5')
+    p.add_argument('--b-reserve', type=float, default=0.0, metavar='GIB',
+                   help="GiB B's engine reserves out of the same cache flag (equal total memory); "
+                        "lowers B's dynamic-cache window by that much")
     p.add_argument('--ctx-alloc', type=int, default=CTX_ALLOC, metavar='N',
                    help=f'--ctx-alloc for both builds (default {CTX_ALLOC})')
     p.add_argument('--out', help='output directory (default $TMPDIR/sf-ds4-1flash-ab/<UTC time>)')
@@ -778,6 +800,7 @@ def parse_args(argv):
         if not re.fullmatch(r'\d+(\.\d+)?GB', args.b_cache):
             raise Stop(2, f'--b-cache {args.b_cache}: write it as NGB, like 90GB')
         B_CACHE_FLAG = args.b_cache
+    B_RESERVE_GIB = args.b_reserve
     if args.ctx_alloc <= 0:
         raise Stop(2, f'--ctx-alloc {args.ctx_alloc}: must be positive')
     CTX_ALLOC = args.ctx_alloc
@@ -828,17 +851,18 @@ def main(argv=None):
                         bench_args(args, build), args.sections)
         monitor.check()
         # with --b-cache each build keeps its own slot count; otherwise both match the first run
-        first = next((r for r in runs if B_CACHE_FLAG == CACHE_FLAG or r['build'] == build), None)
+        first = next((r for r in runs if (B_CACHE_FLAG == CACHE_FLAG and not B_RESERVE_GIB) or r['build'] == build), None)
         if first:
             check_cache_config(run, first)
-        refs.setdefault(kind, run)  # the first run of a kind is A's warm-up (or a guard's A run)
+        # the first run of a kind is A's warm-up (or a guard's A run); per build with --output-change
+        refs.setdefault((kind, build) if args.output_change else kind, run)
         print(f'  run {run["n"]:2d} {build} {kind:<12} {phase:<7} {run["duration"]:.1f} s',
               file=sys.stderr, flush=True)
         return run
 
     def check(done):
         last = done[-1]
-        problem = check_tokens(last, refs[last['kind']])
+        problem = check_tokens(last, refs[(last['kind'], last['build']) if args.output_change else last['kind']])
         if not problem and args.bitwise and last['phase'] == 'warm-up' and last['build'] == 'B':
             problem = check_logits(out / 'logits' / f'A-{last["kind"]}', out / 'logits' / f'B-{last["kind"]}',
                                    KINDS[last['kind']]['frontiers'])
@@ -846,6 +870,8 @@ def main(argv=None):
             raise Stop(1, problem)
 
     status, correctness = 'PASS', 'PASS (tokens' + ('; bitwise)' if args.bitwise else ')')
+    if args.output_change:
+        correctness = 'CHANGED (each build deterministic)'
     monitor = Monitor(out / 'gpu.json')
     try:
         load = time.time()

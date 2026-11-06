@@ -8,7 +8,8 @@ are not a sync base. The base stays in git: the `sync-*` tags and
 `git merge-base HEAD upstream/main`.
 
 Last review: 2026-09-26 (full); 2026-10-11 (six PRs, `300`); 2026-10-29
-(pre-sync fixes, branch `sf/upstream-fixes`, named `upstream-fixes` below)
+(pre-sync fixes, branch `sf/upstream-fixes`, named `upstream-fixes` below);
+2026-11-05 (sync to `b3f5018`, every commit in the range: see below)
 
 ## Outgoing ports
 
@@ -180,6 +181,59 @@ are in the archived change `10-upstream-pr-intake`
 (`openspec/changes/archive/*-10-upstream-pr-intake/`,
 `review-notes-2026-09-25.md` and `triage-candidates-2026-09-25.md`). A
 summary's `§n` names the section of those notes.
+
+## Sync `b3f5018` (2026-11-05)
+
+244 upstream commits (`ee7e840..b3f5018`, 30 merges: #1073, #1034, #1261,
+#1262, #1056, #1127, #1147, #1238, #1213, #1270, #1165, #1245). A plain
+merge conflicted in 42 files (82 hunks in `ds4.c`, 33 in `ds4_metal.m`) and
+cleanly re-added thousands of lines of Qwen/GLM/CUDA code next to the regions
+this child deleted. Measured first (ds4-bench sweep 2048 -> 8192, 256 tokens,
+`82GB`, ABBA x4): this child's `main` decoded at 29.6/30.3 t/s against
+upstream `b3f5018`'s 22.1/23.8 (first token after the sweep 0.17 s against
+2.3-3.6 s, prefill +27%/+52%); upstream at the old base `ee7e840` ran 17.4/16.7.
+
+So the sync keeps `main`'s `ds4.c`, `ds4_metal.m`, `metal/`, `ds4_gpu.h` and
+`ds4_deepseek41_gpu.h` and ports upstream commits one by one; everything else
+is the normal merge. All 180 non-merge commits touching the engine files got a
+verdict (reading, not measuring, except where a figure is given):
+
+| Verdict | Count |
+|---|---|
+| not reachable (Qwen, GLM, CUDA/ROCm, Spark, DSpark, MTP, deleted code) | 103 |
+| already in this child (ports of #1073, #1034, #1192, #952 ...) | 22 |
+| TP only (`two-macs`) | 15 |
+| streaming candidates | 14 |
+| resident only (`resident`) | 11 |
+| output change | 7 |
+| reverted inside the range | 3 |
+| fixes ported | 2 |
+| docs, tests, bench | 2 |
+| unsure | 1 |
+
+Output: `main` and upstream `ee7e840` give the same tokens on the bench
+prompt; upstream `b3f5018` does not. A bisect over the range found one
+commit, `97e3276`, and `main` plus `97e3276` gives upstream `b3f5018`'s tokens
+exactly.
+
+| Commit | Subject | Verdict | Reason |
+|---|---|---|---|
+| `97e3276` | metal: use exact divisions in the V4.1 FP4 activation quantizer | adopt (sync), as upstream | a correctness fix: the fast-math division landed one ulp past an E2M1 midpoint on an M5 Max. Taken as upstream wrote it: exact divisions in `kernel_dsv41_quantize` only. Upstream left the fused RoPE-quantize kernel with `/`, and so does this child, so the parity oracle against `b3f5018` stays token-identical (10/10). Applied to both kernels it differed on 5 of 10 prompts. The cost is that the fused kernel and the separate steps can round an exact FP4 midpoint differently. Upstream's `check_rope_quantize` fails on that when run on its own (`tests/test_deepseek41_metal --rope-quantize` at `b3f5018`): its full suite passes only because earlier tests move the random seed. Each of the three differences found has a BF16 input exactly halfway between two E2M1 values (1.171875/0.46875 = 2.5, 18.75/7.5 = 2.5, 4.6875/0.9375 = 5), where the separate kernel ties to even and the fused one does not. Here the test allows exactly those elements and nothing else; a wrong block scale still fails it. The model-backed `DS4_METAL_DISABLE_V41_ROPE_QUANTIZE` switch test passes (65 tokens, prefix 511 and 2047). Open: fix both kernels here and upstream together |
+| `a4c922c` | Fix a Metal session memory leak on /ctx | adopt (sync) | `[buffer contents]` autoreleased into no pool on C threads: about 1 GiB kept per freed session. Output unchanged |
+| `7da9535` | Sync idle server slots in the engine's prefill chunk | adopt (merge) | the idle server prefilled in 2048-token chunks, one SSD layer sweep each; it now feeds the engine's prefill cap |
+| `a8ce74a` | server: render blank reasoning as absent | adopt (merge) | a whitespace-only replayed reasoning broke the prompt-cache prefix |
+| `7d9903b`, `55b1e75`, `95606b5` | Narrow decode copies of the router, Engram projection and indexer q_b | adopt (sync), adapted | exact BF16/E4M3 copies read in decode, built at graph allocation under streaming too, wired with `mlock`, held in their own queue residency set, and reserved out of the streaming cache target (0.48 GiB, `82GB` -> 74.40 GiB dynamic). Bitwise (`make test-deepseek41-decode-switch` with each new switch). Decode +4.4..+9.2% (+3.8/+5.5% after a 900 s preheat). Taken although the A/B against `main` measured the first decode token after a prefill sweep 60-90 ms slower (about 0.17 -> 0.25 s), against about 3 s of TTFT gained over upstream. Isolated probes found no cause in the copies, the rows4 scorer, the cache size, the misses or the GPU time (perf-record, First token after the b3f5018 sync). perf-record, Sync b3f5018 |
+| `345d7f4` | Score four indexer rows per SIMD group | adopt (sync) | bitwise (`make test-v41-indexer-score`, 1M rows); 2.61x on the score pass on M5. Measured inside the copies' bundle |
+| `1be7b4d` | Decode: give each Engram table its own input buffer | adopt (sync) | removes the single-host layer-13 drain of the decode queue; bitwise, measured inside the copies' bundle |
+| `ae40c5c` | Carry the complete V4.1 raw window through medium prefill pruning | no port: already exact here | this child's short-sweep decoder suffix has the shape the commit fixed (seen only on CUDA upstream). `--decoder-suffix-medium` (4096 tokens, then appends of 6144, 2560 and 5000) is bitwise against the full decoder on the `b3f5018` sync tree |
+| `b66c926`, `4ff3af6`, `e99dc21` (Engram gate), `a50fecc`+`04c0867`, `0f9b03c` | decode fixed shapes, top-512, Engram gate, Q8 matvec, MMA prefill scores | proposed: `700` (`b66c926` q_a/kv and output-B literals, `e99dc21` Engram gate if bitwise on M5); `4ff3af6` -> `690`; the rest dropped | reached: the two `b66c926` literals on every decode layer, the Engram gate, `4ff3af6` from about 2K context (needs `af7c02b`'s radix). Not reached: the MXFP4 and FFN-join literals, `e99dc21`'s collapse (`!g->streaming`), `0f9b03c` (M3 Ultra, or shadowed by the packed scorer on M5). `a50fecc`+`04c0867`: plain Q8 matvec only, bitwise on M1 Max only, no speed claim |
+| `23c333b`, `01772c0`, `64ceeea` | long-context index work | `history: long` | only beyond ~32-64K tokens |
+| `f0b4f55`, `26335c7`, `be2773b`, `57df7a5`, `565db43` | RoPE table, deferred HC, pipelined decode queue, suffix pruning | `f0b4f55`, `26335c7` -> `720` (pre-screen first); the rest dropped | `be2773b`: covered by `30` (upstream lifted its own guard in `4c29e82`/`8c54d7f`). `57df7a5`: unreachable, multi-session batches are refused under streaming (`ds41_sessions_batch_supported`). `565db43`: saves rows, not expert reads (`80`, `530`), and its exactness under the streaming kernels is unproven |
+| `5382eac` | V4.1: process medium SSD appends in one layer sweep | adopt (sync) | merged upstream: a 2049-8191-token remainder with a final tile of 256-2047 rows runs as one sweep instead of a sweep and a token-major tail. It changes this child's output for those prompts and appends (cold 2500 and 5000 too) and makes it upstream's: bench logits at frontiers 5000, 7500 and 10000 are bitwise `b3f5018`'s, and differ with `DS4_METAL_DISABLE_V41_MEDIUM_SWEEP=1`. Exact against the full decoder (`--decoder-suffix-medium`, 2560 and 5000-token appends). TTFT 2500 +91%, 5000 +148%, append +2500 +220%, +3000 +390%; the first token after it 160-190 ms slower (perf-record, Sync b3f5018) |
+| `2d5ef0d`, `af7c02b`, `ff95f53` | long-context reductions (via #1073) | proposed: `690-v41-long-context-index` | merged upstream; change the output only beyond about 64K tokens. Taken for alignment; the oracle is bench logits at 40K and 72K, which the parity CLI cannot reach |
+| `4b1b151`, `4f80638` | long-context index (via #1073) | proposed: `690-v41-long-context-index` | beyond about 32K tokens; exact by construction (`fp contract(off)`), checked there |
+| `a6b50ff`, `262b4a6` | | not reachable | upstream reaches them only through DSpark, which this child does not have |
+| `890898c`, `9fe88cd` | untracked model views by default | proposed: `710` | upstream `55b1e75` made the V4.1 weights untracked by default (`DS4_METAL_MODEL_TRACKED=1` opts out) and these two make the default apply; the sync took `55b1e75`'s copies but not the default. Here the views are tracked unless `DS4_METAL_MODEL_UNTRACKED` is set, and the copies always; not measured |
 
 ## PRs
 

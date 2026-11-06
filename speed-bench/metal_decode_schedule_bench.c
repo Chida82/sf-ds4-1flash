@@ -115,6 +115,8 @@ static bench_config parse_options(int argc, char **argv) {
             cfg.prompt_path = need_arg(&i, argc, argv, arg);
         } else if (!strcmp(arg, "--candidate-env")) {
             cfg.candidate_env = need_arg(&i, argc, argv, arg);
+        } else if (!strcmp(arg, "--ssd-streaming")) {
+            cfg.ssd_streaming = true;
         } else if (!strcmp(arg, "--include-selection")) {
             cfg.include_selection = true;
         } else if (!strcmp(arg, "--ssd-streaming")) {

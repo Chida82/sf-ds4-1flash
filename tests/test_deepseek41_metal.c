@@ -391,31 +391,46 @@ static int check_rope_stride(void) {
     return 1;
 }
 
-/* The fused RoPE, quantize and store kernel against the three separate steps. */
+/* The fused RoPE, quantize and store kernel against the three separate steps.
+ * Since upstream 97e3276 only the separate quantizer divides exactly; the fused
+ * kernel keeps upstream's fast division, so where the BF16 value lands exactly
+ * on an E2M1 midpoint it may miss the tie to even. Those elements, and nothing
+ * else, may differ: the BF16 input must sit exactly halfway between the two
+ * results. A flipped block scale would move the whole block and still fail. */
 static int check_rope_quantize(void) {
     enum { WIDTH = 512, TRIALS = 300 };
     ds4_gpu_tensor *a = upload(NULL, WIDTH * sizeof(float));
     ds4_gpu_tensor *b = upload(NULL, WIDTH * sizeof(float));
     ds4_gpu_tensor *c = upload(NULL, (WIDTH + 1u) * sizeof(float));
-    CHECK(a && b && c);
+    ds4_gpu_tensor *d = upload(NULL, WIDTH * sizeof(float));
+    CHECK(a && b && c && d);
     float *x = ds4_gpu_tensor_contents(a), *y = ds4_gpu_tensor_contents(b);
-    float *z = ds4_gpu_tensor_contents(c);
+    float *z = ds4_gpu_tensor_contents(c), *r = ds4_gpu_tensor_contents(d);
+    uint32_t midpoints = 0;
     for (uint32_t t = 0; t < TRIALS; t++) {
         const ds4_v41_activation_format format = (ds4_v41_activation_format)(1 + t % 3);
         const uint32_t width = format == DS4_V41_FP4_E8M0 ? 128 : WIDTH;
         const bool compressed = (t / 3) & 1;
         const uint32_t pos = (uint32_t)(fabsf(random_value()) * 15000);
-        for (uint32_t i = 0; i < width; i++) x[i] = y[i] = ldexpf(random_value(), (int)(t % 11) - 5);
+        for (uint32_t i = 0; i < width; i++) x[i] = y[i] = r[i] = ldexpf(random_value(), (int)(t % 11) - 5);
         z[width] = 12345;
         CHECK(ds4_gpu_begin_commands());
         CHECK(ds4_gpu_dsv41_rope(a, width, 1, 1, pos, compressed, false));
         CHECK(ds4_gpu_dsv41_quantize(a, width, 1, format));
         CHECK(ds4_gpu_dsv41_rope_quantize(b, c, 0, width, pos, compressed, format));
+        CHECK(ds4_gpu_dsv41_rope(d, width, 1, 1, pos, compressed, false));
         CHECK(ds4_gpu_end_commands());
-        CHECK(!memcmp(x, z, width * sizeof(float)) && z[width] == 12345);
+        CHECK(z[width] == 12345);
+        for (uint32_t i = 0; i < width; i++) {
+            if (!memcmp(&x[i], &z[i], sizeof(float))) continue;
+            CHECK(format == DS4_V41_FP4_E4M3 && signbit(x[i]) == signbit(z[i]) &&
+                  bf16(r[i]) == (x[i] + z[i]) * 0.5f);
+            midpoints++;
+        }
     }
-    ds4_gpu_tensor_free(c); ds4_gpu_tensor_free(b); ds4_gpu_tensor_free(a);
-    fprintf(stderr, "V4.1 fused RoPE quantize: bitwise match with the separate steps PASS\n");
+    ds4_gpu_tensor_free(d); ds4_gpu_tensor_free(c); ds4_gpu_tensor_free(b); ds4_gpu_tensor_free(a);
+    fprintf(stderr, "V4.1 fused RoPE quantize: bitwise match with the separate steps "
+                    "except %u exact FP4 midpoints PASS\n", midpoints);
     return 1;
 }
 

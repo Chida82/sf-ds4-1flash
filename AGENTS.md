@@ -62,8 +62,9 @@ and steady decode runs at about 20 tokens/s (harness `decode 2048` and
 about 0.15 s (1.3 s before `268-aligned-uncached-reads`, 2 s before the slab
 residency set of `40-ssd-expert-reads`). The CLI's `generation:` figure
 includes that first token. Performance is measured only with a fixed
-expert cache, `--ssd-streaming-cache-experts 82GB` (74.88 GiB dynamic, 8078
-slots on this machine), by `speed-bench/ab_bench.py`; the conditions behind
+expert cache, `--ssd-streaming-cache-experts 82GB` (74.40 GiB dynamic, 8026
+slots on this machine since the narrow decode copies; 74.88 and 8078 before),
+by `speed-bench/ab_bench.py`; the conditions behind
 each figure are in `speed-bench/perf-record.md`. The throughput is bounded by
 SSD reads, so compare a change against a run in the *same* mode, never a
 resident number against a streaming one.
@@ -117,8 +118,12 @@ anything larger runs each engine in its own process.
 
 The time to first token is set by the prefill schedule (`ds41_prefill_count`).
 A prompt runs as SSD layer sweeps, and a remainder under 1024 tokens after the
-first sweep runs token by token at the decode rate. That tail is frozen:
-batched and token-major kernels round differently. Since
+first sweep runs token by token at the decode rate. Batched and token-major
+kernels round differently, so the schedule decides the output; it follows
+upstream's. Since the `b3f5018` sync (upstream `5382eac`), a 2049-8191-token
+remainder whose final tile has at least 256 rows is one sweep, so a 5000-token
+prompt or a +2500 append no longer ends in a token-major tail
+(`DS4_METAL_DISABLE_V41_MEDIUM_SWEEP=1` restores it). Since
 `60-prefill-sweeps`:
 - a 3072-8191-token remainder runs as one wide sweep when its last partial
   tile is one the plain schedule would batch anyway (0 or at least 1024
@@ -232,7 +237,11 @@ These switches turn fusions off, and each one keeps the output bitwise
 identical (`make test-deepseek41-decode-switch SWITCH=<env>`):
 - `DS4_METAL_DISABLE_V41_ROUTER_ONE`;
 - `DS4_METAL_DISABLE_V41_HC_BLOCK_INPUT`;
-- `DS4_METAL_DISABLE_V41_ROPE_QUANTIZE`;
+- `DS4_METAL_DISABLE_V41_ROPE_QUANTIZE` (since the `b3f5018` sync only the
+  separate quantize kernel divides exactly, as upstream: the two can round an
+  FP4 midpoint differently: `check_rope_quantize` in
+  `tests/test_deepseek41_metal.c` allows exactly those elements, and the
+  model-backed switch test passes; see `docs/upstream-prs.md`, `97e3276`);
 - `DS4_METAL_DISABLE_GATHERED_KV_STAGE`;
 - `DS4_METAL_DISABLE_V41_EXPAND_FUSION`;
 - `DS4_METAL_DISABLE_V41_DECODE_PIPELINE_FAST_LOOKUP` (the allocation-free
@@ -246,6 +255,24 @@ identical (`make test-deepseek41-decode-switch SWITCH=<env>`):
   to a shared box the CPU polls instead of the batch's status,
   `210-decode-router-mailbox`; it rides on the split, so the split switch
   turns it off too).
+- `DS4_METAL_DISABLE_V41_ROUTER_BF16`, `_ENGRAM_E4M3`, `_INDEXER_E4M3`
+  (decode reads exact narrow copies of the router, the Engram projection and
+  the indexer q_b, upstream `7d9903b`/`55b1e75`, taken at the `b3f5018`
+  sync) and `_NARROW_BLEND` (their 16-byte-load kernels);
+- `DS4_METAL_DISABLE_V41_SCORE_ROWS4` (four indexer rows per SIMD group,
+  upstream `345d7f4`; `make test-v41-indexer-score` checks it on 1M rows).
+
+The narrow copies are GPU memory on top of the model (0.48 GiB on the 1017
+Q2), wired with `mlock` and taken out of the streaming cache target: with
+`82GB` the dynamic cache is 74.40 GiB, not 74.88 (`narrow decode copies
+reserved` on the loader's cache line). Left unreserved they pushed the
+pageable static weights out of memory and prefill read them back from the
+SSD (TTFT -13.5% at 3500 tokens; perf-record, Sync b3f5018). They also sit in
+their own Metal residency set on the queue
+(`DS4_METAL_DISABLE_V41_NARROW_RESIDENCY=1` turns it off). The A/B against `main`
+measured the first decode token after a prefill sweep 60-90 ms slower with the
+bundle; isolated probes traced none of it to the copies, the rows4 scorer or
+the smaller cache (perf-record, First token after the b3f5018 sync).
 
 `DS4_METAL_STREAMING_EXPERT_HOTNESS_DECAY_TOKENS=N` (`230`) sets the
 expert cache's hotness decay interval, 16 decode tokens by default; output

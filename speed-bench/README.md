@@ -58,8 +58,15 @@ Every bench process runs with `--ssd-streaming --ssd-streaming-cache-experts
 82GB --ctx-alloc 32768`: the loader takes the 7.12 GiB prefill headroom from
 the 82 GiB and turns the rest into expert slots. The harness reads each run's
 `dynamic cache` line and refuses (exit 2, line quoted) when the dynamic cache
-is outside 74.5-75.5 GiB or the slot count differs between runs, so A and B
-always hold the same cache. Cache state itself is also watched: every timed
+is outside 73.9-75.5 GiB or the slot count differs between runs, so A and B
+always hold the same cache. The window holds 74.40 GiB: since the `b3f5018`
+sync the engine reserves its narrow decode copies (0.48 GiB) out of the same
+82 GiB. A tree with that reserve against one without it passes
+`--b-reserve 0.48 --cache-policy-change`: the total memory stays equal and B's
+smaller slot count is accepted. `--output-change` compares each build with its
+own first run instead of B with A. Use it for a correctness fix that moves the
+greedy tokens; its decode pairs read different experts, so only prefill
+figures stay comparable. Cache state itself is also watched: every timed
 run records its expert-cache hits, misses, bytes read and read time per
 frontier (the bench's `--cache-stats` report), and a pair whose hits or misses
 differ by more than `--cache-tolerance` (0.01 of the lookups) or whose bytes
@@ -107,18 +114,22 @@ One invocation:
 4. **Guards.** Each kind named with `--guards` runs once, A then B, after the
    quads: one gain, no interval, marked in the summary.
 
-Kinds (`--kinds` takes names or the groups `cold`, `guards`, `all`; there is
-no default, each change names what its phase needs):
+Kinds (`--kinds` takes names or the groups `cold`, `guards`, `all`, which
+leaves out `append-medium`; there is no default, each change names what its
+phase needs). The shapes are those of the `b3f5018` sync, which runs a
+2049-8191-token remainder with a final tile of 256 rows or more as one sweep
+(`5382eac`); the run times are older and slower:
 
 | Kind | Frontiers | Tokens | Metrics | Shape it measures | Run time |
 |---|---|---|---|---|---|
 | `decode` | 2048, 8192 | 256 | `decode 2048`, `decode 8192` (steady tokens/s), first token ms | decode at 2K and 8K of context | 77-84 s |
-| `cold-2500` | 2500 | 16 | `ttft 2500` (s) | one sweep plus 452 token-major tokens | 46-50 s |
+| `cold-2500` | 2500 | 16 | `ttft 2500` (s) | one 2500-row sweep (before the sync: a sweep plus 452 token-major tokens) | 46-50 s |
 | `cold-3500` | 3500 | 16 | `ttft 3500` | two sweeps | 41-45 s |
-| `cold-5000` | 5000 | 16 | `ttft 5000` | a 4096-row sweep plus 904 token-major | 75-84 s |
+| `cold-5000` | 5000 | 16 | `ttft 5000` | one 5000-row sweep (before: a 4096-row sweep plus 904 token-major) | 75-84 s |
 | `cold-7500` | 7500 | 16 | `ttft 7500` | a 6144-row sweep plus a 1356 chunk | 51-54 s |
 | `cold-10000` | 10000 | 16 | `ttft 10000` | an 8192-row sweep plus a 1808 chunk | 49-51 s |
 | `append` | 5000, 5300, 6800 | 16 | `append +300`, `append +1500` (s) | a token-major append and a one-chunk append on a 5000 context | 118-123 s |
+| `append-medium` | 5000, 7500, 10500 | 16 | `append +2500`, `append +3000` (s), first token ms | two medium appends, final tiles of 452 and 952 rows | 39 s (110 s with the medium sweep off) |
 | `guard-16896` | 16896 | 16 | `guard ttft 16896` | two 8192-row sweeps plus 512 token-major: the >10K guard | 74-76 s |
 | `guard-decode` | 8192 | 2500 | `guard decode 2500` | a long answer at 8K: the >2000-token guard | 172-173 s |
 
@@ -335,6 +346,22 @@ legacy decode path, including token selection, use:
   --include-selection \
   --tokens 1024
 ```
+
+For single-host V4.1 Flash SSD decode on Metal, use the per-layer wait
+as the rollback arm. The harness labels the default schedule as control
+and the rollback as candidate.
+
+```sh
+./speed-bench/metal_decode_schedule_bench \
+  -m gguf/DeepSeek-V4.1-Flash-Q2.gguf --ssd-streaming \
+  --prompt-file speed-bench/promessi_sposi.txt --prefix-tokens 2048 \
+  --ctx 8257 --tokens 512 --include-selection \
+  --candidate-env DS4_METAL_DISABLE_V41_STREAM_DECODE_QUEUE
+```
+
+Expert selection and cache replacement synchronize within each layer.
+The default schedule waits at token completion. For the original M2 Ultra
+measurements, see the [SSD decode queue benchmarks](v41_decode_queue_m2_ultra.md).
 
 ### Metal prefill variant A/B
 

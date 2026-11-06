@@ -32,6 +32,8 @@ relative runtime files such as Metal kernels can be found.
 The model id is `deepseek-v4.1-flash`. `deepseek-chat` and `deepseek-reasoner`
 are accepted as thinking switches (off and on) for the same loaded model. The GGUF passed at startup selects the model.
 
+`GET /v1/models` and `GET /v1/models/{id}` include `architecture.input_modalities` and `architecture.output_modalities`. Input modalities are `["text", "image"]` when the loaded engine has vision enabled, otherwise `["text"]`; output modalities are always `["text"]`. Compatibility aliases report the same loaded-engine capabilities.
+
 ```sh
 curl http://127.0.0.1:8002/v1/chat/completions \
   -H 'Content-Type: application/json' \

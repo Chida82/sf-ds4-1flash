@@ -29,7 +29,7 @@ CPU_CORE_OBJS = ds4_cpu.o ds4_image.o ds4_distributed.o ds4_tp.o ds4_ssd.o
 .PHONY: all help clean cpu test test-metal-session-batch
 
 .PHONY: metal-decode-schedule-bench metal-prefill-variant-bench session-concurrency-bench check-mxfp4-half-lut
-.PHONY: test-metal-moe-prefill test-metal-dense-mpp
+.PHONY: test-metal-moe-prefill test-metal-dense-mpp test-v41-indexer-score
 
 all: $(BIN) $(BIN)-server $(BIN)-bench $(BIN)-eval
 
@@ -70,6 +70,15 @@ tests/test_metal_session_batch.o: tests/test_metal_session_batch.c ds4.h
 
 tests/test_metal_session_batch: tests/test_metal_session_batch.o $(CORE_OBJS)
 	$(CC) $(CFLAGS) -o $@ $^ $(METAL_LDLIBS)
+
+tests/test_v41_indexer_score.o: tests/test_v41_indexer_score.c ds4_gpu.h
+	$(CC) $(CFLAGS) -I. -c -o $@ $<
+
+tests/test_v41_indexer_score: tests/test_v41_indexer_score.o $(CORE_OBJS)
+	$(CC) $(CFLAGS) -o $@ $^ $(METAL_LDLIBS)
+
+test-v41-indexer-score: tests/test_v41_indexer_score
+	./tests/test_v41_indexer_score
 
 tests/test_metal_tp_cancel: tests/test_metal_tp_cancel.c ds4.h ds4_tp.h $(CORE_OBJS)
 	$(CC) $(CFLAGS) -I. -o $@ $< $(CORE_OBJS) $(METAL_LDLIBS)
@@ -146,6 +155,7 @@ tests/test_metal_command_memory: tests/test_metal_command_memory.c ds4_gpu.h $(C
 
 .PHONY: test-metal-command-memory
 test-metal-command-memory: tests/test_metal_command_memory
+	MTL_DEBUG_LAYER=1 ./tests/test_metal_command_memory buffers
 	MTL_DEBUG_LAYER=1 ./tests/test_metal_command_memory
 	MTL_DEBUG_LAYER=1 ./tests/test_metal_command_memory row
 	MTL_DEBUG_LAYER=1 ./tests/test_metal_command_memory session
@@ -293,13 +303,13 @@ tests/test_deepseek4_vision_image.o: tests/test_deepseek4_vision_image.c ds4_ima
 	$(CC) $(CFLAGS) -I. -c -o $@ $<
 
 tests/test_deepseek4_vision_image: tests/test_deepseek4_vision_image.o ds4_image.o
-	$(CC) $(CFLAGS) -o $@ $^ -lm
+	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
 
 tests/test_image_decode.o: tests/test_image_decode.c ds4_image.h
 	$(CC) $(CFLAGS) -I. -c -o $@ $<
 
 tests/test_image_decode: tests/test_image_decode.o ds4_image.o
-	$(CC) $(CFLAGS) -o $@ $^ -lm
+	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
 
 tests/test_ssd_cache: tests/test_ssd_cache.c ds4_ssd.c ds4_ssd.h
 	$(CC) $(CFLAGS) -I. -o $@ tests/test_ssd_cache.c ds4_ssd.c

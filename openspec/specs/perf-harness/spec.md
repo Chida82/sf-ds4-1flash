@@ -102,7 +102,7 @@ at once.
 ### Requirement: Scenario kinds
 The harness SHALL measure the decode, prompt and append kinds below, each
 selectable by name, and the groups `cold` (the five cold kinds), `guards` (the
-two guard kinds) and `all` (every kind but the guards). The prompt is the
+two guard kinds) and `all` (every kind but the guards and `append-medium`). The prompt is the
 child's benchmark prose text. The harness SHALL refuse an invocation that
 selects no kind.
 
@@ -150,6 +150,16 @@ and of +1500.
 #### Scenario: Append measured
 - **WHEN** the `append` kind runs
 - **THEN** the summary reports the prefill seconds of the 300 tokens added at 5300 and of the 1500 added at 6800
+
+### Requirement: Medium append kind
+The `append-medium` kind SHALL run the context frontiers 5000, then 7500, then
+10500, with 16 generated tokens per frontier, and report the prefill seconds of
++2500 and of +3000 and the first-token milliseconds after each. Their final
+tiles of 452 and 952 rows are the shape of the medium sweep.
+
+#### Scenario: Medium appends measured
+- **WHEN** the `append-medium` kind runs
+- **THEN** the summary reports the prefill seconds of the 2500 tokens added at 7500 and of the 3000 added at 10500
 
 ### Requirement: Guard runs
 A kind selected with `--guards` instead of `--kinds` SHALL run once as a single

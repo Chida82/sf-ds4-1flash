@@ -2210,6 +2210,150 @@ A decode layer is three command buffers: the router batch (attention, router, ma
 - **Readback split off** (`DS4_METAL_DISABLE_V41_READBACK_SPLIT=1`, one run): the routed batch starts 148 us (p50) after the router batch, and decode is 27.3 t/s against 29.2. That is what `132` and `210` hold today.
 - **Verdict: closed at gate 1.** The change could remove at most the all-hit gaps, 0.3-0.5% of decode, under the 2% gate. Rejected-ideas row added.
 
+## Sync b3f5018 (2026-11-05)
+
+1017 checkpoint, harness flags (`82GB`, ctx 32768), `main` at `fc51998`.
+
+**This child against upstream.** `ds4-bench` and `sf-ds4-1flash-bench`, same
+flags, sweep 2048 -> 8192 with 256 tokens, A B B A twice (4 runs each):
+
+| Build | decode 2048 | decode 8192 | first token after the sweep | prefill to 2048 / to 8192 |
+|---|---|---|---|---|
+| upstream `ee7e840` (old base, 1 run) | 17.4 | 16.7 | 2.5 / 2.1 s | 123 / 266 t/s |
+| upstream `b3f5018` | 22.1 | 23.8 | 2.3-3.6 s | 125-130 / 298-312 t/s |
+| this child `main` | 29.6 | 30.3 | 0.15-0.22 s | 158-168 / 451-473 t/s |
+
+**Narrow copies, rows4 scorer, Engram input buffers** (upstream `7d9903b` +
+`55b1e75` + `95606b5`, `345d7f4`, `1be7b4d`, with `a4c922c`), all against
+`main`, bitwise (`--bitwise`), without `97e3276` (it moves the greedy tokens,
+so the expert reads and the cache state differ and no pair is comparable):
+
+| Run | decode 2048 | decode 8192 | ttft 3500 | prefill 5000 | append +300 | append +1500 | first token 2048 / 3500 / 8192 | pairs |
+|---|---|---|---|---|---|---|---|---|
+| copies unreserved, unlocked | +8.6% (+8.0..+9.2) | +5.3% (+5.0..+5.7) | -13.5% (-17.5..-9.5) | -3.9% | +3.8% | -0.2% | 134 -> 244 / 158 -> 227 / 130 -> 185 ms | 34 |
+| B's cache flag 81GB, copies unlocked | +9.2% (+7.4..+10.3) | +5.7% (+5.2..+5.9) | +4.8% (+0.4..+10.1) | +2.1% | +3.3% | -1.8% (-2.5..-0.1) | 142 -> 187 / 133 -> 181 / 134 -> 197 ms | 32 |
+| copies reserved (74.40 GiB cache) and wired | +7.8% (-0.0..+9.2) | +6.0% (+2.5..+7.4) | -5.4% (-17.8..+0.3) | -0.4% | +3.2% | -0.7% (-1.4..-0.2) | 123 -> 183 / 143 -> 203 / 129 -> 216 ms | 28 |
+| the same after a 900 s preheat (GPU median 1274 MHz, chip 82 C at the end) | +3.8% (+3.2..+4.1) | +5.5% (+4.8..+6.3) | | | | | 118 -> 179 / - / 105 -> 191 ms; guard decode 2500 +2.3% (1 pair) | 20 |
+
+| reserved, wired, layer-13 drain restored (`1be7b4d` off) | +5.6% (+2.7..+9.4) | +5.5% (+4.6..+6.7) | | -1.4% | +2.3% | -1.2% (-1.7..-0.8) | 114 -> 162 / - / 100 -> 200 ms | 16 |
+| reserved, wired, in a queue residency set | +4.4% (+3.5..+5.8) | +6.6% (+6.3..+9.3) | -0.4% (-0.7..-0.2) | | | | 114 -> 172 / 110 -> 164 / 97 -> 180 ms | 29 |
+
+The first rows are with the copies unreserved: they cost TTFT, and the
+process's resident memory fell by 6 GiB (82.4 -> 76.6 GiB at frontier 3500),
+while the footprint stayed equal (81.5 GiB). The later rows take the copies out
+of the cache target (0.48 GiB, `82GB` -> 74.40 GiB dynamic). The first decode
+token after a sweep stayed 60-90 ms slower in every variant. Neither the drain,
+the cache size, `mlock` nor a residency set explains it. Single-run probes of
+each switch were too noisy (±70 ms) to point at one part.
+
+**Verdict: landed by an owner exception to the intake rule.** The decode gain
+is real and bitwise; the rule would reject it for the other intervals wholly
+below zero (first token, TTFT 3500 -0.4%, append +1500). The owner took the
+whole bundle as measured (copies, reserve, `mlock`, residency set, rows4
+scorer, Engram input buffers, with the 1M-row scorer test and a
+`--decoder-suffix-medium` test): 60-90 ms on the first token (about 0.17 ->
+0.25 s) is small next to the 2-3 s this child's first token already saves
+against upstream. Finding that cost is an open task, dropped if no cause turns
+up.
+
+**First token after the b3f5018 sync** (investigated, closed without a
+cause). Bench probe: frontiers 2048 to 16384 in 2048 steps (eight first
+tokens after a sweep per run), 4 tokens each, `82GB`, `--cache-stats`, runs
+A B B A. Medians per run:
+
+| Comparison | Medians (ms) | Finding |
+|---|---|---|
+| narrow copies on vs off, equal cache (8026 slots, reserve forced for off) | 206 / 194 vs 217 / 203; 210 / 207 vs 204 / 200 | equal; hits and misses identical per frontier |
+| copies on (8026 slots) vs off (8078 slots), two rounds | 195 / 199 vs 213 / 217; 223 / 197 vs 203 / 185 | no sign; misses within 10 of about 1500 |
+| sync tree vs rows4 off vs every bundle switch off vs `main` | 199 / 200, 196 / 187, 166 / 202, 164 / 151 | rows4 not it; bundle-off spans both; `main` lower, but its tokens differ (no `97e3276`) |
+| encoder timeline, first token after a sweep, copies on vs off | GPU busy 64.7 / 51.4 / 58.0 vs 93.8 / 60.5 / 54.6 ms | the extra time is waiting, not kernels |
+
+The same configuration repeats within ±20-40 ms, so the 60-90 ms of the A/B
+against `main` stays unattributed. The copies themselves, rows4, the 0.48 GiB
+smaller cache, expert misses and GPU kernel time are excluded. A single run
+without `--cache-stats` gave copies on 140 / 137 against off (8078 slots)
+116 / 92 ms, lower than every run with it, but that is one run, and the
+memory report it adds (`ds4_engine_memory_report`: counters and one
+`task_info`) runs before the next frontier's prefill, not between the prefill
+and its first token, so no cost of `--cache-stats` is established (it is
+child-only, like `ab_bench.py`, and equal on both sides). Not pursued further: a
+firm attribution of 40 ms needs a long ABBA series per candidate.
+
+On the final sync tree: the decode-switch tests of `ENGRAM_E4M3`,
+`ROUTER_BF16` and `ROPE_QUANTIZE` pass, `make test-v41-indexer-score` is
+identical, and the parity oracle against `b3f5018` is token-identical on
+10/10 prompts with the child at +0.0..+30.8% speed. `97e3276` is taken as
+upstream wrote it (see `docs/upstream-prs.md`), so the fused kernel
+can miss the tie to even on an exact FP4 midpoint; `check_rope_quantize`
+allows exactly those elements (upstream's own check fails on them when run
+alone with `--rope-quantize`).
+
+After `5382eac` the parity set gained a 5025-token file prompt
+(`tests/parity_prompt_5k.txt`, the medium-sweep case): token-identical on
+11/11, the 5K prompt at +42.8%. The haiku prompt tripped the speed gate
+(re-sample median up 13.4, child 9.3 t/s, spread 27%): its answer is about
+20 tokens from a cold cache, and the script always runs upstream first. An
+ABBA rerun, four runs each, gave up 8.65 / 13.46 / 13.38 / 13.37 and child
+9.34 / 17.91 / 16.49 / 22.55 t/s (medians 13.4 and 17.2, child +29%); the
+first run of each binary after the other is the slow one.
+
+**Medium sweep** (upstream `5382eac`), against the same build with
+`DS4_METAL_DISABLE_V41_MEDIUM_SWEEP=1` (the old schedule) as B, kinds
+`append-medium` (5000, then +2500 and +3000: final tiles of 452 and 952 rows),
+`cold-2500` and `cold-5000`, `--output-change`, ABBA, 2400 s budget. The
+harness dropped every pair on its cache-state guard: B's token-major tail makes
+about 217K decode cache lookups at frontier 5000 where A's sweep makes 3.7K,
+which is the change itself. The figures below are recomputed per quad from its
+`samples.csv` without that guard; one quad dropped for a GPU frequency fall
+(1383 against 1586 MHz):
+
+| Metric | A (one sweep) | B (sweep + token-major tail) | A against B | quads |
+|---|---|---|---|---|
+| ttft 2500 | 15.5 s | 29.7 s | +91.4% (+78.5..+98.1) | 4 |
+| ttft 5000 | 18.5 s | 45.8 s | +147.7% (+146.2..+148.1) | 3 |
+| append +2500 (from 5000) | 7.1 s | 22.6 s | +219.8% (+191.5..+221.3) | 3 |
+| append +3000 (from 7500) | 7.7 s | 37.9 s | +389.8% (+374.0..+392.5) | 3 |
+| first token after 2500 / 5000 / +2500 / +3000 | 214 / 242 / 197 / 203 ms | 58 / 37 / 34 / 32 ms | | |
+| decode 2500 / 5000 / 10500 | 25.2 / 29.3 / 32.4 t/s | 23.6 / 29.0 / 31.7 t/s | +6.8% / +1.0% / +0.6% | |
+
+The token-major tail warmed the decode cache, so the first token after a sweep
+pays 160-190 ms; the sweep saves 14-30 s before it. Single bench runs at
+frontiers 5000/7500/10000 gave bench logits bitwise equal to upstream
+`b3f5018` with the sweep, and different without it. Taken.
+
+**The whole sync against `main`** (`fc51998`), the final tree as B, kinds
+`all` plus `append-medium`, guards once, `--output-change
+--cache-policy-change --b-reserve 0.48` (the tokens differ from `97e3276`, and
+`5382eac` changes what the cache holds), ABBA, 3600 s budget, 30 pairs
+valid, GPU median 1578 MHz, thermal Moderate/Nominal:
+
+| Metric | `main` | sync | gain | 95% CI |
+|---|---|---|---|---|
+| decode 2048 / 8192 | 29.8 / 30.7 t/s | 30.4 / 31.0 t/s | +2.0% / +0.9% | +0.8..+3.7 / +0.2..+1.5 |
+| ttft 2500 | 27.6 s | 15.9 s | +73.3% | +72.4..+74.2 |
+| ttft 3500 | 13.4 s | 14.3 s | -7.8% | -23.4..-1.9 |
+| ttft 5000 | 42.7 s | 18.4 s | +134.5% | +126.4..+140.7 |
+| ttft 7500 | 18.4 s | 20.1 s | -8.5% | -29.4..+19.4 |
+| ttft 10000 | 23.5 s | 22.0 s | +7.0% | +3.4..+11.0 |
+| append +300 / +1500 (from 5000) | 9.92 / 7.19 s | 9.73 / 7.77 s | +2.4% / -7.4% | -0.2..+3.8 / -9.5..-6.6 |
+| append +2500 / +3000 (`append-medium`) | 22.9 / 39.0 s | 6.93 / 7.77 s | +230.6% / +402.3% | |
+| guard ttft 16896 / decode 2500 (1 pair) | 46.1 s / 31.6 t/s | 44.3 s / 33.2 t/s | +4.0% / +5.0% | |
+| e2e (mix estimate) | 60.5 | 52.9 | +14.2% | |
+
+The first decode token after a sweep is 15-80 ms slower where the schedule is
+unchanged (2048, 3500, 7500, 8192, 10000) and 130-150 ms slower after the new
+medium sweeps (2500, 5000, the appends), which no longer warm the decode cache
+with a token-major tail. That also explains append +1500: after the 5000-token
+prefill, now one sweep, `main` had read 36.8 GiB through the expert cache (hit
+rate 0.95) and the sync 1.1 GiB (0.32), so the next append starts colder. For
+3500 and 7500 the schedule, the hits and the misses are the same on both trees;
+their per-run times (3500: `main` 13.66 / 13.20 / 13.51 / 12.66 s, sync 14.11 /
+13.46 / 17.63 / 14.45 s) carry one outlier and were rerun: `cold-3500,cold-7500`
+alone, same flags, 2100 s, 26 pairs per kind (GPU median 1420 MHz, thermal
+Heavy to Nominal): ttft 3500 -0.4% (-1.0..-0.2), ttft 7500 -0.8% (-2.3..-0.2),
+first token 3500 140 -> 189 ms, 7500 173 -> 185 ms. The bundle's own -0.4% at
+3500 (above), not a new loss; the -7.8% / -8.5% of the full run were noise.
+
 ## Adding a row
 
 1. `SF_PARITY_FLAGS=--ssd-streaming tools/parity-check.sh sf-ds4-1flash` from

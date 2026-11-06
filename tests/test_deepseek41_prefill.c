@@ -59,6 +59,17 @@ static int check_dispatch(void) {
             }
         }
     }
+    /* A medium append (2048 < n < 8192, final tile of at least 256 rows) is
+     * one sweep, also where its tail would otherwise go token-major. */
+    CHECK(g.pos && ds4_gpu_stream_expert_cache_configured_count() >= half);
+    CHECK(ds41_prefill_count(&g, 2303) == 2048);
+    CHECK(ds41_prefill_count(&g, 2304) == 2304);
+    CHECK(ds41_prefill_count(&g, 3241) == 3241);
+    CHECK(ds41_prefill_count(&g, 5000) == 5000);
+    CHECK(setenv("DS4_METAL_DISABLE_V41_MEDIUM_SWEEP", "1", 1) == 0);
+    CHECK(ds41_prefill_count(&g, 2304) == 2048);
+    CHECK(ds41_prefill_count(&g, 5000) == 4096);
+    CHECK(unsetenv("DS4_METAL_DISABLE_V41_MEDIUM_SWEEP") == 0);
     g.pos = 0;
     g.tp_world = 2;
     g.streaming = false;
@@ -285,7 +296,10 @@ static int check_mixed(const char *model, const char *prompt_path,
         const char *ablation = tp ? "DS4_METAL_DISABLE_V41_TP_DECODE_QUEUE" :
             "DS4_METAL_DISABLE_V41_DEFER_DECODER";
         CHECK(setenv(ablation, "1", 1) == 0);
+        /* The control session keeps the two-sweep medium append. */
+        if (!tp) CHECK(setenv("DS4_METAL_DISABLE_V41_MEDIUM_SWEEP", "1", 1) == 0);
         CHECK(ds4_session_sync(control, &tokens, err, sizeof(err)) == 0);
+        if (!tp) CHECK(unsetenv("DS4_METAL_DISABLE_V41_MEDIUM_SWEEP") == 0);
         CHECK(unsetenv(ablation) == 0);
         prefill_progress p = {.session = mixed, .frontier = start,
             .current = start, .target = tokens.len, .begin = now_sec()};
@@ -334,6 +348,7 @@ static int check_mixed(const char *model, const char *prompt_path,
     rc = 0;
 done:
     unsetenv("DS4_METAL_DISABLE_V41_DEFER_DECODER");
+    unsetenv("DS4_METAL_DISABLE_V41_MEDIUM_SWEEP");
     unsetenv("DS4_METAL_DISABLE_V41_TP_DECODE_QUEUE");
     if (rc) fprintf(stderr, "mixed prefill failure: %s\n", err);
     ds4_session_snapshot_free(&snap);

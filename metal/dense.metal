@@ -1652,6 +1652,265 @@ typedef decltype(kernel_mul_mv_t_t_4<half, half4, half, half4>) mul_mv_t_t_4;
 // Host-visible vectorized dense matvec variants for F32 and F16 weights.
 template [[host_name("kernel_mul_mv_f32_f32_4")]] kernel mul_mv_t_t_4 kernel_mul_mv_t_t_4<float, float4, float, float4>;
 template [[host_name("kernel_mul_mv_f16_f32_4")]] kernel mul_mv_t_t_4 kernel_mul_mv_t_t_4<half,  half4,  float, float4>;
+// BF16 weights widen exactly to the F32 kernel's values, walk and sums.
+template [[host_name("kernel_mul_mv_bf16_f32_4")]] kernel mul_mv_t_t_4 kernel_mul_mv_t_t_4<bfloat, bfloat4, float, float4>;
+
+// The same codes as F16 bit patterns, sign to bit 15 and exponent/mantissa
+// shifted under the F16 exponent: exactly the E4M3 value / 256, subnormals
+// included (both formats' subnormal steps differ by the same 2^8).
+static inline float4 ds4_e4m3x4_div256(uchar4 b) {
+    const ushort4 u = ushort4(b);
+    return float4(as_type<half4>(((u & 0x80) << 8) | ((u & 0x7f) << 7)));
+}
+
+// The vectorized F16 matvec over E4M3 codes with one power-of-two scale per
+// 32 x 32 block (V4.1's checkpoint format). Each lane's 16 weights sit in one
+// block, so code times scale reproduces the F16 weights exactly when the
+// host repack verified them; the K walk and reductions are the F16 kernel's.
+template<short NR0, bool ROUND>
+void kernel_mul_mv_e4m3_f32_4_impl(
+        constant ds4_metal_args_mul_mv & args,
+        device const char * src0,
+        device const char * src1,
+        device       char * dst,
+        device const float * scales,
+        threadgroup  char * shmem,
+        uint3  tgpig,
+        ushort tiisg,
+        ushort sgitg) {
+    const short NSG = FC_mul_mv_nsg;
+    constexpr short NW = N_SIMDWIDTH;
+    constexpr short NB  = 32;
+    constexpr short NF  = 16;
+    constexpr short NF4 = NF/4;
+    const int nb = args.ne00/NB;
+    const int r0 = tgpig.x*NR0;
+
+    device const float4 * y4 = (device const float4 *) src1;
+    device const uchar4 * ax4[NR0];
+    device const float  * sc [NR0];
+    FOR_UNROLL (short row = 0; row < NR0; ++row) {
+        const int r = min(r0 + row, args.ne01 - 1);
+        ax4[row] = (device const uchar4 *) (src0 + (uint64_t)r*args.nb01);
+        sc [row] = scales + (uint64_t)(r/32)*nb;
+    }
+    float sumf[NR0] = { 0.f };
+
+    const short ix = tiisg/(NW/NF);
+    const short il = tiisg%(NW/NF);
+    const int ib0 = sgitg*NF + ix;
+    float4 yl4[NF4];
+    device const float4 * yb4 = y4 + (ib0*NB + il*NF)/4;
+
+    for (int ib = ib0; ib < nb; ib += NSG*NF) {
+        for (short i = 0; i < NF4; ++i) {
+            yl4[i] = yb4[i];
+        }
+        for (short row = 0; row < NR0; row++) {
+            device const uchar4 * xb4 = ax4[row] + (ib*NB + il*NF)/4;
+            const float s = sc[row][ib];
+            float sumq = 0.f;
+            const float s256 = s * 256.0f;
+            FOR_UNROLL (short i = 0; i < NF4; ++i) {
+                sumq += dot(ds4_e4m3x4_div256(xb4[i]) * s256, yl4[i]);
+            }
+            sumf[row] += sumq;
+        }
+        yb4 += NSG*NF*NW/4;
+    }
+
+    helper_mv_reduce_and_write<NR0, ROUND>((device float *) dst, sumf, r0, args.ne01, tiisg, sgitg, shmem);
+}
+
+template<bool ROUND>
+kernel void kernel_mul_mv_e4m3_f32_4_t(
+        constant ds4_metal_args_mul_mv & args,
+        device const char * src0,
+        device const char * src1,
+        device       char * dst,
+        device const float * scales,
+        threadgroup  char * shmem [[threadgroup(0)]],
+        uint3  tgpig[[threadgroup_position_in_grid]],
+        ushort tiisg[[thread_index_in_simdgroup]],
+        ushort sgitg[[simdgroup_index_in_threadgroup]]) {
+    switch (args.nr0) {
+        case 1: kernel_mul_mv_e4m3_f32_4_impl<1, ROUND>(args, src0, src1, dst, scales, shmem, tgpig, tiisg, sgitg); break;
+        case 2: kernel_mul_mv_e4m3_f32_4_impl<2, ROUND>(args, src0, src1, dst, scales, shmem, tgpig, tiisg, sgitg); break;
+        case 4: kernel_mul_mv_e4m3_f32_4_impl<4, ROUND>(args, src0, src1, dst, scales, shmem, tgpig, tiisg, sgitg); break;
+    }
+}
+
+template [[host_name("kernel_mul_mv_e4m3_f32_4_bf16")]] kernel void kernel_mul_mv_e4m3_f32_4_t<true>(
+        constant ds4_metal_args_mul_mv &, device const char *, device const char *, device char *,
+        device const float *, threadgroup char *, uint3, ushort, ushort);
+
+/* The blend readers: the same products and sums as the narrow readers above, with wider loads. */
+
+/* kernel_mul_mv_bf16_f32_4 with each lane's 16 weights loaded as two 16-byte words, one row per threadgroup; the same
+ * floats, K walk and reduction. ne00 % 32 == 0, rows 16-byte aligned. */
+kernel void kernel_router_blend_r1(
+        constant ds4_metal_args_mul_mv & args,
+        device const char * src0 [[buffer(1)]],
+        device const char * src1 [[buffer(2)]],
+        device       char * dst  [[buffer(3)]],
+        threadgroup  char * shmem [[threadgroup(0)]],
+        uint3  tgpig[[threadgroup_position_in_grid]],
+        ushort tiisg[[thread_index_in_simdgroup]],
+        ushort sgitg[[simdgroup_index_in_threadgroup]]) {
+    const short NSG = FC_mul_mv_nsg;
+    constexpr short NW = N_SIMDWIDTH;
+    constexpr short NB  = 32;
+    constexpr short NF  = 16;
+    constexpr short NF4 = NF/4;
+
+    const int nb = args.ne00/NB;
+    const int r0 = tgpig.x;
+
+    device const float4 * y4  = (device const float4 *) src1;
+    device const uint4  * ax4 = (device const uint4 *) (src0 + (uint64_t)r0*args.nb01);
+
+    float sumf[1] = { 0.f };
+
+    const short ix = tiisg/(NW/NF);
+    const short il = tiisg%(NW/NF);
+    const int ib0 = sgitg*NF + ix;
+
+    float4 yl4[NF4];
+    device const float4 * yb4 = y4 + (ib0*NB + il*NF)/4;
+
+    for (int ib = ib0; ib < nb; ib += NSG*NF) {
+        for (short i = 0; i < NF4; ++i) {
+            yl4[i] = yb4[i];
+        }
+        const uint4 a = ax4[ib*4 + il*2];
+        const uint4 b = ax4[ib*4 + il*2 + 1];
+        float sumq = 0.f;
+        sumq += dot(as_type<float4>(uint4(a.x << 16, a.x & 0xffff0000u, a.y << 16, a.y & 0xffff0000u)), yl4[0]);
+        sumq += dot(as_type<float4>(uint4(a.z << 16, a.z & 0xffff0000u, a.w << 16, a.w & 0xffff0000u)), yl4[1]);
+        sumq += dot(as_type<float4>(uint4(b.x << 16, b.x & 0xffff0000u, b.y << 16, b.y & 0xffff0000u)), yl4[2]);
+        sumq += dot(as_type<float4>(uint4(b.z << 16, b.z & 0xffff0000u, b.w << 16, b.w & 0xffff0000u)), yl4[3]);
+        sumf[0] += sumq;
+        yb4 += NSG*NF*NW/4;
+    }
+
+    helper_mv_reduce_and_write<1, false>((device float *) dst, sumf, r0, args.ne01, tiisg, sgitg, shmem);
+}
+
+/* E4M3 codes in bytes 0..3 as value / 256, two per half2. */
+static inline float4 ds4_blend_dec4(uint w) {
+    const half2 a = as_type<half2>(((w << 7) & 0x3f803f80u) | ((w << 8) & 0x80008000u));   /* c0, c2 */
+    const half2 b = as_type<half2>(((w >> 1) & 0x3f803f80u) | (w & 0x80008000u));         /* c1, c3 */
+    return float4(float(a.x), float(b.x), float(a.y), float(b.y));
+}
+
+/* kernel_mul_mv_e4m3_f32_4_bf16 with each lane's 16 codes per row as one 16-byte word and two rows sharing a scale
+ * load; the same products, K walk and reduction. Codes 16-byte aligned, ne00 % 32 == 0, ne01 even. */
+kernel void kernel_e4m3_blend_r2_bf16(
+        constant ds4_metal_args_mul_mv & args,
+        device const uchar * codes  [[buffer(1)]],
+        device const char  * src1   [[buffer(2)]],
+        device       char  * dst    [[buffer(3)]],
+        device const float * scales [[buffer(4)]],
+        threadgroup  char  * shmem  [[threadgroup(0)]],
+        uint3  tgpig[[threadgroup_position_in_grid]],
+        ushort tiisg[[thread_index_in_simdgroup]],
+        ushort sgitg[[simdgroup_index_in_threadgroup]]) {
+    constexpr short NR0 = 2;
+    const short NSG = FC_mul_mv_nsg;
+    constexpr short NW = N_SIMDWIDTH;
+    constexpr short NB  = 32;
+    constexpr short NF  = 16;
+    constexpr short NF4 = NF/4;
+
+    const int nb  = args.ne00/NB;
+    const int k16 = args.ne00/16;
+    const int r0  = tgpig.x*NR0;
+
+    device const float4 * y4  = (device const float4 *) src1;
+    device const uint4  * ax4 = (device const uint4 *) (codes + (uint64_t)r0*args.ne00);
+    device const float  * sx  = scales + (uint64_t)(r0/32)*nb;
+
+    float sumf[NR0] = { 0.f };
+
+    const short ix = tiisg/(NW/NF);
+    const short il = tiisg%(NW/NF);
+    const int ib0 = sgitg*NF + ix;
+
+    float4 yl4[NF4];
+    device const float4 * yb4 = y4 + (ib0*NB + il*NF)/4;
+
+    for (int ib = ib0; ib < nb; ib += NSG*NF) {
+        for (short i = 0; i < NF4; ++i) {
+            yl4[i] = yb4[i];
+        }
+        const float s256 = sx[ib] * 256.0f;
+        FOR_UNROLL (short row = 0; row < NR0; row++) {
+            const uint4 w = ax4[row*k16 + ib*2 + il];
+            float sumq = 0.f;
+            sumq += dot(ds4_blend_dec4(w.x) * s256, yl4[0]);
+            sumq += dot(ds4_blend_dec4(w.y) * s256, yl4[1]);
+            sumq += dot(ds4_blend_dec4(w.z) * s256, yl4[2]);
+            sumq += dot(ds4_blend_dec4(w.w) * s256, yl4[3]);
+            sumf[row] += sumq;
+        }
+        yb4 += NSG*NF*NW/4;
+    }
+
+    helper_mv_reduce_and_write<NR0, true>((device float *) dst, sumf, r0, args.ne01, tiisg, sgitg, shmem);
+}
+
+/* The same where each lane owns at most one 32-column block, dispatched with only the owning simdgroups (the others
+ * would add +0); its one partial times a power-of-two scale is exact. */
+kernel void kernel_e4m3_blend_owner_r2_bf16(
+        constant ds4_metal_args_mul_mv & args [[buffer(0)]],
+        device const uchar * codes  [[buffer(1)]],
+        device const char  * src1   [[buffer(2)]],
+        device       char  * dst    [[buffer(3)]],
+        device const float * scales [[buffer(4)]],
+        threadgroup  char  * shmem  [[threadgroup(0)]],
+        uint3  tgpig[[threadgroup_position_in_grid]],
+        ushort tiisg[[thread_index_in_simdgroup]],
+        ushort sgitg[[simdgroup_index_in_threadgroup]]) {
+    constexpr short NR0 = 2;
+    constexpr short NW = N_SIMDWIDTH;
+    constexpr short NB  = 32;
+    constexpr short NF  = 16;
+
+    const int nb  = args.ne00/NB;
+    const int k16 = args.ne00/16;
+    const int r0  = tgpig.x*NR0;
+
+    device const float4 * y4  = (device const float4 *) src1;
+    device const uint4  * ax4 = (device const uint4 *) (codes + (uint64_t)r0*args.ne00);
+    device const float  * sx  = scales + (uint64_t)(r0/32)*nb;
+
+    float sumf[NR0] = { 0.f };
+
+    const short ix = tiisg/(NW/NF);
+    const short il = tiisg%(NW/NF);
+    const int ib = sgitg*NF + ix;
+
+    if (ib < nb) {
+        device const float4 * yb4 = y4 + (ib*NB + il*NF)/4;
+        float4 yl4[4];
+        for (short i = 0; i < 4; ++i) {
+            yl4[i] = yb4[i];
+        }
+        const float s256 = sx[ib] * 256.0f;
+        FOR_UNROLL (short row = 0; row < NR0; row++) {
+            const uint4 w = ax4[row*k16 + ib*2 + il];
+            float sumq = 0.f;
+            sumq += dot(ds4_blend_dec4(w.x), yl4[0]);
+            sumq += dot(ds4_blend_dec4(w.y), yl4[1]);
+            sumq += dot(ds4_blend_dec4(w.z), yl4[2]);
+            sumq += dot(ds4_blend_dec4(w.w), yl4[3]);
+            sumf[row] += sumq * s256;
+        }
+    }
+
+    helper_mv_reduce_and_write<NR0, true>((device float *) dst, sumf, r0, args.ne01, tiisg, sgitg, shmem);
+}
+
 
 // DS4 compressor projections always compute two same-shaped F16 matvecs from
 // the same normalized activation: one for projected KV and one for pooling
