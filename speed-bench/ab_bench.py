@@ -259,7 +259,11 @@ class Monitor:
     def stop(self):
         if self.proc.poll() is None:
             self.proc.terminate()
-            self.proc.wait(timeout=10)
+            try:
+                self.proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:  # mactop can outlive terminate; the summary still has to be written
+                self.proc.kill()
+                self.proc.wait()
         self.file.close()
 
     def readings(self, version):
