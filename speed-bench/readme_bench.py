@@ -5,10 +5,10 @@
     python3 speed-bench/readme_bench.py shapes --replica <copy>
 
 `sweep` is the "Against ds4" table: upstream's bench sweep (2048 to 32768 doubling, 128 tokens) for
-ds4, sf, sf --boost, sf with the second-drive copy, the copy with --boost, sf at 80GB and
-max_performance_82 (copy, --boost, 256K context). `shapes` is the
+ds4, sf, sf --boost, sf with the second-drive copy, the copy with --boost and
+max_performance_80 (copy, --boost, 256K context). `shapes` is the
 second-drive table: the A/B harness's prompt, append and decode shapes for the internal drive
-only, the copy, and the copy with --boost.
+only, the copy, and the copy with --boost. Every run uses the README's expert cache, CACHE below.
 
 The protocol (speed-bench/README.md, "README tables"):
 - fanboost's own thermal protection must be paused, so a plain run gets the stock Apple fan curve;
@@ -47,12 +47,13 @@ SHAPES = ['cold-2500', 'cold-3500', 'cold-5000', 'cold-7500', 'cold-10000', 'app
 SETTLE_SECONDS = 60
 MARGIN_C = 2.0
 COOL_TIMEOUT = 420
+# The README tables' expert cache; the A/B harness keeps its own (ab_bench.CACHE_FLAG).
+CACHE = '80GB'
 # Each column: name, tree ('ds4' or 'sf'), extra bench arguments, second-drive copy.
 COLUMNS = {
     'sweep': [('ds4', 'ds4', [], False), ('sf', 'sf', [], False), ('sf --boost', 'sf', ['--boost'], False),
               ('sf + copy', 'sf', [], True), ('sf + copy --boost', 'sf', ['--boost'], True),
-              ('sf 80GB', 'sf', ['--ssd-streaming-cache-experts', '80GB'], False),
-              ('max_performance_82', 'sf', ['--boost', '--ctx-alloc', '262144'], True)],
+              ('max_performance_80', 'sf', ['--boost', '--ctx-alloc', '262144'], True)],
     'shapes': [('internal', 'sf', [], False), ('copy', 'sf', [], True), ('copy --boost', 'sf', ['--boost'], True)],
 }
 
@@ -136,15 +137,15 @@ def command(table, trees, column, kind, csv_path, model):
     if table == 'sweep':
         binary = trees[tree] / ('ds4-bench' if tree == 'ds4' else ab.BENCH)
         return [str(binary), '-m', str(model), '--prompt-file', str(ab.ROOT / ab.PROMPT), '--ssd-streaming',
-                '--ssd-streaming-cache-experts', ab.CACHE_FLAG, *SWEEP, '--csv', str(csv_path), *extra]
-    return ab.bench_cmd(trees[tree], kind, model, csv_path, extra=extra)
+                '--ssd-streaming-cache-experts', CACHE, *SWEEP, '--csv', str(csv_path), *extra]
+    return ab.bench_cmd(trees[tree], kind, model, csv_path, extra=extra, cache=CACHE)
 
 
 def measure(table, trees, column, kind, out, n, model, replica, target, sampler, monitor):
     name, tree, extra, copy = column
     # A column may override the cache flag (the bench keeps the last one); the loader must report its window.
     flag = extra[extra.index('--ssd-streaming-cache-experts') + 1] if '--ssd-streaming-cache-experts' in extra \
-        else ab.CACHE_FLAG
+        else CACHE
     window = ab.cache_window(flag)
     cond = cool_down(target, monitor.path) if target is not None else {
         'cool_s': 0, 'cool_reached': True, 'start_chip': fan_status()['chip'], 'start_thermal': thermal_now(monitor.path)}

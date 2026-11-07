@@ -245,13 +245,13 @@ python3 speed-bench/readme_bench.py shapes \
 ```
 
 - `sweep` is "Against ds4": the bench sweep above (`--ctx-start 2048
-  --ctx-max 32768 --step-mul 2 --gen-tokens 128`, cache `82GB`). It runs for
-  ds4 and for sf in six setups:
+  --ctx-max 32768 --step-mul 2 --gen-tokens 128`). It runs for ds4 and for
+  sf in five setups:
   - sf alone and with `--boost`;
   - sf with the second-drive copy, and the copy with `--boost`;
-  - sf at `80GB` (a column's own `--ssd-streaming-cache-experts` overrides
-    the fixed flag, and the loader must report that cache's window);
-  - `max_performance_82`: the copy, `--boost` and a 256K context allocated.
+  - `max_performance_80`: the copy, `--boost` and a 256K context allocated.
+- Both tables use the expert cache `80GB` (`CACHE` in the script), ds4
+  included. The A/B harness keeps `82GB`.
 - `shapes` is the second-drive table: the harness's `cold-*`, `append` and
   `decode` shapes for the internal drive only, the copy, and the copy with
   `--boost`. The typical mix is the harness's own estimate.
@@ -274,9 +274,10 @@ The protocol, and why each step is there (measured on 2026-10-10,
   measured run follows a run of the same build. Since `750` sf reads its
   pageable static weights back at engine open when they are missing, so its
   first frontier no longer depends on which static weights the previous
-  process left cached. A file cache full of other data still costs it time:
-  the GPU waits to wire those pageable weights when free memory is at its
-  floor (perf-record, `750`; change `760`). ds4 has no prefault. For a single fresh-process number, set the start
+  process left cached. Since `760` it locks them, so a file cache full of
+  other data no longer makes the GPU wait to wire them (perf-record, `760`).
+  ds4 keeps them pageable at `80GB` and has no prefault. For a single
+  fresh-process number, set the start
   state explicitly instead (`speed-bench/residency/README.md`, Fixed start
   state).
 - **Same start temperature, one the machine can reach.** Right after the
