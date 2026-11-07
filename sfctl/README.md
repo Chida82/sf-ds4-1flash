@@ -93,7 +93,7 @@ sfctl stop ds4-1flash
 
 The ds4-1flash service (`sf-ds4-1flash.conf`) listens on `127.0.0.1:8910` with
 the 1017 model and the vision encoder, a 256K context, SSD streaming with an
-`82GB` expert cache, a 32 GiB disk KV cache in `~/.sf/ds4-1flash/kv`, the candor
+`80GB` expert cache, a 32 GiB disk KV cache in `~/.sf/ds4-1flash/kv`, the candor
 steering profile loaded off (a request selects it with a `-steering` model id,
 such as `deepseek-v4.1-flash-steering`), and `--boost-on-max-effort` (boost only
 while a request with reasoning effort `max` generates). Logs go to
