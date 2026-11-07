@@ -21,8 +21,10 @@ The protocol (speed-bench/README.md, "README tables"):
 - before every measured run, `fanboost max` until the chip is at or below the target and macOS
   reports thermal pressure Nominal (it stays Moderate or Heavy for up to two minutes after the
   chip has cooled), then `fanboost release` and a wait for the Apple curve;
-- inside a block the columns are rotated (A B C, C B A, ...), --runs runs each, and every value is a
-  median;
+- before every run, warm-up included, the GGUF and the copy leave the file cache and the static tensors
+  are read back (residency/touch.py), so no run inherits what the previous process cached;
+- inside a block the columns are rotated (A B C, C B A, ...), five runs each for sweep and three for
+  shapes (--runs), and every value is a median;
 - chip and fans come from `fanboost status` every 2 s, thermal state and GPU clock from mactop.
 """
 
@@ -48,6 +50,8 @@ SHAPES = ['cold-2500', 'cold-3500', 'cold-5000', 'cold-7500', 'cold-10000', 'app
 SETTLE_SECONDS = 60
 MARGIN_C = 2.0
 COOL_TIMEOUT = 420
+RUNS = {'sweep': 5, 'shapes': 3}
+TOUCH = Path(__file__).resolve().parent / 'residency' / 'touch.py'
 # The README tables' expert cache; the A/B harness keeps its own (ab_bench.CACHE_FLAG).
 CACHE = '80GB'
 # Each column: name, tree ('ds4' or 'sf'), extra bench arguments, second-drive copy.
@@ -142,14 +146,29 @@ def command(table, trees, column, kind, csv_path, model):
     return ab.bench_cmd(trees[tree], kind, model, csv_path, extra=extra, cache=CACHE)
 
 
+def fixed_start(model, replica):
+    """Drop every page of the GGUF (and of the copy) from the file cache, then read the static tensors back:
+    each run starts from the same cache, whatever the previous process left (speed-bench/residency/README.md)."""
+    steps = [(model, 'evict', '.')] + ([(replica, 'evict', '.')] if replica else []) + [(model, 'warm')]
+    lines = []
+    for path, *mode in steps:
+        r = subprocess.run([sys.executable, str(TOUCH), str(path), *mode], capture_output=True, text=True)
+        if r.returncode:
+            raise ab.Stop(2, f'touch.py {path} {" ".join(mode)} failed: {r.stderr.strip()}')
+        lines.append(r.stdout.strip())
+    return lines
+
+
 def measure(table, trees, column, kind, out, n, model, replica, target, sampler, monitor):
     name, tree, extra, copy = column
+    start_state = fixed_start(model, replica)
     # A column may override the cache flag (the bench keeps the last one); the loader must report its window.
     flag = extra[extra.index('--ssd-streaming-cache-experts') + 1] if '--ssd-streaming-cache-experts' in extra \
         else CACHE
     window = ab.cache_window(flag)
     cond = cool_down(target, monitor.path) if target is not None else {
         'cool_s': 0, 'cool_reached': True, 'start_chip': fan_status()['chip'], 'start_thermal': thermal_now(monitor.path)}
+    cond['start_state'] = start_state
     stem = out / 'logs' / f'{n:02d}-{name.replace(" ", "_")}-{kind}'
     env = ab.child_env([f'DS4_METAL_PREFILL_REPLICA={replica}'] if copy else [])
     start = time.time()
@@ -235,9 +254,10 @@ def main(argv=None):
     p.add_argument('--ds4', help='ds4 build tree at the merge-base (sweep only)')
     p.add_argument('--replica', help='byte-identical copy of the GGUF on the second drive (copy columns)')
     p.add_argument('--columns', help='comma list of column names to run (default: all of the table)')
-    p.add_argument('--runs', type=int, default=3)
+    p.add_argument('--runs', type=int, help=f'measured runs per column (default {RUNS})')
     p.add_argument('--out', default=None, help='output directory (default $TMPDIR/sf-ds4-1flash-readme/<table>-<time>)')
     args = p.parse_args(argv)
+    args.runs = args.runs or RUNS[args.table]
     columns = COLUMNS[args.table]
     if args.columns:
         names = [c.strip() for c in args.columns.split(',')]

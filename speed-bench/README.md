@@ -266,6 +266,16 @@ python3 speed-bench/readme_bench.py shapes \
 
 The protocol, and why each step is there (measured on 2026-10-10,
 `speed-bench/perf-record.md`, `--boost` in a short sweep):
+- **Fixed start state before every run.** The GGUF and the copy leave the
+  file cache and the static tensors are read back (`residency/touch.py`
+  `evict .` and `warm`, about 22 s, no root). On 2026-11-07 the same `main`
+  measured the first 2048 tokens at 177-184 tokens/s in a session that began
+  with the ds4 block and 172-177 in one without it, the same cache counters in
+  both: ds4 leaves part of the GGUF cached and sf's uncached reads still hit
+  those pages. After an sf-only session 21.3 GiB of the GGUF was still cached.
+- **Five runs per column for `sweep`, three for `shapes`.** The first token
+  and the `--boost` columns have single outliers that a median of three still
+  feels; the shapes vary less and take longer.
 - **Stock fans for plain runs.** fanboost's thermal protection must be paused
   (`fanboost pause`); the script refuses otherwise. `--boost` runs ask fanboost
   for full fans themselves.
@@ -284,10 +294,8 @@ The protocol, and why each step is there (measured on 2026-10-10,
   first frontier no longer depends on which static weights the previous
   process left cached. Since `760` it locks them, so a file cache full of
   other data no longer makes the GPU wait to wire them (perf-record, `760`).
-  ds4 keeps them pageable at `80GB` and has no prefault. For a single
-  fresh-process number, set the start
-  state explicitly instead (`speed-bench/residency/README.md`, Fixed start
-  state).
+  ds4 keeps them pageable at `80GB` and has no prefault. The fixed start
+  state above now sets both builds' cache before every run.
 - **Same start temperature, one the machine can reach.** Right after the
   warm-up the script holds the fans at their maximum for 60 s and takes the
   chip's lowest reading; the target is that plus 2 °C. Before every measured
