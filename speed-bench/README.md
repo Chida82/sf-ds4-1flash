@@ -266,13 +266,18 @@ python3 speed-bench/readme_bench.py shapes \
 
 The protocol, and why each step is there (measured on 2026-10-10,
 `speed-bench/perf-record.md`, `--boost` in a short sweep):
-- **Fixed start state before every run.** The GGUF and the copy leave the
-  file cache and the static tensors are read back (`residency/touch.py`
-  `evict .` and `warm`, about 22 s, no root). On 2026-11-07 the same `main`
-  measured the first 2048 tokens at 177-184 tokens/s in a session that began
-  with the ds4 block and 172-177 in one without it, the same cache counters in
-  both: ds4 leaves part of the GGUF cached and sf's uncached reads still hit
-  those pages. After an sf-only session 21.3 GiB of the GGUF was still cached.
+- **Steady state, from the build's own cache.** Each block starts by dropping
+  the GGUF and the copy from the file cache, then runs two discarded
+  warm-ups of its build; the measured runs follow one another, as in
+  continuous use, and each records the GiB of both files cached before it.
+  On 2026-11-07 the same `main` measured the first 2048 tokens at 177-184
+  tokens/s in a session that began with the ds4 block and 172-177 in one
+  without it, with the same cache counters: ds4 leaves part of the GGUF
+  cached and sf's uncached reads still hit those pages. After an sf-only
+  session 21.3 GiB of the GGUF was cached. A cold start (every run after an
+  evict) reads the whole first sweep from the SSD: 162.7 tokens/s for the same
+  build, and ds4 138-140 against 121 after the old protocol; it describes a
+  fresh process on an empty cache, not the machine in use.
 - **Five runs per column for `sweep`, three for `shapes`.** The first token
   and the `--boost` columns have single outliers that a median of three still
   feels; the shapes vary less and take longer.
@@ -294,8 +299,8 @@ The protocol, and why each step is there (measured on 2026-10-10,
   first frontier no longer depends on which static weights the previous
   process left cached. Since `760` it locks them, so a file cache full of
   other data no longer makes the GPU wait to wire them (perf-record, `760`).
-  ds4 keeps them pageable at `80GB` and has no prefault. The fixed start
-  state above now sets both builds' cache before every run.
+  ds4 keeps them pageable at `80GB` and has no prefault. The evict at each
+  block start removes the other build's pages.
 - **Same start temperature, one the machine can reach.** Right after the
   warm-up the script holds the fans at their maximum for 60 s and takes the
   chip's lowest reading; the target is that plus 2 °C. Before every measured

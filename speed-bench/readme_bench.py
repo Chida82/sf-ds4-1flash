@@ -21,8 +21,9 @@ The protocol (speed-bench/README.md, "README tables"):
 - before every measured run, `fanboost max` until the chip is at or below the target and macOS
   reports thermal pressure Nominal (it stays Moderate or Heavy for up to two minutes after the
   chip has cooled), then `fanboost release` and a wait for the Apple curve;
-- before every run, warm-up included, the GGUF and the copy leave the file cache and the static tensors
-  are read back (residency/touch.py), so no run inherits what the previous process cached;
+- each block starts from an emptied file cache (the GGUF and the copy) and two discarded warm-ups of its
+  build, so the measured runs see the build's own steady-state cache, never another build's leftovers;
+  the GiB of each file cached before every run are recorded;
 - inside a block the columns are rotated (A B C, C B A, ...), five runs each for sweep and three for
   shapes (--runs), and every value is a median;
 - chip and fans come from `fanboost status` every 2 s, thermal state and GPU clock from mactop.
@@ -42,7 +43,9 @@ from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent / 'residency'))
 import ab_bench as ab  # noqa: E402
+import gguf_ranges  # noqa: E402
 
 SWEEP = ['--ctx-start', '2048', '--ctx-max', '32768', '--step-mul', '2', '--gen-tokens', '128']
 FRONTIERS = (2048, 4096, 8192, 16384, 32768)
@@ -51,7 +54,7 @@ SETTLE_SECONDS = 60
 MARGIN_C = 2.0
 COOL_TIMEOUT = 420
 RUNS = {'sweep': 5, 'shapes': 3}
-TOUCH = Path(__file__).resolve().parent / 'residency' / 'touch.py'
+WARMUPS = 2
 # The README tables' expert cache; the A/B harness keeps its own (ab_bench.CACHE_FLAG).
 CACHE = '80GB'
 # Each column: name, tree ('ds4' or 'sf'), extra bench arguments, second-drive copy.
@@ -146,29 +149,28 @@ def command(table, trees, column, kind, csv_path, model):
     return ab.bench_cmd(trees[tree], kind, model, csv_path, extra=extra, cache=CACHE)
 
 
-def fixed_start(model, replica):
-    """Drop every page of the GGUF (and of the copy) from the file cache, then read the static tensors back:
-    each run starts from the same cache, whatever the previous process left (speed-bench/residency/README.md)."""
-    steps = [(model, 'evict', '.')] + ([(replica, 'evict', '.')] if replica else []) + [(model, 'warm')]
-    lines = []
-    for path, *mode in steps:
-        r = subprocess.run([sys.executable, str(TOUCH), str(path), *mode], capture_output=True, text=True)
-        if r.returncode:
-            raise ab.Stop(2, f'touch.py {path} {" ".join(mode)} failed: {r.stderr.strip()}')
-        lines.append(r.stdout.strip())
-    return lines
+def file_cache(paths, evict=False):
+    """GiB of each file in the page cache; with evict, drop every page of it first."""
+    gib = []
+    for path in paths:
+        m = gguf_ranges.Mapping(str(path))
+        if evict:
+            m.evict(0, m.size)
+        gib.append(round(m.resident(0, m.size) / 2**30, 2))
+        m.close()
+    return gib
 
 
 def measure(table, trees, column, kind, out, n, model, replica, target, sampler, monitor):
     name, tree, extra, copy = column
-    start_state = fixed_start(model, replica)
     # A column may override the cache flag (the bench keeps the last one); the loader must report its window.
     flag = extra[extra.index('--ssd-streaming-cache-experts') + 1] if '--ssd-streaming-cache-experts' in extra \
         else CACHE
     window = ab.cache_window(flag)
+    cached = file_cache([model] + ([replica] if replica else []))  # before the cool-down: 10 s of CPU
     cond = cool_down(target, monitor.path) if target is not None else {
         'cool_s': 0, 'cool_reached': True, 'start_chip': fan_status()['chip'], 'start_thermal': thermal_now(monitor.path)}
-    cond['start_state'] = start_state
+    cond['cached_gib'] = cached
     stem = out / 'logs' / f'{n:02d}-{name.replace(" ", "_")}-{kind}'
     env = ab.child_env([f'DS4_METAL_PREFILL_REPLICA={replica}'] if copy else [])
     start = time.time()
@@ -192,7 +194,8 @@ def measure(table, trees, column, kind, out, n, model, replica, target, sampler,
                 gpu_mhz=statistics.median(r['freq'] for r in gpu) if gpu else None, seconds=round(end - start))
     print(f'  {n:2d} {name:<18} {kind:<11} {end - start:5.0f} s  cooled {cond["cool_s"]:3d} s'
           f'{"" if cond["cool_reached"] else " (timeout)"}, from {cond["start_chip"]:.1f} C {cond["start_thermal"]}, '
-          f'peak {cond["chip_max"]:.1f} C, {"/".join(cond["modes"])}, {states}', flush=True)
+          f'peak {cond["chip_max"]:.1f} C, {"/".join(cond["modes"])}, {states}, cached {cond["cached_gib"]} GiB',
+          flush=True)
     return {'n': n, 'column': name, 'kind': kind, 'rows': rows, 'conditions': cond}
 
 
@@ -286,13 +289,16 @@ def main(argv=None):
     sampler.start()
     try:
         kinds = SHAPES if args.table == 'shapes' else ['sweep']
-        # One block per build, so no sf run follows a ds4 run: ds4 leaves its own prefill reads in the
-        # page cache and the next process, of either build, loses on the first frontier.
+        # One block per build, each from an emptied file cache and two discarded warm-ups: the measured
+        # runs see the cache at the build's own steady state, not what another build or process left.
         blocks = [[c for c in columns if c[1] == t] for t in dict.fromkeys(c[1] for c in columns)]
         runs, n, target = [], 1, None
         for block in blocks:
-            measure(args.table, trees, block[0], kinds[0], out, 0, model, args.replica, target, sampler,
-                    monitor)  # warm-up, discarded
+            print(f'block {block[0][1]}: evicted, cached {file_cache([model] + ([args.replica] if args.replica else []), evict=True)} GiB',
+                  flush=True)
+            for _ in range(WARMUPS):
+                measure(args.table, trees, block[0], kinds[0], out, 0, model, args.replica, target, sampler,
+                        monitor)  # warm-up, discarded
             if target is None:
                 floor = settle_temperature()
                 target = floor + MARGIN_C
