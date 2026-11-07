@@ -5,7 +5,8 @@
     python3 speed-bench/readme_bench.py shapes --replica <copy>
 
 `sweep` is the "Against ds4" table: upstream's bench sweep (2048 to 32768 doubling, 128 tokens) for
-ds4, sf, sf --boost, sf with the second-drive copy, and the copy with --boost. `shapes` is the
+ds4, sf, sf --boost, sf with the second-drive copy, the copy with --boost, sf at 80GB and
+max_performance_82 (copy, --boost, 256K context). `shapes` is the
 second-drive table: the A/B harness's prompt, append and decode shapes for the internal drive
 only, the copy, and the copy with --boost.
 
@@ -49,7 +50,9 @@ COOL_TIMEOUT = 420
 # Each column: name, tree ('ds4' or 'sf'), extra bench arguments, second-drive copy.
 COLUMNS = {
     'sweep': [('ds4', 'ds4', [], False), ('sf', 'sf', [], False), ('sf --boost', 'sf', ['--boost'], False),
-              ('sf + copy', 'sf', [], True), ('sf + copy --boost', 'sf', ['--boost'], True)],
+              ('sf + copy', 'sf', [], True), ('sf + copy --boost', 'sf', ['--boost'], True),
+              ('sf 80GB', 'sf', ['--ssd-streaming-cache-experts', '80GB'], False),
+              ('max_performance_82', 'sf', ['--boost', '--ctx-alloc', '262144'], True)],
     'shapes': [('internal', 'sf', [], False), ('copy', 'sf', [], True), ('copy --boost', 'sf', ['--boost'], True)],
 }
 
@@ -138,7 +141,11 @@ def command(table, trees, column, kind, csv_path, model):
 
 
 def measure(table, trees, column, kind, out, n, model, replica, target, sampler, monitor):
-    name, tree, _, copy = column
+    name, tree, extra, copy = column
+    # A column may override the cache flag (the bench keeps the last one); the loader must report its window.
+    flag = extra[extra.index('--ssd-streaming-cache-experts') + 1] if '--ssd-streaming-cache-experts' in extra \
+        else ab.CACHE_FLAG
+    window = ab.cache_window(flag)
     cond = cool_down(target, monitor.path) if target is not None else {
         'cool_s': 0, 'cool_reached': True, 'start_chip': fan_status()['chip'], 'start_thermal': thermal_now(monitor.path)}
     stem = out / 'logs' / f'{n:02d}-{name.replace(" ", "_")}-{kind}'
@@ -151,8 +158,8 @@ def measure(table, trees, column, kind, out, n, model, replica, target, sampler,
     if rc != 0:
         raise ab.Stop(1, f'{name} {kind} failed (exit {rc}); see {stem}.err')
     loader = ab.LOADER.search(Path(f'{stem}.err').read_text(errors='replace'))
-    if not loader or not ab.CACHE_WINDOW[0] <= float(loader[1]) <= ab.CACHE_WINDOW[1]:
-        raise ab.Stop(2, f'{name} {kind}: dynamic expert cache outside {ab.CACHE_WINDOW} GiB; see {stem}.err')
+    if not loader or not window[0] <= float(loader[1]) <= window[1]:
+        raise ab.Stop(2, f'{name} {kind}: dynamic expert cache outside {window} GiB; see {stem}.err')
     rows = {int(r['ctx_tokens']): r for r in csv.DictReader(open(f'{stem}.csv'))}
     fans = sampler.window(start, end)
     gpu = [r for r in monitor.readings(ab.mactop_version()) if start <= r['time'] <= end]

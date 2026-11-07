@@ -191,6 +191,7 @@ DS4_ENV(DS4_METAL_DISABLE_STREAMING_SELECTED_SHARED_OVERLAP, disable, unset, "Tu
 DS4_ENV(DS4_METAL_DISABLE_STREAMING_SLAB_RESIDENCY, disable, unset, "Keeps streamed expert cache slabs out of the Metal residency set attached to the queue")
 DS4_ENV(DS4_METAL_DISABLE_STREAMING_STATIC_DECODE_MAP, disable, unset, "Turns off the static (non-expert) weight map used by streaming decode")
 DS4_ENV(DS4_METAL_DISABLE_STREAMING_STATIC_LOCK, disable, unset, "Skips mlock of the static weights every token uses in SSD streaming")
+DS4_ENV(DS4_METAL_DISABLE_STREAMING_STATIC_PREFAULT, disable, unset, "Skips reading the pageable static weights into memory at engine open in SSD streaming (750)")
 DS4_ENV(DS4_METAL_DISABLE_STREAMING_STATIC_MAP_STATE_CACHE, disable, unset, "Turns off caching of the streaming static decode map state")
 DS4_ENV(DS4_METAL_DISABLE_TINY_PAIR_SWIGLU_FUSION, disable, unset, "Turns off the fused routed gate/up SwiGLU pair kernel for small MoE batches")
 DS4_ENV(DS4_METAL_DISABLE_TP_BATCH_MOE, disable, unset, "TP: evaluates each row's owned experts separately instead of one 2-6 row batched MoE (M5, resident)")

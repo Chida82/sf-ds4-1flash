@@ -245,8 +245,13 @@ python3 speed-bench/readme_bench.py shapes \
 ```
 
 - `sweep` is "Against ds4": the bench sweep above (`--ctx-start 2048
-  --ctx-max 32768 --step-mul 2 --gen-tokens 128`, cache `82GB`) for ds4, sf,
-  sf `--boost`, sf with the second-drive copy, and the copy with `--boost`.
+  --ctx-max 32768 --step-mul 2 --gen-tokens 128`, cache `82GB`). It runs for
+  ds4 and for sf in six setups:
+  - sf alone and with `--boost`;
+  - sf with the second-drive copy, and the copy with `--boost`;
+  - sf at `80GB` (a column's own `--ssd-streaming-cache-experts` overrides
+    the fixed flag, and the loader must report that cache's window);
+  - `max_performance_82`: the copy, `--boost` and a 256K context allocated.
 - `shapes` is the second-drive table: the harness's `cold-*`, `append` and
   `decode` shapes for the internal drive only, the copy, and the copy with
   `--boost`. The typical mix is the harness's own estimate.
@@ -266,7 +271,14 @@ The protocol, and why each step is there (measured on 2026-10-10,
   against 174-179 and 106-190 after another sf run, and a ds4 run after
   another ds4 read 122 against 129. So the script measures ds4 first, then
   every sf column, and warms each block up with a run of its own build: every
-  measured run follows a run of the same build.
+  measured run follows a run of the same build. Since `750` sf reads its
+  pageable static weights back at engine open when they are missing, so its
+  first frontier no longer depends on which static weights the previous
+  process left cached. A file cache full of other data still costs it time:
+  the GPU waits to wire those pageable weights when free memory is at its
+  floor (perf-record, `750`; change `760`). ds4 has no prefault. For a single fresh-process number, set the start
+  state explicitly instead (`speed-bench/residency/README.md`, Fixed start
+  state).
 - **Same start temperature, one the machine can reach.** Right after the
   warm-up the script holds the fans at their maximum for 60 s and takes the
   chip's lowest reading; the target is that plus 2 °C. Before every measured

@@ -31268,6 +31268,7 @@ static int ds4_engine_open_internal(ds4_engine **out,
         }
 #endif
         ds4_gpu_set_streaming_expert_cache_budget(e->ssd_streaming_cache_experts);
+        bool statics_pageable = e->ssd_streaming && !load_slice && !tp_shard;
         /* Keep the weights used by every token from competing with streamed
          * experts in the file cache. These bytes are already in the model
          * budget; munmap in model_close releases the locks. */
@@ -31313,6 +31314,7 @@ static int ds4_engine_open_internal(ds4_engine **out,
                 fprintf(stderr, "ds4: Metal SSD static weights locked %.2f GiB"
                         "; pageable %.2f GiB\n", locked / 1073741824.0,
                         failed / 1073741824.0);
+                statics_pageable = failed > 0;
                 free(spans.v);
             }
         }
@@ -31373,6 +31375,63 @@ static int ds4_engine_open_internal(ds4_engine **out,
                             (double)(2u * min_experts * slab_expert_bytes) /
                                 1073741824.0);
                 }
+            }
+        }
+        /* The lock-ahead above wires the expert cache and the kernel evicts
+         * the oldest file pages for it, often the pageable static weights an
+         * earlier process left. Read them back now, sequentially, instead of
+         * faulting them page by page inside the first prefill. */
+        if (statics_pageable &&
+            getenv("DS4_METAL_DISABLE_STREAMING_STATIC_PREFAULT") == NULL) {
+            ds4_model_map_span_vec spans;
+            if (weights_model_map_decode_static_spans(&e->weights, true, true, &spans)) {
+                const double t0 = now_sec();
+                const size_t page = (size_t)getpagesize();
+                const uint64_t chunk = 256ull * 1024 * 1024;
+                char *vec = xmalloc((size_t)(chunk / page));
+                uint64_t total = 0, missing = 0;
+                volatile uint8_t sink = 0;
+                /* Pass 0 asks for the missing pages (WILLNEED on each missing run),
+                 * pass 1 reads what has not arrived yet; resident pages cost one
+                 * mincore bit per pass. Spans may share a page: counts are per span. */
+                for (int pass = 0; pass < 2 && (pass == 0 || missing > 0); pass++) {
+                    for (uint32_t i = 0; i < spans.len; i++) {
+                        const uint64_t lo = spans.v[i].off / page * page;
+                        const uint64_t hi = spans.v[i].end;
+                        if (hi > e->model.size || hi <= lo) continue;
+                        for (uint64_t off = lo; off < hi; off += chunk) {
+                            const uint64_t len = hi - off < chunk ? hi - off : chunk;
+                            const size_t pages = (size_t)((len + page - 1) / page);
+                            if (mincore((void *)(e->model.map + off), (size_t)len, vec) != 0) {
+                                memset(vec, 0, pages);
+                            }
+                            for (size_t p = 0; p < pages;) {
+                                if (vec[p] & MINCORE_INCORE) { p++; continue; }
+                                size_t q = p;
+                                while (q < pages && !(vec[q] & MINCORE_INCORE)) q++;
+                                const uint64_t a = off + (uint64_t)p * page;
+                                const uint64_t b = off + (uint64_t)q * page < hi ?
+                                                   off + (uint64_t)q * page : hi;
+                                if (pass == 0) {
+                                    (void)posix_madvise((void *)(e->model.map + a), (size_t)(b - a),
+                                                        POSIX_MADV_WILLNEED);
+                                    missing += b - a;
+                                } else {
+                                    for (uint64_t x = a; x < b; x += page) sink ^= e->model.map[x];
+                                }
+                                p = q;
+                            }
+                            if (pass == 0) total += len;
+                        }
+                    }
+                }
+                (void)sink;
+                free(vec);
+                free(spans.v);
+                fprintf(stderr, "ds4: Metal SSD static weights prefaulted %.2f of %.2f GiB"
+                        " (the rest was resident) in %.0f ms\n",
+                        missing / 1073741824.0, total / 1073741824.0,
+                        (now_sec() - t0) * 1000.0);
             }
         }
         (void)ds4_gpu_set_model_fd(e->model.fd);

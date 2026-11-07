@@ -2468,6 +2468,112 @@ to 2048 12.60 s with and without `700`, the +2952 medium-sweep append 7.62 ->
 switch tests (`LITERAL_SHAPES`, `SPLIT_REDUCE`, prefixes 511 and 2047, 65 exact
 tokens) pass on main + `700`.
 
+## 750 static weights and the start state (2026-11-06)
+
+Under streaming at `82GB` the 9.37 GiB of static weights stay pageable. The
+first prefill of a fresh process depends on what earlier processes left in
+the file cache:
+- Fixed start state (`purge`, then every static tensor read): 2048-token prefill
+  161.7-161.9 t/s over three runs, with only about 60 page-ins. `main` 161.8 and
+  narrow copies off 161.0 t/s.
+- Cold (`purge` alone): 117.2 and 116.5 t/s.
+- Back to back: `main` 135-145 against copies off 165-172 t/s. `main` paged in
+  up to 1.4 GiB, with 13 s of fault waits (`fs_usage -w -f diskio`), and its
+  router F32 had fallen from 300 to 125 MiB resident before the prefill.
+- Evicting the router F32 alone from a copies-off run did not slow it (168 and
+  174 t/s).
+
+The slow state is whatever set of pages the previous process left cold. The
+decode with the copies never touches the wide router, Engram projection and
+indexer q_b (0.96 GiB), so they are the first pages to go when the next
+engine's lock-ahead wires 74.46 GiB. The tools are in `speed-bench/residency/`.
+
+Server regime (task 2):
+- Setup: one `sf-ds4-1flash-server` (`--ssd-streaming`, `82GB`, ctx 32768),
+  started from the fixed start state.
+- Request A: 2229 prompt tokens, 2000 generated.
+- Request B: an unrelated 2277-token prompt, no shared prefix (`cached_tokens`
+  0).
+- Measured around B: `mincore` snapshots of every static tensor, and
+  `fs_usage` on the server.
+- The `io` runs read 20 GiB of Engram rows through the page cache between A
+  and B, as other file I/O.
+- Sweep is the 2048-row sweep, as the server log prints it. Two runs each.
+
+| Run | A sweep | B sweep | B prompt | statics before B -> after | page-ins during B |
+|---|---|---|---|---|---|
+| copies on | 12.55 / 12.56 s | 8.58 / 7.88 s | 16.07 / 15.35 s | 9600 -> 9600 MiB (both) | 1389 / 247 MiB |
+| copies off | 12.59 / 12.55 s | 8.09 / 8.07 s | 15.75 / 15.64 s | 9600 -> 9600 MiB (both) | 358 / 494 MiB |
+| copies on, 20 GiB other reads | 12.57 / 12.56 s | 8.39 / 8.26 s | 15.84 / 15.76 s | 8386 / 8724 -> 9600 MiB | 1940 / 1425 MiB |
+
+A long-lived server keeps its static weights:
+- Without other I/O, no static page was evicted during A's 2000 tokens, with
+  the copies on or off. B's page-ins are expert and Engram rows (+87 to +193
+  MiB of routed experts in the snapshots), not static weights.
+- B's sweep is a third faster than A's: A left the expert cache warm.
+- Other file I/O between the requests evicted 0.9-1.2 GiB of statics. B
+  paged them back in, and its sweep stayed inside the copies-on spread
+  (7.88-8.58 s).
+
+The wide-weight lock (task 4) is therefore not built. The fresh-process gap is
+a start-state effect, and the prefault addresses it.
+
+Prefault at engine open (task 3):
+- When the static weights stay pageable, the engine first checks which static
+  pages are missing (`mincore`). It asks for them (`POSIX_MADV_WILLNEED`) and
+  reads the ones that have not arrived.
+- Bench logits at 2048 and 8192 are byte-identical with and without
+  `DS4_METAL_DISABLE_STREAMING_STATIC_PREFAULT`.
+- Each run is one fresh bench process: frontier 2048, 16 tokens, `82GB`.
+- The start state is set without root: `touch.py evict .` drops every page of
+  the GGUF, then `touch.py warm` reads the statics back. Two runs with
+  `sudo purge` in place of the evict gave the same prefill: 12.60 / 12.58 s
+  against 12.58-12.66 s.
+- First-prefill end is engine start to the end of the 2048 prefill; statics is
+  the static weights resident when the prefill starts.
+
+| Start state | prefault | open | prefill 2048 | first-prefill end | statics |
+|---|---|---|---|---|---|
+| statics warm | off | 2.33-2.34 s | 12.58-12.66 s | 14.91-15.00 s | 9601 MiB |
+| statics warm | on | 2.43 s | 12.58 s | 15.01 s | 9601 MiB |
+| cold (`purge`) | off | 2.77-2.86 s | 17.41-18.03 s | 20.20-20.89 s | |
+| cold (`purge`) | on | 4.32-4.38 s | 12.66-12.76 s | 17.02-17.08 s (-15.7%) | |
+| full file cache (statics, then 60 GiB of other reads) | off | 3.32-3.42 s | 17.98-19.07 s | 21.38-22.49 s | 984 MiB |
+| full file cache | on | 4.34-4.76 s | 13.34-15.66 s | 17.68-20.42 s (-6.7%, medians) | 9601 MiB |
+
+Notes on these runs:
+- **Warm.** The check costs 135 ms. A first version touched every page
+  whatever its state and cost 270-690 ms. The first run after each rebuild
+  opened about 2 s slower, in both variants; those runs are left out.
+- **Cold.** The prefault reads 9.37 GiB in 1.8 s, and the prefill then runs as
+  in the warm state.
+- **Full file cache.** The lock-ahead evicts almost every static page, since
+  they are older than the other reads, and the prefault brings them all back.
+  The prefill still ran 6-24% slower than warm (13.34-15.66 s).
+- **Why the full file cache stays slow.** Free memory stays at its floor
+  (1.2-1.6 GiB) through the prefill. Command buffers then wait about 290 ms
+  each between commit and completion beyond their GPU time: 7-8 s per 2048
+  prefill, against under 0.2 s warm. The GPU time is the same, 4.6 s
+  (`DS4_METAL_CB_TIMES`).
+  - The GPU has to wire the pageable static weights before using them. With
+    no free memory the kernel first evicts file pages.
+  - Allocating and locking the explicit expert buffers took 205-238 ms in
+    both states, so it is not the cause.
+  - A probe build that locked the statics at `82GB` ran the full-cache
+    prefill in 12.67-12.69 s, with no long waits.
+  - In the README sweep shape run back to back, the same probe read 179.8-181.7
+    t/s on the first 2048 tokens against 169.5-175.6 without the lock. The
+    other frontiers and steady decode stayed within 1%.
+  - Peak wired with the lock was 103.6 GiB at 32K and 105.66 GiB at 256K
+    with the copy and `--boost`, under the 108.8 GiB user wire limit.
+  - This is change `760` (next section).
+- **Wide weights.** Evicting only the wide weights before a start does not
+  slow the next one: the open reads them again to build the narrow copies.
+  The pages are lost only when the lock-ahead evicts them after that read.
+- **Back to back.** Runs that followed another run kept every static page in
+  six of seven runs, and went 11.5-12.8 s whatever the switch. Back-to-back
+  order is too noisy for this effect: use a fixed start state.
+
 ## Adding a row
 
 1. `SF_PARITY_FLAGS=--ssd-streaming tools/parity-check.sh sf-ds4-1flash` from

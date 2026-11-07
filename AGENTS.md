@@ -108,6 +108,21 @@ below `82GB`'s. `DS4_METAL_DISABLE_STREAMING_CACHE_LOCK_AHEAD=1` restores lazy
 locking. `--ssd-streaming-full-layers` is gone: it only ever applied
 to GLM graph streaming, and V4.1 warned and ignored it.
 
+At `82GB` the 9.37 GiB of static weights do not fit next to the cache, so they
+stay pageable ("static weights remain pageable"), and the lock-ahead evicts
+the oldest file pages. Those are often static weights an earlier process
+left. Since `750`, engine open checks which static pages are missing
+(`mincore`) and reads them back before the first prefill ("static weights
+prefaulted X of 9.37 GiB"). This costs about 0.1 s when nothing is missing
+and 1.8 s cold. The first prefill is then 16% sooner cold and 7% sooner with
+a full file cache, and the output is bitwise identical
+(`DS4_METAL_DISABLE_STREAMING_STATIC_PREFAULT=1` turns it off). A long-lived
+server keeps its static weights between requests: the `750` server test
+paged none back in after 2000 generated tokens. So the start state matters
+only to a fresh process. Measure one from a fixed state: drop the GGUF
+(`speed-bench/residency/touch.py <gguf> evict .`) and read the statics back
+(`touch.py <gguf> warm`). No root is needed.
+
 A process that closes an engine and opens another keeps the first cache
 wired until it exits: a test that opened three 32 GiB engines in turn measured
 47, 72 and 98 GB wired (`vm_stat`, 2026-10-13), each open locking its full

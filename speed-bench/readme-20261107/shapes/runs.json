@@ -1,0 +1,1325 @@
+[
+ {
+  "n": 1,
+  "column": "internal",
+  "kind": "cold-2500",
+  "conditions": {
+   "cool_s": 4,
+   "cool_reached": true,
+   "start_chip": 37.5,
+   "start_thermal": "Nominal",
+   "chip_max": 63.7,
+   "rpm_min": 0,
+   "modes": [
+    "AUTO"
+   ],
+   "thermal": {
+    "Nominal": 13
+   },
+   "gpu_mhz": 1539,
+   "seconds": 18
+  }
+ },
+ {
+  "n": 2,
+  "column": "copy",
+  "kind": "cold-2500",
+  "conditions": {
+   "cool_s": 32,
+   "cool_reached": true,
+   "start_chip": 39.5,
+   "start_thermal": "Nominal",
+   "chip_max": 69.0,
+   "rpm_min": 0,
+   "modes": [
+    "AUTO"
+   ],
+   "thermal": {
+    "Nominal": 10
+   },
+   "gpu_mhz": 1507.0,
+   "seconds": 14
+  }
+ },
+ {
+  "n": 3,
+  "column": "copy --boost",
+  "kind": "cold-2500",
+  "conditions": {
+   "cool_s": 37,
+   "cool_reached": true,
+   "start_chip": 38.7,
+   "start_thermal": "Nominal",
+   "chip_max": 63.5,
+   "rpm_min": 0,
+   "modes": [
+    "BOOST"
+   ],
+   "thermal": {
+    "Nominal": 11
+   },
+   "gpu_mhz": 1512,
+   "seconds": 14
+  }
+ },
+ {
+  "n": 4,
+  "column": "internal",
+  "kind": "cold-3500",
+  "conditions": {
+   "cool_s": 21,
+   "cool_reached": true,
+   "start_chip": 39.5,
+   "start_thermal": "Nominal",
+   "chip_max": 66.4,
+   "rpm_min": 0,
+   "modes": [
+    "AUTO"
+   ],
+   "thermal": {
+    "Nominal": 13
+   },
+   "gpu_mhz": 1477,
+   "seconds": 17
+  }
+ },
+ {
+  "n": 5,
+  "column": "copy",
+  "kind": "cold-3500",
+  "conditions": {
+   "cool_s": 38,
+   "cool_reached": true,
+   "start_chip": 38.3,
+   "start_thermal": "Nominal",
+   "chip_max": 66.2,
+   "rpm_min": 0,
+   "modes": [
+    "AUTO"
+   ],
+   "thermal": {
+    "Nominal": 10
+   },
+   "gpu_mhz": 1573.0,
+   "seconds": 15
+  }
+ },
+ {
+  "n": 6,
+  "column": "copy --boost",
+  "kind": "cold-3500",
+  "conditions": {
+   "cool_s": 30,
+   "cool_reached": true,
+   "start_chip": 39.6,
+   "start_thermal": "Nominal",
+   "chip_max": 72.0,
+   "rpm_min": 0,
+   "modes": [
+    "BOOST"
+   ],
+   "thermal": {
+    "Nominal": 10
+   },
+   "gpu_mhz": 1537.0,
+   "seconds": 14
+  }
+ },
+ {
+  "n": 7,
+  "column": "internal",
+  "kind": "cold-5000",
+  "conditions": {
+   "cool_s": 23,
+   "cool_reached": true,
+   "start_chip": 39.3,
+   "start_thermal": "Nominal",
+   "chip_max": 69.4,
+   "rpm_min": 0,
+   "modes": [
+    "AUTO"
+   ],
+   "thermal": {
+    "Nominal": 13
+   },
+   "gpu_mhz": 1569,
+   "seconds": 18
+  }
+ },
+ {
+  "n": 8,
+  "column": "copy",
+  "kind": "cold-5000",
+  "conditions": {
+   "cool_s": 32,
+   "cool_reached": true,
+   "start_chip": 39.7,
+   "start_thermal": "Nominal",
+   "chip_max": 70.5,
+   "rpm_min": 0,
+   "modes": [
+    "AUTO"
+   ],
+   "thermal": {
+    "Nominal": 13
+   },
+   "gpu_mhz": 1546,
+   "seconds": 17
+  }
+ },
+ {
+  "n": 9,
+  "column": "copy --boost",
+  "kind": "cold-5000",
+  "conditions": {
+   "cool_s": 35,
+   "cool_reached": true,
+   "start_chip": 39.0,
+   "start_thermal": "Nominal",
+   "chip_max": 75.5,
+   "rpm_min": 0,
+   "modes": [
+    "BOOST"
+   ],
+   "thermal": {
+    "Nominal": 11
+   },
+   "gpu_mhz": 1588,
+   "seconds": 15
+  }
+ },
+ {
+  "n": 10,
+  "column": "internal",
+  "kind": "cold-7500",
+  "conditions": {
+   "cool_s": 26,
+   "cool_reached": true,
+   "start_chip": 38.7,
+   "start_thermal": "Nominal",
+   "chip_max": 80.1,
+   "rpm_min": 0,
+   "modes": [
+    "AUTO"
+   ],
+   "thermal": {
+    "Nominal": 14
+   },
+   "gpu_mhz": 1579.5,
+   "seconds": 19
+  }
+ },
+ {
+  "n": 11,
+  "column": "copy",
+  "kind": "cold-7500",
+  "conditions": {
+   "cool_s": 36,
+   "cool_reached": true,
+   "start_chip": 39.6,
+   "start_thermal": "Nominal",
+   "chip_max": 76.4,
+   "rpm_min": 0,
+   "modes": [
+    "AUTO"
+   ],
+   "thermal": {
+    "Nominal": 14
+   },
+   "gpu_mhz": 1560.5,
+   "seconds": 20
+  }
+ },
+ {
+  "n": 12,
+  "column": "copy --boost",
+  "kind": "cold-7500",
+  "conditions": {
+   "cool_s": 38,
+   "cool_reached": true,
+   "start_chip": 39.6,
+   "start_thermal": "Nominal",
+   "chip_max": 79.5,
+   "rpm_min": 0,
+   "modes": [
+    "BOOST"
+   ],
+   "thermal": {
+    "Nominal": 13
+   },
+   "gpu_mhz": 1555,
+   "seconds": 17
+  }
+ },
+ {
+  "n": 13,
+  "column": "internal",
+  "kind": "cold-10000",
+  "conditions": {
+   "cool_s": 31,
+   "cool_reached": true,
+   "start_chip": 38.8,
+   "start_thermal": "Nominal",
+   "chip_max": 80.9,
+   "rpm_min": 0,
+   "modes": [
+    "AUTO"
+   ],
+   "thermal": {
+    "Nominal": 19
+   },
+   "gpu_mhz": 1550,
+   "seconds": 26
+  }
+ },
+ {
+  "n": 14,
+  "column": "copy",
+  "kind": "cold-10000",
+  "conditions": {
+   "cool_s": 41,
+   "cool_reached": true,
+   "start_chip": 39.5,
+   "start_thermal": "Nominal",
+   "chip_max": 89.6,
+   "rpm_min": 0,
+   "modes": [
+    "AUTO"
+   ],
+   "thermal": {
+    "Nominal": 18
+   },
+   "gpu_mhz": 1568.0,
+   "seconds": 24
+  }
+ },
+ {
+  "n": 15,
+  "column": "copy --boost",
+  "kind": "cold-10000",
+  "conditions": {
+   "cool_s": 41,
+   "cool_reached": true,
+   "start_chip": 39.5,
+   "start_thermal": "Nominal",
+   "chip_max": 79.4,
+   "rpm_min": 0,
+   "modes": [
+    "BOOST"
+   ],
+   "thermal": {
+    "Nominal": 17
+   },
+   "gpu_mhz": 1530,
+   "seconds": 23
+  }
+ },
+ {
+  "n": 16,
+  "column": "internal",
+  "kind": "append",
+  "conditions": {
+   "cool_s": 28,
+   "cool_reached": true,
+   "start_chip": 39.5,
+   "start_thermal": "Nominal",
+   "chip_max": 83.8,
+   "rpm_min": 0,
+   "modes": [
+    "AUTO"
+   ],
+   "thermal": {
+    "Nominal": 26
+   },
+   "gpu_mhz": 1547.0,
+   "seconds": 36
+  }
+ },
+ {
+  "n": 17,
+  "column": "copy",
+  "kind": "append",
+  "conditions": {
+   "cool_s": 47,
+   "cool_reached": true,
+   "start_chip": 39.6,
+   "start_thermal": "Nominal",
+   "chip_max": 90.0,
+   "rpm_min": 0,
+   "modes": [
+    "AUTO"
+   ],
+   "thermal": {
+    "Nominal": 24
+   },
+   "gpu_mhz": 1583.0,
+   "seconds": 31
+  }
+ },
+ {
+  "n": 18,
+  "column": "copy --boost",
+  "kind": "append",
+  "conditions": {
+   "cool_s": 46,
+   "cool_reached": true,
+   "start_chip": 39.6,
+   "start_thermal": "Nominal",
+   "chip_max": 74.1,
+   "rpm_min": 0,
+   "modes": [
+    "BOOST"
+   ],
+   "thermal": {
+    "Nominal": 24
+   },
+   "gpu_mhz": 1601.0,
+   "seconds": 32
+  }
+ },
+ {
+  "n": 19,
+  "column": "internal",
+  "kind": "decode",
+  "conditions": {
+   "cool_s": 34,
+   "cool_reached": true,
+   "start_chip": 39.5,
+   "start_thermal": "Nominal",
+   "chip_max": 95.2,
+   "rpm_min": 0,
+   "modes": [
+    "AUTO"
+   ],
+   "thermal": {
+    "Nominal": 32
+   },
+   "gpu_mhz": 1508.0,
+   "seconds": 44
+  }
+ },
+ {
+  "n": 20,
+  "column": "copy",
+  "kind": "decode",
+  "conditions": {
+   "cool_s": 53,
+   "cool_reached": true,
+   "start_chip": 39.7,
+   "start_thermal": "Nominal",
+   "chip_max": 96.5,
+   "rpm_min": 0,
+   "modes": [
+    "AUTO"
+   ],
+   "thermal": {
+    "Nominal": 30
+   },
+   "gpu_mhz": 1551.0,
+   "seconds": 40
+  }
+ },
+ {
+  "n": 21,
+  "column": "copy --boost",
+  "kind": "decode",
+  "conditions": {
+   "cool_s": 50,
+   "cool_reached": true,
+   "start_chip": 40.2,
+   "start_thermal": "Nominal",
+   "chip_max": 81.0,
+   "rpm_min": 5339,
+   "modes": [
+    "BOOST"
+   ],
+   "thermal": {
+    "Nominal": 30
+   },
+   "gpu_mhz": 1544.0,
+   "seconds": 40
+  }
+ },
+ {
+  "n": 22,
+  "column": "copy --boost",
+  "kind": "cold-2500",
+  "conditions": {
+   "cool_s": 36,
+   "cool_reached": true,
+   "start_chip": 39.8,
+   "start_thermal": "Nominal",
+   "chip_max": 65.3,
+   "rpm_min": 0,
+   "modes": [
+    "BOOST"
+   ],
+   "thermal": {
+    "Nominal": 11
+   },
+   "gpu_mhz": 1526,
+   "seconds": 15
+  }
+ },
+ {
+  "n": 23,
+  "column": "copy",
+  "kind": "cold-2500",
+  "conditions": {
+   "cool_s": 23,
+   "cool_reached": true,
+   "start_chip": 39.6,
+   "start_thermal": "Nominal",
+   "chip_max": 66.5,
+   "rpm_min": 0,
+   "modes": [
+    "AUTO"
+   ],
+   "thermal": {
+    "Nominal": 11
+   },
+   "gpu_mhz": 1537,
+   "seconds": 15
+  }
+ },
+ {
+  "n": 24,
+  "column": "internal",
+  "kind": "cold-2500",
+  "conditions": {
+   "cool_s": 33,
+   "cool_reached": true,
+   "start_chip": 39.2,
+   "start_thermal": "Nominal",
+   "chip_max": 62.8,
+   "rpm_min": 0,
+   "modes": [
+    "AUTO"
+   ],
+   "thermal": {
+    "Nominal": 11
+   },
+   "gpu_mhz": 1503,
+   "seconds": 16
+  }
+ },
+ {
+  "n": 25,
+  "column": "copy --boost",
+  "kind": "cold-3500",
+  "conditions": {
+   "cool_s": 29,
+   "cool_reached": true,
+   "start_chip": 39.9,
+   "start_thermal": "Nominal",
+   "chip_max": 71.8,
+   "rpm_min": 0,
+   "modes": [
+    "BOOST"
+   ],
+   "thermal": {
+    "Nominal": 9
+   },
+   "gpu_mhz": 1525,
+   "seconds": 14
+  }
+ },
+ {
+  "n": 26,
+  "column": "copy",
+  "kind": "cold-3500",
+  "conditions": {
+   "cool_s": 25,
+   "cool_reached": true,
+   "start_chip": 39.2,
+   "start_thermal": "Nominal",
+   "chip_max": 67.6,
+   "rpm_min": 0,
+   "modes": [
+    "AUTO"
+   ],
+   "thermal": {
+    "Nominal": 11
+   },
+   "gpu_mhz": 1570,
+   "seconds": 14
+  }
+ },
+ {
+  "n": 27,
+  "column": "internal",
+  "kind": "cold-3500",
+  "conditions": {
+   "cool_s": 32,
+   "cool_reached": true,
+   "start_chip": 39.2,
+   "start_thermal": "Nominal",
+   "chip_max": 65.5,
+   "rpm_min": 0,
+   "modes": [
+    "AUTO"
+   ],
+   "thermal": {
+    "Nominal": 12
+   },
+   "gpu_mhz": 1463.5,
+   "seconds": 16
+  }
+ },
+ {
+  "n": 28,
+  "column": "copy --boost",
+  "kind": "cold-5000",
+  "conditions": {
+   "cool_s": 33,
+   "cool_reached": true,
+   "start_chip": 39.1,
+   "start_thermal": "Nominal",
+   "chip_max": 75.4,
+   "rpm_min": 0,
+   "modes": [
+    "BOOST"
+   ],
+   "thermal": {
+    "Nominal": 11
+   },
+   "gpu_mhz": 1564,
+   "seconds": 15
+  }
+ },
+ {
+  "n": 29,
+  "column": "copy",
+  "kind": "cold-5000",
+  "conditions": {
+   "cool_s": 26,
+   "cool_reached": true,
+   "start_chip": 38.6,
+   "start_thermal": "Nominal",
+   "chip_max": 70.5,
+   "rpm_min": 0,
+   "modes": [
+    "AUTO"
+   ],
+   "thermal": {
+    "Nominal": 12
+   },
+   "gpu_mhz": 1562.5,
+   "seconds": 17
+  }
+ },
+ {
+  "n": 30,
+  "column": "internal",
+  "kind": "cold-5000",
+  "conditions": {
+   "cool_s": 33,
+   "cool_reached": true,
+   "start_chip": 39.4,
+   "start_thermal": "Nominal",
+   "chip_max": 69.8,
+   "rpm_min": 0,
+   "modes": [
+    "AUTO"
+   ],
+   "thermal": {
+    "Nominal": 12
+   },
+   "gpu_mhz": 1546.5,
+   "seconds": 17
+  }
+ },
+ {
+  "n": 31,
+  "column": "copy --boost",
+  "kind": "cold-7500",
+  "conditions": {
+   "cool_s": 39,
+   "cool_reached": true,
+   "start_chip": 38.8,
+   "start_thermal": "Nominal",
+   "chip_max": 78.5,
+   "rpm_min": 0,
+   "modes": [
+    "BOOST"
+   ],
+   "thermal": {
+    "Nominal": 13
+   },
+   "gpu_mhz": 1552,
+   "seconds": 17
+  }
+ },
+ {
+  "n": 32,
+  "column": "copy",
+  "kind": "cold-7500",
+  "conditions": {
+   "cool_s": 27,
+   "cool_reached": true,
+   "start_chip": 39.0,
+   "start_thermal": "Nominal",
+   "chip_max": 77.0,
+   "rpm_min": 0,
+   "modes": [
+    "AUTO"
+   ],
+   "thermal": {
+    "Nominal": 14
+   },
+   "gpu_mhz": 1583.0,
+   "seconds": 20
+  }
+ },
+ {
+  "n": 33,
+  "column": "internal",
+  "kind": "cold-7500",
+  "conditions": {
+   "cool_s": 37,
+   "cool_reached": true,
+   "start_chip": 39.4,
+   "start_thermal": "Nominal",
+   "chip_max": 79.6,
+   "rpm_min": 0,
+   "modes": [
+    "AUTO"
+   ],
+   "thermal": {
+    "Nominal": 14
+   },
+   "gpu_mhz": 1554.0,
+   "seconds": 19
+  }
+ },
+ {
+  "n": 34,
+  "column": "copy --boost",
+  "kind": "cold-10000",
+  "conditions": {
+   "cool_s": 39,
+   "cool_reached": true,
+   "start_chip": 39.4,
+   "start_thermal": "Nominal",
+   "chip_max": 78.3,
+   "rpm_min": 0,
+   "modes": [
+    "BOOST"
+   ],
+   "thermal": {
+    "Nominal": 18
+   },
+   "gpu_mhz": 1570.0,
+   "seconds": 23
+  }
+ },
+ {
+  "n": 35,
+  "column": "copy",
+  "kind": "cold-10000",
+  "conditions": {
+   "cool_s": 31,
+   "cool_reached": true,
+   "start_chip": 39.0,
+   "start_thermal": "Nominal",
+   "chip_max": 88.5,
+   "rpm_min": 0,
+   "modes": [
+    "AUTO"
+   ],
+   "thermal": {
+    "Nominal": 17
+   },
+   "gpu_mhz": 1578,
+   "seconds": 23
+  }
+ },
+ {
+  "n": 36,
+  "column": "internal",
+  "kind": "cold-10000",
+  "conditions": {
+   "cool_s": 38,
+   "cool_reached": true,
+   "start_chip": 40.0,
+   "start_thermal": "Nominal",
+   "chip_max": 82.0,
+   "rpm_min": 0,
+   "modes": [
+    "AUTO"
+   ],
+   "thermal": {
+    "Nominal": 18
+   },
+   "gpu_mhz": 1537.5,
+   "seconds": 26
+  }
+ },
+ {
+  "n": 37,
+  "column": "copy --boost",
+  "kind": "append",
+  "conditions": {
+   "cool_s": 42,
+   "cool_reached": true,
+   "start_chip": 39.7,
+   "start_thermal": "Nominal",
+   "chip_max": 75.7,
+   "rpm_min": 0,
+   "modes": [
+    "BOOST"
+   ],
+   "thermal": {
+    "Nominal": 23
+   },
+   "gpu_mhz": 1600,
+   "seconds": 31
+  }
+ },
+ {
+  "n": 38,
+  "column": "copy",
+  "kind": "append",
+  "conditions": {
+   "cool_s": 32,
+   "cool_reached": true,
+   "start_chip": 39.4,
+   "start_thermal": "Nominal",
+   "chip_max": 89.3,
+   "rpm_min": 0,
+   "modes": [
+    "AUTO"
+   ],
+   "thermal": {
+    "Nominal": 24
+   },
+   "gpu_mhz": 1580.5,
+   "seconds": 32
+  }
+ },
+ {
+  "n": 39,
+  "column": "internal",
+  "kind": "append",
+  "conditions": {
+   "cool_s": 46,
+   "cool_reached": true,
+   "start_chip": 39.3,
+   "start_thermal": "Nominal",
+   "chip_max": 83.5,
+   "rpm_min": 0,
+   "modes": [
+    "AUTO"
+   ],
+   "thermal": {
+    "Nominal": 27
+   },
+   "gpu_mhz": 1558,
+   "seconds": 37
+  }
+ },
+ {
+  "n": 40,
+  "column": "copy --boost",
+  "kind": "decode",
+  "conditions": {
+   "cool_s": 44,
+   "cool_reached": true,
+   "start_chip": 39.9,
+   "start_thermal": "Nominal",
+   "chip_max": 79.9,
+   "rpm_min": 0,
+   "modes": [
+    "BOOST"
+   ],
+   "thermal": {
+    "Nominal": 30
+   },
+   "gpu_mhz": 1557.0,
+   "seconds": 39
+  }
+ },
+ {
+  "n": 41,
+  "column": "copy",
+  "kind": "decode",
+  "conditions": {
+   "cool_s": 36,
+   "cool_reached": true,
+   "start_chip": 39.4,
+   "start_thermal": "Nominal",
+   "chip_max": 97.9,
+   "rpm_min": 0,
+   "modes": [
+    "AUTO"
+   ],
+   "thermal": {
+    "Nominal": 30
+   },
+   "gpu_mhz": 1532.5,
+   "seconds": 40
+  }
+ },
+ {
+  "n": 42,
+  "column": "internal",
+  "kind": "decode",
+  "conditions": {
+   "cool_s": 51,
+   "cool_reached": true,
+   "start_chip": 39.7,
+   "start_thermal": "Nominal",
+   "chip_max": 97.1,
+   "rpm_min": 0,
+   "modes": [
+    "AUTO"
+   ],
+   "thermal": {
+    "Nominal": 32
+   },
+   "gpu_mhz": 1508.5,
+   "seconds": 44
+  }
+ },
+ {
+  "n": 43,
+  "column": "internal",
+  "kind": "cold-2500",
+  "conditions": {
+   "cool_s": 54,
+   "cool_reached": true,
+   "start_chip": 40.4,
+   "start_thermal": "Nominal",
+   "chip_max": 62.8,
+   "rpm_min": 1332,
+   "modes": [
+    "AUTO"
+   ],
+   "thermal": {
+    "Nominal": 13
+   },
+   "gpu_mhz": 1476,
+   "seconds": 18
+  }
+ },
+ {
+  "n": 44,
+  "column": "copy",
+  "kind": "cold-2500",
+  "conditions": {
+   "cool_s": 28,
+   "cool_reached": true,
+   "start_chip": 40.0,
+   "start_thermal": "Nominal",
+   "chip_max": 65.7,
+   "rpm_min": 0,
+   "modes": [
+    "AUTO"
+   ],
+   "thermal": {
+    "Nominal": 11
+   },
+   "gpu_mhz": 1499,
+   "seconds": 15
+  }
+ },
+ {
+  "n": 45,
+  "column": "copy --boost",
+  "kind": "cold-2500",
+  "conditions": {
+   "cool_s": 32,
+   "cool_reached": true,
+   "start_chip": 39.8,
+   "start_thermal": "Nominal",
+   "chip_max": 66.2,
+   "rpm_min": 0,
+   "modes": [
+    "BOOST"
+   ],
+   "thermal": {
+    "Nominal": 9
+   },
+   "gpu_mhz": 1528,
+   "seconds": 13
+  }
+ },
+ {
+  "n": 46,
+  "column": "internal",
+  "kind": "cold-3500",
+  "conditions": {
+   "cool_s": 23,
+   "cool_reached": true,
+   "start_chip": 39.6,
+   "start_thermal": "Nominal",
+   "chip_max": 63.8,
+   "rpm_min": 0,
+   "modes": [
+    "AUTO"
+   ],
+   "thermal": {
+    "Nominal": 13
+   },
+   "gpu_mhz": 1529,
+   "seconds": 17
+  }
+ },
+ {
+  "n": 47,
+  "column": "copy",
+  "kind": "cold-3500",
+  "conditions": {
+   "cool_s": 33,
+   "cool_reached": true,
+   "start_chip": 39.0,
+   "start_thermal": "Nominal",
+   "chip_max": 64.5,
+   "rpm_min": 0,
+   "modes": [
+    "AUTO"
+   ],
+   "thermal": {
+    "Nominal": 10
+   },
+   "gpu_mhz": 1545.5,
+   "seconds": 15
+  }
+ },
+ {
+  "n": 48,
+  "column": "copy --boost",
+  "kind": "cold-3500",
+  "conditions": {
+   "cool_s": 32,
+   "cool_reached": true,
+   "start_chip": 39.4,
+   "start_thermal": "Nominal",
+   "chip_max": 72.5,
+   "rpm_min": 0,
+   "modes": [
+    "BOOST"
+   ],
+   "thermal": {
+    "Nominal": 9
+   },
+   "gpu_mhz": 1532,
+   "seconds": 13
+  }
+ },
+ {
+  "n": 49,
+  "column": "internal",
+  "kind": "cold-5000",
+  "conditions": {
+   "cool_s": 25,
+   "cool_reached": true,
+   "start_chip": 39.2,
+   "start_thermal": "Nominal",
+   "chip_max": 65.5,
+   "rpm_min": 0,
+   "modes": [
+    "AUTO"
+   ],
+   "thermal": {
+    "Nominal": 15
+   },
+   "gpu_mhz": 1548,
+   "seconds": 20
+  }
+ },
+ {
+  "n": 50,
+  "column": "copy",
+  "kind": "cold-5000",
+  "conditions": {
+   "cool_s": 35,
+   "cool_reached": true,
+   "start_chip": 38.9,
+   "start_thermal": "Nominal",
+   "chip_max": 67.4,
+   "rpm_min": 0,
+   "modes": [
+    "AUTO"
+   ],
+   "thermal": {
+    "Nominal": 13
+   },
+   "gpu_mhz": 1518,
+   "seconds": 18
+  }
+ },
+ {
+  "n": 51,
+  "column": "copy --boost",
+  "kind": "cold-5000",
+  "conditions": {
+   "cool_s": 31,
+   "cool_reached": true,
+   "start_chip": 39.5,
+   "start_thermal": "Nominal",
+   "chip_max": 75.2,
+   "rpm_min": 0,
+   "modes": [
+    "BOOST"
+   ],
+   "thermal": {
+    "Nominal": 11
+   },
+   "gpu_mhz": 1583,
+   "seconds": 15
+  }
+ },
+ {
+  "n": 52,
+  "column": "internal",
+  "kind": "cold-7500",
+  "conditions": {
+   "cool_s": 26,
+   "cool_reached": true,
+   "start_chip": 39.4,
+   "start_thermal": "Nominal",
+   "chip_max": 77.8,
+   "rpm_min": 0,
+   "modes": [
+    "AUTO"
+   ],
+   "thermal": {
+    "Nominal": 14
+   },
+   "gpu_mhz": 1537.0,
+   "seconds": 20
+  }
+ },
+ {
+  "n": 53,
+  "column": "copy",
+  "kind": "cold-7500",
+  "conditions": {
+   "cool_s": 37,
+   "cool_reached": true,
+   "start_chip": 39.8,
+   "start_thermal": "Nominal",
+   "chip_max": 72.7,
+   "rpm_min": 0,
+   "modes": [
+    "AUTO"
+   ],
+   "thermal": {
+    "Nominal": 16
+   },
+   "gpu_mhz": 1542.5,
+   "seconds": 22
+  }
+ },
+ {
+  "n": 54,
+  "column": "copy --boost",
+  "kind": "cold-7500",
+  "conditions": {
+   "cool_s": 36,
+   "cool_reached": true,
+   "start_chip": 39.8,
+   "start_thermal": "Nominal",
+   "chip_max": 79.3,
+   "rpm_min": 0,
+   "modes": [
+    "BOOST"
+   ],
+   "thermal": {
+    "Nominal": 13
+   },
+   "gpu_mhz": 1574,
+   "seconds": 18
+  }
+ },
+ {
+  "n": 55,
+  "column": "internal",
+  "kind": "cold-10000",
+  "conditions": {
+   "cool_s": 29,
+   "cool_reached": true,
+   "start_chip": 39.1,
+   "start_thermal": "Nominal",
+   "chip_max": 83.3,
+   "rpm_min": 0,
+   "modes": [
+    "AUTO"
+   ],
+   "thermal": {
+    "Nominal": 20
+   },
+   "gpu_mhz": 1560.5,
+   "seconds": 26
+  }
+ },
+ {
+  "n": 56,
+  "column": "copy",
+  "kind": "cold-10000",
+  "conditions": {
+   "cool_s": 43,
+   "cool_reached": true,
+   "start_chip": 39.2,
+   "start_thermal": "Nominal",
+   "chip_max": 86.5,
+   "rpm_min": 0,
+   "modes": [
+    "AUTO"
+   ],
+   "thermal": {
+    "Nominal": 19
+   },
+   "gpu_mhz": 1555,
+   "seconds": 25
+  }
+ },
+ {
+  "n": 57,
+  "column": "copy --boost",
+  "kind": "cold-10000",
+  "conditions": {
+   "cool_s": 40,
+   "cool_reached": true,
+   "start_chip": 39.4,
+   "start_thermal": "Nominal",
+   "chip_max": 78.0,
+   "rpm_min": 0,
+   "modes": [
+    "BOOST"
+   ],
+   "thermal": {
+    "Nominal": 17
+   },
+   "gpu_mhz": 1549,
+   "seconds": 23
+  }
+ },
+ {
+  "n": 58,
+  "column": "internal",
+  "kind": "append",
+  "conditions": {
+   "cool_s": 29,
+   "cool_reached": true,
+   "start_chip": 39.1,
+   "start_thermal": "Nominal",
+   "chip_max": 83.3,
+   "rpm_min": 0,
+   "modes": [
+    "AUTO"
+   ],
+   "thermal": {
+    "Nominal": 27
+   },
+   "gpu_mhz": 1584,
+   "seconds": 35
+  }
+ },
+ {
+  "n": 59,
+  "column": "copy",
+  "kind": "append",
+  "conditions": {
+   "cool_s": 43,
+   "cool_reached": true,
+   "start_chip": 39.7,
+   "start_thermal": "Nominal",
+   "chip_max": 90.8,
+   "rpm_min": 0,
+   "modes": [
+    "AUTO"
+   ],
+   "thermal": {
+    "Nominal": 23
+   },
+   "gpu_mhz": 1581,
+   "seconds": 32
+  }
+ },
+ {
+  "n": 60,
+  "column": "copy --boost",
+  "kind": "append",
+  "conditions": {
+   "cool_s": 42,
+   "cool_reached": true,
+   "start_chip": 39.8,
+   "start_thermal": "Nominal",
+   "chip_max": 74.0,
+   "rpm_min": 0,
+   "modes": [
+    "BOOST"
+   ],
+   "thermal": {
+    "Nominal": 24
+   },
+   "gpu_mhz": 1583.5,
+   "seconds": 33
+  }
+ },
+ {
+  "n": 61,
+  "column": "internal",
+  "kind": "decode",
+  "conditions": {
+   "cool_s": 38,
+   "cool_reached": true,
+   "start_chip": 39.1,
+   "start_thermal": "Nominal",
+   "chip_max": 95.5,
+   "rpm_min": 0,
+   "modes": [
+    "AUTO"
+   ],
+   "thermal": {
+    "Nominal": 33
+   },
+   "gpu_mhz": 1522,
+   "seconds": 44
+  }
+ },
+ {
+  "n": 62,
+  "column": "copy",
+  "kind": "decode",
+  "conditions": {
+   "cool_s": 51,
+   "cool_reached": true,
+   "start_chip": 39.8,
+   "start_thermal": "Nominal",
+   "chip_max": 95.7,
+   "rpm_min": 0,
+   "modes": [
+    "AUTO"
+   ],
+   "thermal": {
+    "Nominal": 31
+   },
+   "gpu_mhz": 1525,
+   "seconds": 41
+  }
+ },
+ {
+  "n": 63,
+  "column": "copy --boost",
+  "kind": "decode",
+  "conditions": {
+   "cool_s": 53,
+   "cool_reached": true,
+   "start_chip": 39.7,
+   "start_thermal": "Nominal",
+   "chip_max": 80.3,
+   "rpm_min": 5335,
+   "modes": [
+    "BOOST"
+   ],
+   "thermal": {
+    "Nominal": 29
+   },
+   "gpu_mhz": 1559,
+   "seconds": 40
+  }
+ }
+]
