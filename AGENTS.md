@@ -69,6 +69,16 @@ each figure are in `speed-bench/perf-record.md`. The throughput is bounded by
 SSD reads, so compare a change against a run in the *same* mode, never a
 resident number against a streaming one.
 
+Performance counts at steady state: the expert cache full and the file cache
+holding what the build's own earlier runs left, as in continued use. A
+process's first run, engine open and first prefill included, may cost about
+ten seconds more; that is acceptable, and it is measured only by tests made
+for it (the cold start of `750`, the fixed start state in
+`speed-bench/residency/README.md`). A change that only speeds up the first run
+of a fresh process is not a priority, and one that slows steady state to save
+start-up time is not taken. The README tables follow this rule
+(`speed-bench/README.md`, README tables).
+
 Pass it everywhere:
 
 ```sh

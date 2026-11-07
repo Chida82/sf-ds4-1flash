@@ -68,29 +68,29 @@ On a 128 GB Mac this model always runs with `--ssd-streaming` (see
 
 | Measurement | ds4 t/s | sf t/s | sf vs ds4 | sf `--boost` t/s | sf `--boost` vs ds4 |
 |---|---:|---:|---:|---:|---:|
-| *commit* | `b3f5018` | `6898b39` | *+ is better* | `6898b39` | *+ is better* |
-| prefill, first 2048 tokens | 120.9 | 182.9 | +51.3% | 179.4 | +48.4% |
-| prefill, +2048 to context 4096 | 110.3 | 238.2 | +116.0% | 235.0 | +113.1% |
-| prefill, +4096 to context 8192 | 202.8 | 423.8 | +109.0% | 418.9 | +106.6% |
-| prefill, +8192 to context 16384 | 332.2 | 561.0 | +68.9% | 605.5 | +82.3% |
-| prefill, +16384 to context 32768 | 483.1 | 701.7 | +45.2% | 722.9 | +49.6% |
-| generation, context 2048 | 10.3 | 29.3 | +184.5% | 29.5 | +186.4% |
-| generation, context 8192 | 16.6 | 30.4 | +83.1% | 30.4 | +83.1% |
-| generation, context 32768 | 14.1 | 28.8 | +104.3% | 29.1 | +106.4% |
-| steady decode, context 2048 | 14.7 | 30.7 | +108.8% | 30.9 | +110.2% |
-| steady decode, context 8192 | 24.1 | 31.8 | +32.0% | 31.6 | +31.1% |
-| steady decode, context 32768 | 22.3 | 30.2 | +35.4% | 30.3 | +35.9% |
+| *commit* | `b3f5018` | `4353306` | *+ is better* | `4353306` | *+ is better* |
+| prefill, first 2048 tokens | 124.0 | 181.2 | +46.1% | 181.0 | +46.0% |
+| prefill, +2048 to context 4096 | 111.9 | 238.2 | +112.9% | 238.2 | +112.9% |
+| prefill, +4096 to context 8192 | 204.0 | 425.4 | +108.6% | 424.7 | +108.2% |
+| prefill, +8192 to context 16384 | 346.1 | 573.4 | +65.7% | 613.6 | +77.3% |
+| prefill, +16384 to context 32768 | 498.3 | 704.4 | +41.3% | 739.7 | +48.4% |
+| generation, context 2048 | 12.4 | 29.9 | +141.4% | 29.8 | +140.3% |
+| generation, context 8192 | 16.7 | 30.7 | +83.5% | 30.7 | +84.0% |
+| generation, context 32768 | 14.2 | 29.1 | +105.1% | 29.2 | +105.9% |
+| steady decode, context 2048 | 18.0 | 30.9 | +72.0% | 31.0 | +72.4% |
+| steady decode, context 8192 | 23.6 | 31.9 | +35.2% | 32.0 | +35.6% |
+| steady decode, context 32768 | 21.6 | 30.2 | +39.9% | 30.5 | +40.8% |
 
 First token after each prefill, same runs:
 
 | Context | ds4 ms | sf ms | sf vs ds4 | sf `--boost` ms | sf `--boost` vs ds4 |
 |---|---:|---:|---:|---:|---:|
-| *commit* | `b3f5018` | `6898b39` | *- is better* | `6898b39` | *- is better* |
-| 2048 | 3817 | 227 | -94.0% | 225 | -94.1% |
-| 4096 | 2727 | 234 | -91.4% | 214 | -92.2% |
-| 8192 | 2435 | 221 | -90.9% | 216 | -91.1% |
-| 16384 | 3365 | 221 | -93.4% | 197 | -94.1% |
-| 32768 | 3390 | 231 | -93.2% | 216 | -93.6% |
+| *commit* | `b3f5018` | `4353306` | *- is better* | `4353306` | *- is better* |
+| 2048 | 3314 | 176 | -94.7% | 200 | -94.0% |
+| 4096 | 2418 | 200 | -91.7% | 203 | -91.6% |
+| 8192 | 2287 | 183 | -92.0% | 189 | -91.8% |
+| 16384 | 2896 | 220 | -92.4% | 221 | -92.4% |
+| 32768 | 3089 | 197 | -93.6% | 219 | -92.9% |
 
 sf locks its 9.37 GiB of static weights at this cache (`760`; AGENTS.md, SSD
 streaming), while ds4 leaves them pageable. Pageable static weights cost time
@@ -98,52 +98,54 @@ once the file cache is full and free memory sits at the kernel's floor: the
 GPU then waits for the kernel to wire them. That is the state every run here
 starts in. The first 2048 tokens went from 144.4 tokens/s (`82GB`, before
 `760`, earlier the same day: [speed-bench/readme-20261107](speed-bench/readme-20261107))
-to 182.9. ds4's decode at context 2048 is the noisiest row: its three runs
-spread over 12.3-16.7 tokens/s.
+to 181.2. ds4's decode at context 2048 is the noisiest row: its five runs
+spread over 16.3-21.1 tokens/s.
 
 **Every run starts from the same cool chip, and the long ones end hot.**
-Before each run the fans cool the chip to 47.5 °C and macOS back to thermal
+Before each run the fans cool the chip to 43.1 °C and macOS back to thermal
 pressure Nominal; then plain runs follow Apple's fan curve. An sf sweep takes
-92-96 s: the chip reaches 100-101 °C and macOS stays at Nominal. ds4's takes
-162-166 s, peaks at 99-100 °C and also stays at Nominal. With
-`--boost` the fans run at their maximum and the chip peaks at 99-100 °C. In a
-sweep this short that buys +8% on the prefill to 16384 and +3% (within noise)
-on the one to 32768, which come last when the chip is hottest, under 1% on
-steady decode, and nothing on the first three frontiers; in a 30-minute
-session of requests it is worth about 4-5% (see `--boost` below).
+92-93 s: the chip reaches 101 °C and macOS stays at Nominal. ds4's takes
+157-161 s, peaks at 100 °C and also stays at Nominal. With
+`--boost` the fans run at their maximum and the chip peaks at 93-100 °C. In a
+sweep this short that buys +7% on the prefill to 16384 and +5% on the one to
+32768, which come last when the chip is hottest, under 1% on steady decode,
+and nothing on the first three frontiers; in a 30-minute session of requests
+it is worth about 4-5% (see `--boost` below).
 
 The first token is the noisiest figure. sf reads experts uncached, so its
 first token depends on which expert pages earlier processes left in the page
 cache: the same build read 0.10-0.14 s in one series of runs and 0.15-0.21 s
 in the next, after a ds4 run had passed through
 ([speed-bench/perf-record.md](speed-bench/perf-record.md), README sweep
-protocol). Against ds4's 2-3 s the comparison holds; between the two sf
-columns the differences are within that noise.
+protocol). Here each sf run read 0.16-0.23 s. Against ds4's 2.3-3.3 s the
+comparison holds; between the two sf columns the differences are within that
+noise.
 
 Greedy output is token-identical to ds4 (parity oracle, ten prompts).
 
 **How it was measured** on 2026-11-07 by `speed-bench/readme_bench.py sweep`.
 The builds compared are ds4 at the merge-base `b3f5018` and this child at
-`main` `6898b39`, on DeepSeek V4.1 Flash Q2 (`1017`), with the GGUF on the internal drive
+`main` `4353306`, on DeepSeek V4.1 Flash Q2 (`1017`), with the GGUF on the internal drive
 only (the second-drive columns of the same session are in
 [A second drive](#a-second-drive)).
 - Both run `ds4-bench` (here `sf-ds4-1flash-bench`) on *I Promessi Sposi* with
   `--ssd-streaming --ssd-streaming-cache-experts 80GB`, context frontiers from
   2048 to 32768 doubling, and 128 generated tokens per frontier. Each frontier
   prefills the new tokens on top of the previous context.
-- Each value is the median of three runs. ds4's three runs come first, then
-  the sf columns, rotated; each block starts with a discarded warm-up run of
-  its own build. A run that follows a ds4 run loses 4-6% on the first 2048
-  tokens, sf or ds4 alike, because ds4's prefill leaves 13 GiB more of the
-  GGUF in the page cache; ds4's figures are therefore runs that follow ds4
-  (after an sf run it reads 129 tokens/s on the first 2048 tokens, not 121).
-- Before every run `fanboost max` until the chip is at or below 47.5 °C (its
+- Each value is the median of five runs, measured at steady state, as in
+  continued use. Each build's block drops the GGUF from the page cache once,
+  runs two discarded warm-ups, then its measured runs back to back: ds4's five
+  first, then the sf columns, rotated. Each build thus starts from the page
+  cache its own earlier runs left: 34-35 GiB of the GGUF for ds4, 27-30 GiB
+  for sf. That cache is worth about a tenth on the first 2048 tokens: sf read
+  163 tokens/s there when every run started from a dropped cache, 181 here.
+- Before every run `fanboost max` until the chip is at or below 43.1 °C (its
   lowest reading in 60 s of full fans after the warm-up, plus 2 °C) and macOS
   reports Nominal, then back to Apple's curve, with fanboost's own thermal
   protection paused. Chip and fans are sampled every 2 s with
   `fanboost status`, thermal pressure and GPU clock every second with mactop.
   The CSVs, medians and per-run conditions are in
-  `speed-bench/readme-20261107-80gb/sweep`; the protocol is in
+  `speed-bench/readme-20261107-steady/sweep`; the protocol is in
   `speed-bench/README.md`, "README tables".
 - "Generation" counts all 128 tokens, including the first one after the
   prefill; "steady decode" leaves that first token out.
@@ -206,37 +208,46 @@ enclosures and links will give different figures.
   APFS it costs nothing: a store takes 6.5 ms less than on the internal SSD,
   a load 4 ms more.
 
-Measured on 2026-11-07 (`main` at `6898b39`) by
-`speed-bench/readme_bench.py shapes`: the A/B harness's prompt, append and
-decode shapes, expert cache **`80GB`**, copy on APFS, three runs per column
-in rotated order, each started once the fans had cooled the chip to 40.5 °C
-or below and macOS reported Nominal, plain columns on Apple's fan curve. Each run lasts 13-45 s
-and stays at Nominal, so this is one request on a rested machine. Times are
+Measured on 2026-11-07 (`main` at `4353306`) by
+`speed-bench/readme_bench.py shapes`: the A/B harness's prompt, append,
+decode and short-turn shapes, expert cache **`80GB`**, copy on APFS, three
+runs per column at steady state (two discarded warm-ups first) in rotated
+order, each started once the fans had cooled the chip to 40.1 °C or below and
+macOS reported Nominal, plain columns on Apple's fan curve. Each run lasts
+13-44 s and stays at Nominal, so this is one request on a rested machine. Times are
 medians; the gain is against the internal SSD only, + is better. *Within
 noise*: the three runs of that column overlap those of the internal SSD.
 
 | Shape | Internal SSD only | With the copy | Gain | Copy and `--boost` | Gain |
 |---|---|---|---|---|---|
-| 2500-token prompt, time to first token | 11.5 s | 8.6 s | +34.8% | 8.5 s | +34.9% |
-| 3500-token prompt | 11.9 s | 8.9 s | +33.2% | 8.9 s | +33.2% |
-| 5000-token prompt | 12.2 s | 10.1 s | +20.8% | 10.1 s | +20.7% |
-| 7500-token prompt | 14.4 s | 13.1 s | +10.5% | 13.0 s | +11.2% |
-| 10000-token prompt | 21.2 s | 18.5 s | +14.9% | 18.4 s | +15.2% |
-| append 1500 tokens to a 5300-token conversation | 7.8 s | 5.7 s | +37.1% | 5.6 s | +37.7% |
-| append 300 tokens | 9.7 s | 8.9 s | +9.7% (within noise) | 8.9 s | +9.7% (within noise) |
-| decode after 2048 tokens | 30.9 tokens/s | 32.3 tokens/s | +4.6% (within noise) | 32.4 tokens/s | +4.7% (within noise) |
-| first token after an 8192-token context | 0.21 s | 0.20 s | same (within noise) | 0.16 s | same (within noise) |
-| decode after 8192 tokens, steady | 31.7 tokens/s | 32.3 tokens/s | +1.9% (within noise) | 32.1 tokens/s | +1.3% (within noise) |
-| 256 tokens after an 8192-token context, first included | 8.3 s | 8.1 s | +1.7% (within noise) | 8.1 s | +1.8% (within noise) |
-| typical mix (harness estimate) | 48.4 s | 44.8 s | +8.0% | 44.9 s | +7.9% |
+| 2500-token prompt, time to first token | 11.5 s | 8.3 s | +38.6% | 8.3 s | +38.7% |
+| 3500-token prompt | 11.8 s | 8.8 s | +34.3% | 8.8 s | +33.9% |
+| 5000-token prompt | 12.2 s | 10.0 s | +21.2% | 10.0 s | +21.2% |
+| 7500-token prompt | 14.4 s | 12.9 s | +11.6% | 12.9 s | +11.9% |
+| 10000-token prompt | 21.0 s | 18.2 s | +15.5% | 18.4 s | +14.4% |
+| append 1500 tokens to a 5300-token conversation | 6.3 s | 4.8 s | +31.6% | 4.8 s | +32.7% |
+| append 300 tokens | 6.2 s | 4.6 s | +34.2% | 4.6 s | +35.6% |
+| 512-token prompt, time to first token | 10.8 s | 7.8 s | +37.8% | 7.8 s | +37.4% |
+| its first token | 0.17 s | 0.16 s | same (within noise) | 0.14 s | +22.4% |
+| append 512 tokens to it | 6.3 s | 4.7 s | +33.7% | 4.8 s | +32.2% |
+| its first token | 0.13 s | 0.12 s | same (within noise) | 0.08 s | same (within noise) |
+| append 512 more, to 1536 tokens | 6.0 s | 4.6 s | +31.8% | 4.6 s | +32.2% |
+| its first token | 0.14 s | 0.15 s | same (within noise) | 0.12 s | +14.0% |
+| decode after 2048 tokens | 31.0 tokens/s | 32.8 tokens/s | +5.8% (within noise) | 32.9 tokens/s | +6.3% (within noise) |
+| first token after an 8192-token context | 0.12 s | 0.12 s | same (within noise) | 0.11 s | same (within noise) |
+| decode after 8192 tokens, steady | 31.8 tokens/s | 32.6 tokens/s | +2.6% (within noise) | 32.6 tokens/s | +2.5% (within noise) |
+| 256 tokens after an 8192-token context, first included | 8.1 s | 7.9 s | +2.2% (within noise) | 7.9 s | +2.2% (within noise) |
+| typical mix (harness estimate) | 48.3 s | 44.2 s | +9.1% | 44.2 s | +9.2% |
 
 The copy speeds up the layer sweeps of a prompt, not the tokens read one at
 a time after them. Decode never reads the copy, and its rows here are within
 noise. Since the `b3f5018` sync every prompt in this table is almost all
 sweeps (a 5000-token prompt no longer ends in a 904-token tail at decode
-speed). The gain falls from a third at 2500-3500 tokens to 10-21% from 5000
-tokens on, and in one request this short `--boost` adds nothing: the two copy
-columns are within 1% on every prompt. Earlier the same day, at `82GB` with
+speed), and since `770` so is every append of 256 tokens or more. The gain
+is about a third up to 3500 tokens and on every append, chat-sized turns
+included, and 12-21% from 5000 tokens on. In one request this short `--boost`
+adds nothing to the prefill: the two copy columns are within 1.5% on every
+prompt and append. Earlier the same day, at `82GB` with
 the static weights pageable ([speed-bench/readme-20261107](speed-bench/readme-20261107)),
 the copy alone gained +2.7% and -3.2% at 5000 and 7500 tokens against +27%
 and +14% with `--boost`; at `80GB` with the static weights locked this
@@ -245,7 +256,7 @@ session shows no such gap.
 Under sustained load the copy gains less. The 2026-10-10 harness run, an hour
 at thermal pressure Heavy with the GPU at 1030-1070 MHz and decode at about
 24 tokens/s, read +7.4% on the 2500-token prompt, +13.9% on the 1500-token
-append and +1.3% on the typical mix, against +31.0%, +37.7% and +5.5% here:
+append and +1.3% on the typical mix, against +38.6%, +31.6% and +9.1% here:
 when the GPU clock is the limit, faster reads matter less
 ([speed-bench/perf-record.md](speed-bench/perf-record.md), External drive
 after 268).
@@ -256,23 +267,23 @@ above):
 
 | Measurement | sf t/s | sf + copy t/s | Gain | sf + copy `--boost` t/s | Gain |
 |---|---:|---:|---:|---:|---:|
-| prefill, first 2048 tokens | 182.9 | 243.3 | +33.0% | 240.4 | +31.4% |
-| prefill, +2048 to context 4096 | 238.2 | 298.2 | +25.2% | 310.0 | +30.1% |
-| prefill, +4096 to context 8192 | 423.8 | 461.2 | +8.8% | 477.5 | +12.7% |
-| prefill, +8192 to context 16384 | 561.0 | 575.6 | +2.6% (within noise) | 647.4 | +15.4% |
-| prefill, +16384 to context 32768 | 701.7 | 726.1 | +3.5% | 763.4 | +8.8% |
-| generation, context 2048 | 29.3 | 29.4 | +0.3% (within noise) | 29.1 | -0.7% (within noise) |
-| generation, context 8192 | 30.4 | 30.2 | -0.7% (within noise) | 30.0 | -1.3% (within noise) |
-| generation, context 32768 | 28.8 | 28.8 | 0.0% (within noise) | 28.6 | -0.7% (within noise) |
-| steady decode, context 2048 | 30.7 | 30.7 | 0.0% (within noise) | 30.3 | -1.3% (within noise) |
-| steady decode, context 8192 | 31.8 | 31.6 | -0.6% (within noise) | 31.6 | -0.6% (within noise) |
-| steady decode, context 32768 | 30.2 | 29.9 | -1.0% (within noise) | 30.1 | -0.3% (within noise) |
+| prefill, first 2048 tokens | 181.2 | 250.2 | +38.1% | 250.1 | +38.0% |
+| prefill, +2048 to context 4096 | 238.2 | 316.5 | +32.9% | 316.8 | +33.0% |
+| prefill, +4096 to context 8192 | 425.4 | 472.9 | +11.2% | 481.0 | +13.1% |
+| prefill, +8192 to context 16384 | 573.4 | 618.6 | +7.9% | 658.2 | +14.8% |
+| prefill, +16384 to context 32768 | 704.4 | 743.5 | +5.6% | 782.6 | +11.1% |
+| generation, context 2048 | 29.9 | 29.6 | -1.1% | 29.6 | -1.0% (within noise) |
+| generation, context 8192 | 30.7 | 30.6 | -0.4% (within noise) | 30.6 | -0.2% (within noise) |
+| generation, context 32768 | 29.1 | 29.1 | -0.1% (within noise) | 29.0 | -0.3% (within noise) |
+| steady decode, context 2048 | 30.9 | 30.9 | +0.1% (within noise) | 31.0 | +0.3% (within noise) |
+| steady decode, context 8192 | 31.9 | 31.9 | 0.0% (within noise) | 31.9 | +0.1% (within noise) |
+| steady decode, context 32768 | 30.2 | 30.3 | +0.1% (within noise) | 30.4 | +0.6% (within noise) |
 
-The copy adds a third on the first frontier, a quarter on the second and
-3-9% on the long ones; with `--boost` the long ones gain 9-15%, which makes
-copy and `--boost` together the fastest configuration measured at the `80GB`
-cache. The first token after each prefill is 0.19-0.25 s in all three
-columns. The CSVs are in `speed-bench/readme-20261107-80gb`.
+The copy adds 38% on the first frontier, a third on the second and 6-11% on
+the long ones; with `--boost` the long ones gain 11-15%, which makes copy and
+`--boost` together the fastest configuration measured at the `80GB` cache.
+The first token after each prefill is 0.18-0.22 s at the median in all three
+columns. The CSVs are in `speed-bench/readme-20261107-steady`.
 
 Both together:
 
@@ -342,32 +353,32 @@ Why these values:
   against 7.89 GiB at 32K.
 
 Results, measured on 2026-11-07 in the same `readme_bench.py sweep` session as
-**Against ds4** (three runs, medians), with the same rows:
+**Against ds4** (five runs, medians), with the same rows:
 
 | Measurement | sf `80GB` t/s | `max_performance_80` t/s |
 |---|---:|---:|
-| *commit* | `6898b39` | `6898b39` |
-| prefill, first 2048 tokens | 182.9 | 236.9 |
-| prefill, +2048 to context 4096 | 238.2 | 297.1 |
-| prefill, +4096 to context 8192 | 423.8 | 448.1 |
-| prefill, +8192 to context 16384 | 561.0 | 638.4 |
-| prefill, +16384 to context 32768 | 701.7 | 752.9 |
-| generation, context 2048 | 29.3 | 29.0 |
-| generation, context 8192 | 30.4 | 29.8 |
-| generation, context 32768 | 28.8 | 28.4 |
-| steady decode, context 2048 | 30.7 | 30.5 |
-| steady decode, context 8192 | 31.8 | 31.5 |
-| steady decode, context 32768 | 30.2 | 29.7 |
+| *commit* | `4353306` | `4353306` |
+| prefill, first 2048 tokens | 181.2 | 246.3 |
+| prefill, +2048 to context 4096 | 238.2 | 310.9 |
+| prefill, +4096 to context 8192 | 425.4 | 473.5 |
+| prefill, +8192 to context 16384 | 573.4 | 650.2 |
+| prefill, +16384 to context 32768 | 704.4 | 774.7 |
+| generation, context 2048 | 29.9 | 29.8 |
+| generation, context 8192 | 30.7 | 30.5 |
+| generation, context 32768 | 29.1 | 29.2 |
+| steady decode, context 2048 | 30.9 | 30.9 |
+| steady decode, context 8192 | 31.9 | 31.9 |
+| steady decode, context 32768 | 30.2 | 30.3 |
 
 The ceiling is a prefill question:
-- The copy and `--boost` add 30% on the first 2048 tokens, 25% on the next
-  2048 and 6-14% on the long sweeps.
+- The copy and `--boost` add 36% on the first 2048 tokens, 31% on the next
+  2048 and 10-13% on the long sweeps.
 - Decode is within noise between the two columns (the runs overlap): the
   256K context costs nothing measurable there.
 - The copy with `--boost` at a 32K context (the sweep in
-  [A second drive](#a-second-drive)) prefilled 1-7% faster at the median,
-  with every frontier's runs overlapping these, so allocating 256K costs
-  nothing this session can resolve.
+  [A second drive](#a-second-drive)) prefilled 1-2% faster at the median,
+  with no overlap between the runs at 2048, 4096 and 32768: allocating 256K
+  costs about 1-2% of prefill.
 
 ## Supported hardware
 

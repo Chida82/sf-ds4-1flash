@@ -46,24 +46,27 @@ A single sweep with the command above is a picture of one build, not a verdict.
 ## Recorded baselines
 
 DeepSeek V4.1 Flash Q2 (`1017`) against ds4 at the merge-base `b3f5018`, 2026-11-07,
-this child at `main` `6898b39`: the sweep above with
+this child at `main` `4353306`: the sweep above with
 `--ssd-streaming --ssd-streaming-cache-experts 80GB --ctx-start 2048
 --ctx-max 32768 --step-mul 2 --gen-tokens 128`, measured by
-`speed-bench/readme_bench.py` (three runs per column from the same cool chip,
-ds4 and sf in separate blocks; protocol in `speed-bench/README.md`, "README
-tables"), GGUF on the internal drive only. The CSVs are in
-[speed-bench/readme-20261107-80gb](../speed-bench/readme-20261107-80gb)
+`speed-bench/readme_bench.py` at steady state (five runs per column from the
+same cool chip, after two discarded warm-ups per build; protocol in
+`speed-bench/README.md`, "README tables"), GGUF on the internal drive only.
+The CSVs are in
+[speed-bench/readme-20261107-steady](../speed-bench/readme-20261107-steady)
 and the table in the README's "Speed" section:
-- prefill +51% on the first 2048 tokens and +45% to +116% after them;
-- steady decode +32% to +109%;
-- the first token after a prefill 0.22-0.23 s against 2.4-3.8 s.
+- prefill +46% on the first 2048 tokens and +41% to +113% after them;
+- steady decode +35% to +72%;
+- the first token after a prefill 0.18-0.22 s against 2.3-3.3 s.
 
 With `--boost` (fans at their maximum through fanboost) the same sweep gains
-+8% on the prefill to 16384, +3% (within noise) on the one to 32768 and under
-1% on steady decode. The same session measured the second-drive copy
-(README, "A second drive") and `max_performance_80`.
++7% on the prefill to 16384, +5% on the one to 32768 and under 1% on steady
+decode. The same session measured the second-drive copy, short chat turns
+included (README, "A second drive"), and `max_performance_80`.
 
 Earlier baselines:
+- 2026-11-07, `6898b39` at `80GB`, three runs after one warm-up per build:
+  [speed-bench/readme-20261107-80gb](../speed-bench/readme-20261107-80gb).
 - 2026-11-07, `5938e97` with change `750` at `82GB` (static weights still
   pageable), against ds4 at `b3f5018`:
   [speed-bench/readme-20261107](../speed-bench/readme-20261107).

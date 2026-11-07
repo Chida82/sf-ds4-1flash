@@ -16,7 +16,7 @@
 - [x] 3.1 `1024` against `main`: bench frontier and decode logits bitwise equal (2048, +448, +896).
 - [x] 3.2 Default against `main`: same argmax after the appends; the change of tokens recorded.
 - [x] 3.3 Model-backed tests: `test-deepseek41-metal` (132 pass lines), `test-mxfp4-metal`, `test-engram`, `test-deepseek41-steering-session`: PASS.
-- [ ] 3.4 `test-deepseek41-prefill-replica`: not run before archiving, the second drive was unmounted (`/Volumes/ExtSSD` missing); run on `main` when it is back.
+- [x] 3.4 `test-deepseek41-prefill-replica`: not run before archiving, the second drive was unmounted; run on `main` once it was back: PASS.
 
 ## 4. Harness
 

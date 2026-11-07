@@ -266,7 +266,11 @@ python3 speed-bench/readme_bench.py shapes \
 
 The protocol, and why each step is there (measured on 2026-10-10,
 `speed-bench/perf-record.md`, `--boost` in a short sweep):
-- **Steady state, from the build's own cache.** Each block starts by dropping
+- **Steady state, from the build's own cache.** Performance counts with the
+  expert cache full and the file cache at the build's own steady state; the
+  first run of a fresh process may take about ten seconds more, which is
+  acceptable and has its own tests (`AGENTS.md`, SSD streaming). Each block
+  starts by dropping
   the GGUF and the copy from the file cache, then runs two discarded
   warm-ups of its build; the measured runs follow one another, as in
   continuous use, and each records the GiB of both files cached before it.
