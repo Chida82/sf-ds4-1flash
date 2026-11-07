@@ -72,13 +72,15 @@ KINDS = {
     'append': {'frontiers': (5000, 5300, 6800), 'gen': 16},
     # final tiles of 452 and 952 rows: one medium sweep each, or a sweep and a token-major tail
     'append-medium': {'frontiers': (5000, 7500, 10500), 'gen': 16},
+    # a short first prompt, then chat-sized turns under the old 1024-row warm minimum (770)
+    'short': {'frontiers': (512, 1024, 1536), 'gen': 16},
     'guard-16896': {'frontiers': (16896,), 'gen': 16},
     'guard-decode': {'frontiers': (8192,), 'gen': 2500},
 }
 GROUPS = {
     'cold': [k for k in KINDS if k.startswith('cold-')],
     'guards': [k for k in KINDS if k.startswith('guard-')],
-    'all': [k for k in KINDS if not k.startswith('guard-') and k != 'append-medium'],
+    'all': [k for k in KINDS if not k.startswith('guard-') and k not in ('append-medium', 'short')],
 }
 # Seconds reserved for each guard's single A, B pair (design D6); measured in task 6.2.
 GUARD_SECONDS = {'guard-16896': 80.0, 'guard-decode': 180.0}
@@ -314,6 +316,12 @@ def metrics(kind, rows):
         m['prefill 5000'] = seconds(rows[5000])
         for f, n in ((7500, 2500), (10500, 3000)):
             m[f'append +{n}'] = seconds(rows[f])
+            m[f'first token {f} ms'] = float(rows[f]['gen_first_ms'])
+    elif kind == 'short':
+        m['ttft 512'] = seconds(rows[512])
+        m['first token 512 ms'] = float(rows[512]['gen_first_ms'])
+        for f in (1024, 1536):
+            m[f'append +512 at {f - 512}'] = seconds(rows[f])
             m[f'first token {f} ms'] = float(rows[f]['gen_first_ms'])
     else:
         f = fs[0]

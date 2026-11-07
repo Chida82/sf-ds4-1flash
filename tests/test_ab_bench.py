@@ -106,6 +106,15 @@ class Parsing(unittest.TestCase):
         self.assertAlmostEqual(run['metrics']['ttft 2500'], 2500 / 60.0)
         self.assertEqual(run['metrics']['first token 2500 ms'], 2400.0)
 
+    def test_short_metrics(self):
+        rows = {f: {'prefill_tokens': '512', 'prefill_tps': str(tps), 'gen_first_ms': str(ms)}
+                for f, tps, ms in ((512, 128.0, 200.0), (1024, 64.0, 210.0), (1536, 32.0, 220.0))}
+        m = ab.metrics('short', rows)
+        self.assertEqual(m, {'ttft 512': 4.0, 'first token 512 ms': 200.0, 'append +512 at 512': 8.0,
+                             'first token 1024 ms': 210.0, 'append +512 at 1024': 16.0,
+                             'first token 1536 ms': 220.0})
+        self.assertNotIn('short', ab.GROUPS['all'])
+
     def test_loader_outside_window(self):
         err = COLD_ERR.replace('74.88 GiB dynamic', '60.00 GiB dynamic')
         with self.assertRaises(ab.Stop) as cm:

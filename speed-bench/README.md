@@ -115,7 +115,7 @@ One invocation:
    quads: one gain, no interval, marked in the summary.
 
 Kinds (`--kinds` takes names or the groups `cold`, `guards`, `all`, which
-leaves out `append-medium`; there is no default, each change names what its
+leaves out `append-medium` and `short`; there is no default, each change names what its
 phase needs). The shapes are those of the `b3f5018` sync, which runs a
 2049-8191-token remainder with a final tile of 256 rows or more as one sweep
 (`5382eac`); the run times are older and slower:
@@ -128,9 +128,10 @@ phase needs). The shapes are those of the `b3f5018` sync, which runs a
 | `cold-5000` | 5000 | 16 | `ttft 5000` | one 5000-row sweep (before: a 4096-row sweep plus 904 token-major) | 75-84 s |
 | `cold-7500` | 7500 | 16 | `ttft 7500` | a 6144-row sweep plus a 1356 chunk | 51-54 s |
 | `cold-10000` | 10000 | 16 | `ttft 10000` | an 8192-row sweep plus a 1808 chunk | 49-51 s |
-| `append` | 5000, 5300, 6800 | 16 | `append +300`, `append +1500` (s) | a token-major append and a one-chunk append on a 5000 context | 118-123 s |
+| `append` | 5000, 5300, 6800 | 16 | `append +300`, `append +1500` (s) | a 300-row and a 1500-row append on a 5000 context, one sweep each (the +300 was token-major before `770`) | 118-123 s |
 | `append-medium` | 5000, 7500, 10500 | 16 | `append +2500`, `append +3000` (s), first token ms | two medium appends, final tiles of 452 and 952 rows | 39 s (110 s with the medium sweep off) |
-| `guard-16896` | 16896 | 16 | `guard ttft 16896` | two 8192-row sweeps plus 512 token-major: the >10K guard | 74-76 s |
+| `short` | 512, 1024, 1536 | 16 | `ttft 512`, `append +512 at 512`, `append +512 at 1024` (s), first token ms | a short prompt and two chat-sized turns, one sweep each (the turns were token-major before `770`) | |
+| `guard-16896` | 16896 | 16 | `guard ttft 16896` | two 8192-row sweeps plus a 512-row sweep (token-major before `770`): the >10K guard | 74-76 s |
 | `guard-decode` | 8192 | 2500 | `guard decode 2500` | a long answer at 8K: the >2000-token guard | 172-173 s |
 
 `ttft` is the prefill time of a cold prompt, from an empty context to the
@@ -252,9 +253,15 @@ python3 speed-bench/readme_bench.py shapes \
   - `max_performance_80`: the copy, `--boost` and a 256K context allocated.
 - Both tables use the expert cache `80GB` (`CACHE` in the script), ds4
   included. The A/B harness keeps `82GB`.
-- `shapes` is the second-drive table: the harness's `cold-*`, `append` and
-  `decode` shapes for the internal drive only, the copy, and the copy with
-  `--boost`. The typical mix is the harness's own estimate.
+- `shapes` is the second-drive table: the harness's `cold-*`, `append`,
+  `decode` and `short` shapes for the internal drive only, the copy, and the
+  copy with `--boost`. `short` is a 512-token prompt, then +512 at 512 and
+  +512 at 1024 tokens of context: chat turns that ran token by token before
+  `770`. The typical mix is the harness's own estimate.
+- `--columns a,b` runs only those columns of the table: `--ds4` is needed only
+  for the ds4 column, `--replica` only for the copy columns. A session that
+  measures part of a table now and the rest later says so in its
+  `README.md`.
 
 The protocol, and why each step is there (measured on 2026-10-10,
 `speed-bench/perf-record.md`, `--boost` in a short sweep):

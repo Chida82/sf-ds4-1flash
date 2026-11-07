@@ -3,6 +3,7 @@
 
     python3 speed-bench/readme_bench.py sweep --ds4 <ds4 tree at the merge-base> --replica <copy>
     python3 speed-bench/readme_bench.py shapes --replica <copy>
+    python3 speed-bench/readme_bench.py shapes --columns internal   # no second drive needed
 
 `sweep` is the "Against ds4" table: upstream's bench sweep (2048 to 32768 doubling, 128 tokens) for
 ds4, sf, sf --boost, sf with the second-drive copy, the copy with --boost and
@@ -43,7 +44,7 @@ import ab_bench as ab  # noqa: E402
 
 SWEEP = ['--ctx-start', '2048', '--ctx-max', '32768', '--step-mul', '2', '--gen-tokens', '128']
 FRONTIERS = (2048, 4096, 8192, 16384, 32768)
-SHAPES = ['cold-2500', 'cold-3500', 'cold-5000', 'cold-7500', 'cold-10000', 'append', 'decode']
+SHAPES = ['cold-2500', 'cold-3500', 'cold-5000', 'cold-7500', 'cold-10000', 'append', 'decode', 'short']
 SETTLE_SECONDS = 60
 MARGIN_C = 2.0
 COOL_TIMEOUT = 420
@@ -232,17 +233,24 @@ def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument('table', choices=COLUMNS)
     p.add_argument('--ds4', help='ds4 build tree at the merge-base (sweep only)')
-    p.add_argument('--replica', required=True, help='byte-identical copy of the GGUF on the second drive')
+    p.add_argument('--replica', help='byte-identical copy of the GGUF on the second drive (copy columns)')
+    p.add_argument('--columns', help='comma list of column names to run (default: all of the table)')
     p.add_argument('--runs', type=int, default=3)
     p.add_argument('--out', default=None, help='output directory (default $TMPDIR/sf-ds4-1flash-readme/<table>-<time>)')
     args = p.parse_args(argv)
     columns = COLUMNS[args.table]
+    if args.columns:
+        names = [c.strip() for c in args.columns.split(',')]
+        unknown = set(names) - {c[0] for c in columns}
+        if unknown:
+            p.error(f'unknown columns {sorted(unknown)}; {args.table} has {[c[0] for c in columns]}')
+        columns = [c for c in columns if c[0] in names]
     trees = {'sf': ab.ROOT}
-    if args.table == 'sweep':
+    if any(c[1] == 'ds4' for c in columns):
         if not args.ds4:
-            p.error('sweep needs --ds4')
+            p.error('the ds4 column needs --ds4')
         trees['ds4'] = Path(args.ds4).resolve()
-    if not Path(args.replica).is_file():
+    if any(c[3] for c in columns) and not (args.replica and Path(args.replica).is_file()):
         raise ab.Stop(2, f'{args.replica}: no copy there (is the second drive mounted?)')
     if 'pausa' not in fan_status()['thermal']:
         raise ab.Stop(2, 'fanboost thermal protection is on: run `fanboost pause` so plain runs get the Apple curve')
