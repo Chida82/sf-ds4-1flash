@@ -441,6 +441,7 @@ DS4_ENV(DS4_METAL_USE_QUEUE_RESIDENCY_SET, enable, unset, "One of the gates that
 DS4_ENV(DS4_METAL_V41_DECODE_KEEPALIVE, enable, unset, "Per token 0|1 override of the --boost decode GPU keep-alive during expert pread waits")
 DS4_ENV(DS4_METAL_V41_DECODE_KEEPALIVE_BURST_US, tuning, unset, "Decode keep-alive kernel burst in microseconds, 10..5000 (default 200)")
 DS4_ENV(DS4_METAL_V41_STAGE_PROFILE, probe, unset, "Per-stage timing of the V4.1 batched prefill layers, printed to stderr")
+DS4_ENV(DS4_METAL_V41_WARM_APPEND_MIN, tuning, unset, "SSD streaming, one box: smallest append (rows, 1-2048) prefilled as a layer sweep once the session holds context (default 256; 1024 is upstream's)")
 DS4_ENV(DS4_MOE_RECORD_SELECTED_HOTLIST, probe, unset, "Path: record per-layer routed-expert selection counts as a hotlist file at exit")
 DS4_ENV(DS4_MOE_RECORD_SELECTED_HOTLIST_FRESH, probe, unset, "With the hotlist merge flag set, ignore the existing hotlist file and start counts fresh")
 DS4_ENV(DS4_MOE_RECORD_SELECTED_HOTLIST_MERGE, probe, unset, "Merge new hotlist counts into the existing hotlist file instead of overwriting it")

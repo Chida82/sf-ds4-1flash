@@ -2656,6 +2656,63 @@ Both locked the statics and every cache slot; pressure stayed at level 1
 (frontiers up to 32K in a 256K allocation): the GPU's transient wiring above
 the plan was larger there than in one long session.
 
+## 770 short appends as one sweep (2026-11-07)
+
+Upstream's `ds41_prefill_count` runs any append under 1024 rows token by
+token once the session holds context and the expert cache has at least half
+of all routed experts (7680 slots). `80GB` (7810) and `82GB` (8026) are both
+above that, so every chat turn under 1024 tokens prefilled at the decode rate:
+an 891-token CLI turn at 27.4 tokens/s.
+
+Probe, one bench session per run at `80GB` and 32K allocated: a 2048- or
+8192-token context, then appends of 64-1000 tokens with 16 decoded tokens
+after each. Token-major is the old warm minimum (1024); sweep is
+`DS4_METAL_V41_WARM_APPEND_MIN=32`. ABBA, two runs per mode, each from 47 °C.
+Time to first token is prefill plus the first decoded token, median:
+
+| append | 2K token-major | 2K sweep | 8K token-major | 8K sweep |
+|---|---|---|---|---|
+| 64 | 2.0 s | 6.2 s | 2.0 s | 6.3 s |
+| 128 | 4.2 s | 6.3 s | 4.2 s | 6.2 s |
+| 256 | 8.1 s | 6.5 s | 7.9 s | 6.5 s |
+| 384 | 12.7 s | 6.9 s | 12.6 s | 6.8 s |
+| 512 | 15.9 s | 6.6 s | 16.2 s | 6.8 s |
+| 768 | 24.4 s | 6.8 s | 24.5 s | 6.8 s |
+| 1000 | 32.6 s | 7.0 s | 32.6 s | 6.9 s |
+
+A sweep costs 6.0-6.7 s of prefill whatever its length, plus a first token of
+0.19-0.24 s (0.03 s after token-major rows). Token-major costs 31-32 ms per
+row at both contexts. The break-even is about 200 rows. The two runs of each
+cell differ by at most 0.5 s. Under single-box streaming the warm minimum is
+now 256, the cold minimum; `DS4_METAL_V41_WARM_APPEND_MIN=1024` restores
+upstream's schedule, and its bench logits at 2048, +448 and +896 (and after
+16 decoded tokens) are bitwise `main`'s. With the default the argmax after
+both appends is unchanged, the logits differ by up to 1.37, and the 16 greedy
+tokens diverge.
+
+Harness A/B, A `main` (`b148f20`), B `770`, `82GB`, kinds
+`append,decode,cold-5000,cold-10000`, `--output-change --cache-policy-change`
+(the +300 append now sweeps, so the cache state at frontier 5300 differs by
+design: 8682 against 74028 hits), 2700 s, 34 valid pairs, none dropped, GPU at
+a median 1442 MHz, Nominal:
+
+| metric | A | B | gain | 95% CI |
+|---|---|---|---|---|
+| append +300 | 9.62 s | 6.24 s | +52.3% | +38.5% .. +56.0% |
+| append +1500 | 7.83 s | 6.68 s | +17.4% | +16.9% .. +18.5% |
+| append, prefill 5000 (detail) | 13.0 s | 12.8 s | -0.1% | -0.7% .. +6.3% |
+| decode 2048 | 30.4 | 30.4 | +0.9% | -0.9% .. +2.0% |
+| decode 8192 | 31.3 | 31.1 | -0.4% | -0.6% .. +0.1% |
+| ttft 5000 | 12.6 s | 12.7 s | -0.2% | -3.0% .. -0.0% |
+| ttft 10000 | 22.6 s | 22.7 s | +0.0% | -0.3% .. +0.8% |
+
+`cold-5000` and `cold-10000` take the same schedule in both builds (a first
+call of 5000 rows, and 8192 rows plus a 1808-row tail, both above either
+minimum), so their rows measure noise. The +1500 append follows the +300 one,
+and runs faster after a sweep than after token-major rows.
+
+Record row: `| sf/770-v41-short-append-sweep | 2026-11-07 | b148f20 | DeepSeek-V4.1-Flash-1017-IQ2_XXS-Q2_K-imatrix.gguf | 34 | CHANGED | 30.4 (+0.9%) | 31.1 (-0.4%) |  |  | 12.7 (-0.2%) |  | 22.7 (+0.0%) | 6.24 (+52.3%) | 6.68 (+17.4%) |  |  | 67.7 (-0.2%) |`
+
 ## Adding a row
 
 1. `SF_PARITY_FLAGS=--ssd-streaming tools/parity-check.sh sf-ds4-1flash` from

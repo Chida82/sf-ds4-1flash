@@ -24710,9 +24710,17 @@ static uint32_t ds41_prefill_count(const ds41_gpu_graph *g, uint32_t remaining) 
 #ifndef DS4_NO_GPU
     /* With at least half the experts cached, warm short appends beat a full
      * disk sweep. Leave a token-major tail to warm the following decode too. */
+    /* sf: one box under SSD streaming pays about 6.3 s for a sweep of any
+     * length up to 1000 rows and 31 ms per token-major row, at 2K and 8K of
+     * context: break-even near 200 rows, so warm appends keep the 256-row
+     * minimum there (770). */
     if (g->streaming &&
-        ds4_gpu_stream_expert_cache_configured_count() >= DS4_N_LAYER * DS4_N_EXPERT / 2u)
-        warm_minimum = 1024u;
+        ds4_gpu_stream_expert_cache_configured_count() >= DS4_N_LAYER * DS4_N_EXPERT / 2u) {
+        warm_minimum = g->tp_world == 1 ? 256u : 1024u;
+        const char *v = g->tp_world == 1 ? getenv("DS4_METAL_V41_WARM_APPEND_MIN") : NULL;
+        const long rows = v ? strtol(v, NULL, 10) : 0;
+        if (rows >= 1 && rows <= 2048) warm_minimum = (uint32_t)rows;
+    }
 #endif
     if (g->pos) minimum = warm_minimum;
     if (remaining < minimum) return 1;

@@ -149,17 +149,26 @@ one process uses 32 GiB at most (`--prefill-replica`);
 anything larger runs each engine in its own process.
 
 The time to first token is set by the prefill schedule (`ds41_prefill_count`).
-A prompt runs as SSD layer sweeps, and a remainder under 1024 tokens after the
+A prompt runs as SSD layer sweeps, and a remainder under 256 tokens after the
 first sweep runs token by token at the decode rate. Batched and token-major
-kernels round differently, so the schedule decides the output; it follows
-upstream's. Since the `b3f5018` sync (upstream `5382eac`), a 2049-8191-token
+kernels round differently, so the schedule decides the output. It follows
+upstream's except for appends: upstream runs any append under 1024 tokens
+token by token once the session holds context and the cache has half the
+experts (7680 slots), which `80GB` and `82GB` both pass. Here a sweep costs
+about 6.3 s whatever its length and a token 31 ms, at 2K and 8K of context,
+so since `770` single-box streaming keeps the 256-token minimum for appends
+too. A 1000-token chat turn takes 7 s instead of 33, and the harness
+`append +300` +52%. `DS4_METAL_V41_WARM_APPEND_MIN=1024` restores upstream's
+schedule, bitwise. Since the `b3f5018` sync (upstream `5382eac`), a 2049-8191-token
 remainder whose final tile has at least 256 rows is one sweep, so a 5000-token
 prompt or a +2500 append no longer ends in a token-major tail
-(`DS4_METAL_DISABLE_V41_MEDIUM_SWEEP=1` restores it). Since
+(`DS4_METAL_DISABLE_V41_MEDIUM_SWEEP=1` restores it, with the warm minimum
+at 1024: at 256 the short sweep below merges a 3072-8191-token remainder
+anyway). Since
 `60-prefill-sweeps`:
 - a 3072-8191-token remainder runs as one wide sweep when its last partial
-  tile is one the plain schedule would batch anyway (0 or at least 1024
-  rows), so 3.5K and 7.5K prompts pay one sweep instead of two;
+  tile is one the plain schedule would batch anyway (0 rows, or at least the
+  warm minimum: 256, 1024 in upstream), so 3.5K and 7.5K prompts pay one sweep instead of two;
 - below 8192 rows the decoder layers (20-39) of a wide sweep compute only the
   rows the last token depends on, from 2048-row tiles;
 - sweeps of 32 rows or more read each layer's experts into two locked

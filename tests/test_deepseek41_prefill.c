@@ -44,13 +44,18 @@ static int check_dispatch(void) {
         2047, 2048, 2048, 4095, 4096, 4096, 8191, 8192, 8192,
         14336, 16384, 16384, 30720, 32768, 32768, 32768};
     _Static_assert(sizeof(remaining) == sizeof(cold), "prefill dispatch table sizes");
+    /* One box under streaming keeps the 256-row minimum for warm appends
+     * (770); DS4_METAL_V41_WARM_APPEND_MIN=1024 is upstream's warm rule. */
+    for (uint32_t upstream = 0; upstream < 2; upstream++)
     for (uint32_t cache = half - 1; cache <= half; cache++) {
+        CHECK(upstream ? setenv("DS4_METAL_V41_WARM_APPEND_MIN", "1024", 1) == 0 :
+                         unsetenv("DS4_METAL_V41_WARM_APPEND_MIN") == 0);
         ds4_gpu_set_streaming_expert_cache_budget(cache);
         for (uint32_t warm = 0; warm < 2; warm++) {
             g.pos = warm;
             for (size_t i = 0; i < sizeof(remaining) / sizeof(*remaining); i++) {
                 uint32_t expected = cold[i];
-                if (warm && cache == half && remaining[i] < 1024) expected = 1;
+                if (upstream && warm && cache == half && remaining[i] < 1024) expected = 1;
                 if (ds41_prefill_count(&g, remaining[i]) != expected)
                     fprintf(stderr, "dispatch cache=%u configured=%u warm=%u remaining=%u expected=%u actual=%u\n",
                         cache, ds4_gpu_stream_expert_cache_configured_count(), warm,
@@ -59,16 +64,22 @@ static int check_dispatch(void) {
             }
         }
     }
+    CHECK(unsetenv("DS4_METAL_V41_WARM_APPEND_MIN") == 0);
     /* A medium append (2048 < n < 8192, final tile of at least 256 rows) is
      * one sweep, also where its tail would otherwise go token-major. */
-    CHECK(g.pos && ds4_gpu_stream_expert_cache_configured_count() >= half);
+    CHECK(g.pos &&ds4_gpu_stream_expert_cache_configured_count() >= half);
     CHECK(ds41_prefill_count(&g, 2303) == 2048);
     CHECK(ds41_prefill_count(&g, 2304) == 2304);
     CHECK(ds41_prefill_count(&g, 3241) == 3241);
     CHECK(ds41_prefill_count(&g, 5000) == 5000);
     CHECK(setenv("DS4_METAL_DISABLE_V41_MEDIUM_SWEEP", "1", 1) == 0);
     CHECK(ds41_prefill_count(&g, 2304) == 2048);
+    /* The 904-row tail meets the short sweep's 256-row warm minimum; under
+     * upstream's 1024 it is left token-major after one 4096-row sweep. */
+    CHECK(ds41_prefill_count(&g, 5000) == 5000);
+    CHECK(setenv("DS4_METAL_V41_WARM_APPEND_MIN", "1024", 1) == 0);
     CHECK(ds41_prefill_count(&g, 5000) == 4096);
+    CHECK(unsetenv("DS4_METAL_V41_WARM_APPEND_MIN") == 0);
     CHECK(unsetenv("DS4_METAL_DISABLE_V41_MEDIUM_SWEEP") == 0);
     g.pos = 0;
     g.tp_world = 2;
