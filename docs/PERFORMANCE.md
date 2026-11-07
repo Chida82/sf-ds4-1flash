@@ -46,25 +46,27 @@ A single sweep with the command above is a picture of one build, not a verdict.
 ## Recorded baselines
 
 DeepSeek V4.1 Flash Q2 (`1017`) against ds4 at the merge-base `b3f5018`, 2026-11-07,
-this child at `5938e97` with change `750`: the sweep above with
-`--ssd-streaming --ssd-streaming-cache-experts 82GB --ctx-start 2048
+this child at `main` `6898b39`: the sweep above with
+`--ssd-streaming --ssd-streaming-cache-experts 80GB --ctx-start 2048
 --ctx-max 32768 --step-mul 2 --gen-tokens 128`, measured by
 `speed-bench/readme_bench.py` (three runs per column from the same cool chip,
 ds4 and sf in separate blocks; protocol in `speed-bench/README.md`, "README
 tables"), GGUF on the internal drive only. The CSVs are in
-[speed-bench/readme-20261107](../speed-bench/readme-20261107)
+[speed-bench/readme-20261107-80gb](../speed-bench/readme-20261107-80gb)
 and the table in the README's "Speed" section:
-- prefill +16% on the first 2048 tokens and +41% to +103% after them;
-- steady decode +42% to +76%;
-- the first token after a prefill 0.19-0.23 s against 2.2-3.3 s.
+- prefill +51% on the first 2048 tokens and +45% to +116% after them;
+- steady decode +32% to +109%;
+- the first token after a prefill 0.22-0.23 s against 2.4-3.8 s.
 
 With `--boost` (fans at their maximum through fanboost) the same sweep gains
-+8% and +6% on the two long prefill rows and under 1% on steady decode. The
-chip peaks at 98-99 °C, against 101 °C without it. The same session measured
-sf at `80GB`, the second-drive copy (README, "A second drive") and
-`max_performance_82`.
++8% on the prefill to 16384, +3% (within noise) on the one to 32768 and under
+1% on steady decode. The same session measured the second-drive copy
+(README, "A second drive") and `max_performance_80`.
 
 Earlier baselines:
+- 2026-11-07, `5938e97` with change `750` at `82GB` (static weights still
+  pageable), against ds4 at `b3f5018`:
+  [speed-bench/readme-20261107](../speed-bench/readme-20261107).
 - 2026-10-11, `fa51b38` against ds4 at `0aaea5a`:
   [speed-bench/readme-20261011](../speed-bench/readme-20261011).
 - The 2026-10-10 sweep (two runs per build, no cool-down):
