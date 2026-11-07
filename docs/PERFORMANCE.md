@@ -64,6 +64,12 @@ With `--boost` (fans at their maximum through fanboost) the same sweep gains
 decode. The same session measured the second-drive copy, short chat turns
 included (README, "A second drive"), and `max_performance_80`.
 
+Chat-sized turns against ds4 (`readme_bench.py short`, 2026-11-08, `main`
+`ebf255b`, 512 to 1536 tokens in steps of 512, three runs each,
+[speed-bench/readme-20261108-short](../speed-bench/readme-20261108-short)):
+a 512-token append takes 6.7-6.9 s against ds4's 20.0-20.4 s, which runs it
+token by token; the first 512-token prompt 12.0 s against 15.0 s.
+
 Earlier baselines:
 - 2026-11-07, `6898b39` at `80GB`, three runs after one warm-up per build:
   [speed-bench/readme-20261107-80gb](../speed-bench/readme-20261107-80gb).

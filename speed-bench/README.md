@@ -235,7 +235,7 @@ worth opening (see the Situation 0 section of the record).
 
 ### README tables
 
-The two speed tables in the top-level README are measured by `readme_bench.py`,
+The speed tables in the top-level README are measured by `readme_bench.py`,
 never by hand, so every column comes from one session and every run starts
 from the same temperature:
 
@@ -244,6 +244,7 @@ python3 speed-bench/readme_bench.py sweep --ds4 <ds4 tree at the merge-base> \
   --replica /Volumes/<drive>/sf-ds4-1flash/DeepSeek-V4.1-Flash-1017-IQ2_XXS-Q2_K-imatrix.gguf
 python3 speed-bench/readme_bench.py shapes \
   --replica /Volumes/<drive>/sf-ds4-1flash/DeepSeek-V4.1-Flash-1017-IQ2_XXS-Q2_K-imatrix.gguf
+python3 speed-bench/readme_bench.py short --ds4 <ds4 tree at the merge-base>
 ```
 
 - `sweep` is "Against ds4": the bench sweep above (`--ctx-start 2048
@@ -259,6 +260,10 @@ python3 speed-bench/readme_bench.py shapes \
   copy with `--boost`. `short` is a 512-token prompt, then +512 at 512 and
   +512 at 1024 tokens of context: chat turns that ran token by token before
   `770`. The typical mix is the harness's own estimate.
+- `short` is "Chat-sized turns against ds4": the same frontiers through the
+  bench sweep options (`--ctx-start 512 --ctx-max 1536 --step-incr 512
+  --gen-tokens 16 --ctx-alloc 32768`), since ds4's bench has no
+  `--frontiers`, for ds4 and sf, three runs each.
 - `--columns a,b` runs only those columns of the table: `--ds4` is needed only
   for the ds4 column, `--replica` only for the copy columns. A session that
   measures part of a table now and the rest later says so in its
@@ -282,7 +287,7 @@ The protocol, and why each step is there (measured on 2026-10-10,
   evict) reads the whole first sweep from the SSD: 162.7 tokens/s for the same
   build, and ds4 138-140 against 121 after the old protocol; it describes a
   fresh process on an empty cache, not the machine in use.
-- **Five runs per column for `sweep`, three for `shapes`.** The first token
+- **Five runs per column for `sweep`, three for `shapes` and `short`.** The first token
   and the `--boost` columns have single outliers that a median of three still
   feels; the shapes vary less and take longer.
 - **Stock fans for plain runs.** fanboost's thermal protection must be paused

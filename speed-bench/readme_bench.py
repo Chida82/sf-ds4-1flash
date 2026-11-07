@@ -4,12 +4,15 @@
     python3 speed-bench/readme_bench.py sweep --ds4 <ds4 tree at the merge-base> --replica <copy>
     python3 speed-bench/readme_bench.py shapes --replica <copy>
     python3 speed-bench/readme_bench.py shapes --columns internal   # no second drive needed
+    python3 speed-bench/readme_bench.py short --ds4 <ds4 tree at the merge-base>
 
 `sweep` is the "Against ds4" table: upstream's bench sweep (2048 to 32768 doubling, 128 tokens) for
 ds4, sf, sf --boost, sf with the second-drive copy, the copy with --boost and
 max_performance_80 (copy, --boost, 256K context). `shapes` is the
 second-drive table: the A/B harness's prompt, append and decode shapes for the internal drive
-only, the copy, and the copy with --boost. Every run uses the README's expert cache, CACHE below.
+only, the copy, and the copy with --boost. `short` is the chat-turn table against ds4: upstream's bench
+from 512 to 1536 tokens in steps of 512 (the harness's `short` frontiers, which ds4's bench cannot take as
+--frontiers), 16 tokens, for ds4 and sf. Every run uses the README's expert cache, CACHE below.
 
 The protocol (speed-bench/README.md, "README tables"):
 - fanboost's own thermal protection must be paused, so a plain run gets the stock Apple fan curve;
@@ -25,7 +28,7 @@ The protocol (speed-bench/README.md, "README tables"):
   build, so the measured runs see the build's own steady-state cache, never another build's leftovers;
   the GiB of each file cached before every run are recorded;
 - inside a block the columns are rotated (A B C, C B A, ...), five runs each for sweep and three for
-  shapes (--runs), and every value is a median;
+  shapes and short (--runs), and every value is a median;
 - chip and fans come from `fanboost status` every 2 s, thermal state and GPU clock from mactop.
 """
 
@@ -49,11 +52,12 @@ import gguf_ranges  # noqa: E402
 
 SWEEP = ['--ctx-start', '2048', '--ctx-max', '32768', '--step-mul', '2', '--gen-tokens', '128']
 FRONTIERS = (2048, 4096, 8192, 16384, 32768)
+SHORT = ['--ctx-start', '512', '--ctx-max', '1536', '--step-incr', '512', '--gen-tokens', '16', '--ctx-alloc', '32768']
 SHAPES = ['cold-2500', 'cold-3500', 'cold-5000', 'cold-7500', 'cold-10000', 'append', 'decode', 'short']
 SETTLE_SECONDS = 60
 MARGIN_C = 2.0
 COOL_TIMEOUT = 420
-RUNS = {'sweep': 5, 'shapes': 3}
+RUNS = {'sweep': 5, 'shapes': 3, 'short': 3}
 WARMUPS = 2
 # The README tables' expert cache; the A/B harness keeps its own (ab_bench.CACHE_FLAG).
 CACHE = '80GB'
@@ -63,7 +67,9 @@ COLUMNS = {
               ('sf + copy', 'sf', [], True), ('sf + copy --boost', 'sf', ['--boost'], True),
               ('max_performance_80', 'sf', ['--boost', '--ctx-alloc', '262144'], True)],
     'shapes': [('internal', 'sf', [], False), ('copy', 'sf', [], True), ('copy --boost', 'sf', ['--boost'], True)],
+    'short': [('ds4', 'ds4', [], False), ('sf', 'sf', [], False)],
 }
+KINDS = {'sweep': ['sweep'], 'shapes': SHAPES, 'short': ['short']}
 
 
 # --- fanboost ---------------------------------------------------------------
@@ -142,10 +148,11 @@ class Sampler(threading.Thread):
 
 def command(table, trees, column, kind, csv_path, model):
     _, tree, extra, _ = column
-    if table == 'sweep':
+    if table != 'shapes':
         binary = trees[tree] / ('ds4-bench' if tree == 'ds4' else ab.BENCH)
         return [str(binary), '-m', str(model), '--prompt-file', str(ab.ROOT / ab.PROMPT), '--ssd-streaming',
-                '--ssd-streaming-cache-experts', CACHE, *SWEEP, '--csv', str(csv_path), *extra]
+                '--ssd-streaming-cache-experts', CACHE, *(SWEEP if table == 'sweep' else SHORT), '--csv',
+                str(csv_path), *extra]
     return ab.bench_cmd(trees[tree], kind, model, csv_path, extra=extra, cache=CACHE)
 
 
@@ -288,7 +295,7 @@ def main(argv=None):
     sampler, monitor = Sampler(), ab.Monitor(out / 'mactop.log')
     sampler.start()
     try:
-        kinds = SHAPES if args.table == 'shapes' else ['sweep']
+        kinds = KINDS[args.table]
         # One block per build, each from an emptied file cache and two discarded warm-ups: the measured
         # runs see the cache at the build's own steady state, not what another build or process left.
         blocks = [[c for c in columns if c[1] == t] for t in dict.fromkeys(c[1] for c in columns)]

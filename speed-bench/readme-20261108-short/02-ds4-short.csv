@@ -1,0 +1,4 @@
+ctx_tokens,prefill_tokens,prefill_tps,gen_tokens,gen_tps,gen_first_ms,gen_steady_tokens,gen_steady_tps,kvcache_bytes
+512,512,33.64,16,3.99,2740.050,15,11.81,14281780
+1024,512,24.90,16,23.88,36.666,15,23.71,17560628
+1536,512,25.54,16,24.73,37.415,15,24.62,0

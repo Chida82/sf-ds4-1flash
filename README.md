@@ -92,6 +92,31 @@ First token after each prefill, same runs:
 | 16384 | 2896 | 220 | -92.4% | 221 | -92.4% |
 | 32768 | 3089 | 197 | -93.6% | 219 | -92.9% |
 
+**Chat-sized turns**, same bench from 512 to 1536 tokens in steps of 512, 16
+generated tokens:
+
+| Measurement | ds4 | sf | sf vs ds4 |
+|---|---:|---:|---:|
+| *commit* | `b3f5018` | `ebf255b` | *- is better* |
+| 512-token prompt, prefill | 15.0 s | 12.0 s | -20.0% |
+| its first token | 2.74 s | 0.12 s | -95.8% |
+| +512 tokens at 512, prefill | 20.4 s | 6.9 s | -66.2% |
+| its first token | 0.04 s | 0.12 s | +229% |
+| +512 tokens at 1024, prefill | 20.0 s | 6.7 s | -66.5% |
+| its first token | 0.04 s | 0.11 s | +185% |
+
+A 512-token turn costs ds4 20 s and sf 7 s, first token included. ds4 runs
+every append under 1024 tokens token by token once the expert cache holds half
+the experts; sf runs it as one layer sweep from 256 tokens (`770`; AGENTS.md,
+SSD streaming). The token-by-token path leaves the next token's experts in the
+cache, so ds4's first token after an append takes 37 ms against sf's 0.11-0.12
+s, which the 13 s saved on the prefill more than pays for. The 512-token
+prompt is the first prefill of a fresh process, for both builds; in sf that
+includes about 4.5 s a process pays once, on its first request (measured on
+the server), and so does the first 2048-token frontier of the sweep above. Three
+runs each, from the same protocol as the tables above; the CSVs are in
+`speed-bench/readme-20261108-short`.
+
 sf locks its 9.37 GiB of static weights at this cache (`760`; AGENTS.md, SSD
 streaming), while ds4 leaves them pageable. Pageable static weights cost time
 once the file cache is full and free memory sits at the kernel's floor: the
