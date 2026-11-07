@@ -115,7 +115,8 @@ One invocation:
    quads: one gain, no interval, marked in the summary.
 
 Kinds (`--kinds` takes names or the groups `cold`, `guards`, `all`, which
-leaves out `append-medium` and `short`; there is no default, each change names what its
+leaves out `append-medium`; `short` is in it, so every sync's A/B checks the
+chat-sized turns of `770`; there is no default, each change names what its
 phase needs). The shapes are those of the `b3f5018` sync, which runs a
 2049-8191-token remainder with a final tile of 256 rows or more as one sweep
 (`5382eac`); the run times are older and slower:

@@ -113,7 +113,7 @@ class Parsing(unittest.TestCase):
         self.assertEqual(m, {'ttft 512': 4.0, 'first token 512 ms': 200.0, 'append +512 at 512': 8.0,
                              'first token 1024 ms': 210.0, 'append +512 at 1024': 16.0,
                              'first token 1536 ms': 220.0})
-        self.assertNotIn('short', ab.GROUPS['all'])
+        self.assertIn('short', ab.GROUPS['all'])
 
     def test_loader_outside_window(self):
         err = COLD_ERR.replace('74.88 GiB dynamic', '60.00 GiB dynamic')

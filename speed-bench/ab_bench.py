@@ -80,7 +80,7 @@ KINDS = {
 GROUPS = {
     'cold': [k for k in KINDS if k.startswith('cold-')],
     'guards': [k for k in KINDS if k.startswith('guard-')],
-    'all': [k for k in KINDS if not k.startswith('guard-') and k not in ('append-medium', 'short')],
+    'all': [k for k in KINDS if not k.startswith('guard-') and k != 'append-medium'],
 }
 # Seconds reserved for each guard's single A, B pair (design D6); measured in task 6.2.
 GUARD_SECONDS = {'guard-16896': 80.0, 'guard-decode': 180.0}
