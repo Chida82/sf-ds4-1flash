@@ -31281,9 +31281,30 @@ static int ds4_engine_open_internal(ds4_engine **out,
             const uint64_t experts = ds4_add_sat_u64(
                     ds4_engine_dynamic_expert_cache_bytes(e),
                     e->ssd_streaming_prefill_headroom_bytes);
-            const bool fits =
-                weights_streaming_non_routed_bytes(&e->weights, &static_bytes) &&
-                static_bytes <= budget && experts <= budget - static_bytes;
+            const bool known =
+                weights_streaming_non_routed_bytes(&e->weights, &static_bytes);
+            bool fits = known && static_bytes <= budget && experts <= budget - static_bytes;
+            /* The 7/8 working-set budget refuses at 80-82GB, but what locked pages
+             * really meet is the user wire limit. Pageable statics make every
+             * GPU batch wait for the kernel to wire them once free memory is at
+             * its floor (about 3 s on a 2048 prefill, 760). The margin covers
+             * the GPU's wiring above this plan: 4.4-4.9 GiB measured, 32K-256K. */
+            uint64_t wire_limit = 0;
+            size_t wire_len = sizeof(wire_limit);
+            if (!fits && known &&
+                sysctlbyname("vm.global_user_wire_limit", &wire_limit, &wire_len, NULL, 0) == 0) {
+                const uint64_t margin = 6ull * 1024 * 1024 * 1024;
+                const ds4_context_memory ctx_mem =
+                    ds4_context_memory_estimate_with_prefill_mode(
+                        e->backend, opt->context_size, e->prefill_chunk, true);
+                const uint64_t planned = ds4_add_sat_u64(
+                    ds4_add_sat_u64(ctx_mem.total_bytes, static_bytes), experts);
+                fits = wire_limit > margin && planned <= wire_limit - margin;
+                fprintf(stderr, "ds4: Metal SSD static weights: %.2f GiB planned wired"
+                        " against the %.2f GiB user wire limit less %.0f GiB: %s\n",
+                        planned / 1073741824.0, wire_limit / 1073741824.0,
+                        margin / 1073741824.0, fits ? "lock" : "pageable");
+            }
             if (!fits) {
                 fprintf(stderr, "ds4: Metal SSD static weights remain pageable"
                         " to preserve runtime headroom\n");

@@ -2574,6 +2574,88 @@ Notes on these runs:
   six of seven runs, and went 11.5-12.8 s whatever the switch. Back-to-back
   order is too noisy for this effect: use a fixed start state.
 
+## 760 static weights locked at 80-82GB (2026-11-07)
+
+At engine open, a second admission path locks the static weights when the
+planned wired total plus 6 GiB stays under `vm.global_user_wire_limit`
+(108.8 GiB). The planned total counts the context buffers, statics, expert
+cache and prefill reserve. The 6 GiB margin covers the GPU's measured wiring
+above the plan, 4.4-4.9 GiB at 32K-256K. At `82GB` the plan is 98.77 GiB at
+32K and 101.26 GiB at 256K, so both lock; at `80GB` 96.77 and 99.26 GiB.
+
+The measurements below up to the README preview ran on a scratch copy of the
+`750` tree with the same patch. On the landing tree, bench logits at 2048 and
+8192 (and after 16 decode tokens) are byte-identical with and without
+`DS4_METAL_DISABLE_STREAMING_STATIC_LOCK`, at `80GB`.
+
+Harness A/B: A is `main` + `750`, B adds `760`. Kinds `decode,append,cold-2500,cold-7500`, `--bitwise`, 3550 s, 52 valid pairs (none dropped), GPU at a median 1508 MHz, Nominal:
+
+| metric | A | B | gain | 95% CI |
+|---|---|---|---|---|
+| decode 2048 | 31.1 | 32.0 | +1.2% | -0.2% .. +4.8% |
+| decode 8192 | 31.8 | 32.1 | +0.5% | -0.4% .. +1.4% |
+| append, prefill 5000 (detail) | 15.4 s | 12.3 s | +22.4% | +16.0% .. +29.6% |
+| append +300 | 9.23 s | 8.82 s | +3.6% | +0.1% .. +8.8% |
+| append +1500 | 7.70 s | 7.69 s | +0.2% | -0.1% .. +0.9% |
+| ttft 2500 | 12.1 s | 11.6 s | +4.0% | -0.1% .. +9.1% |
+| ttft 7500 | 15.2 s | 15.1 s | +1.0% | +0.7% .. +1.5% |
+| typical mix (estimate) | 71.2 s | 70.4 s | +1.1% | |
+
+Expert-cache hit rates are identical in A and B. No metric loses. The +300
+append is the token-by-token case that upstream's 7/8 margin was written for,
+and it gains 3.6%.
+
+Start states of `750` (root-free), fresh bench processes at frontier 2048 with 16
+tokens, alternating the lock with `DS4_METAL_DISABLE_STREAMING_STATIC_LOCK=1`
+(`750`'s prefault):
+
+| Start state | lock | open | prefill 2048 | first-prefill end |
+|---|---|---|---|---|
+| full file cache (4 each) | on | 2.64-2.76 s | 12.67-12.68 s | 15.31-15.44 s (-23%) |
+| full file cache | off | 4.34-4.40 s | 14.93-15.82 s | 19.27-20.22 s |
+| statics warm (3 each) | on | 2.46-2.47 s | 12.57-12.72 s | 15.04-15.18 s |
+| statics warm | off | 2.44-2.46 s | 12.57-12.62 s | 15.01-15.08 s |
+
+With the lock, the statics are locked before the lock-ahead. The lock-ahead
+then evicts other file pages, so in the full state the open also skips
+`750`'s 1.8 s re-read.
+
+Server regime (`750`'s test, root-free start, statics snapshots around B):
+
+| Run | B sweep with `760` | B sweep with `750` | statics around B, `760` |
+|---|---|---|---|
+| no other reads | 7.88 / 7.68 s | 8.58 / 7.88 s | 9601 -> 9601 MiB |
+| 20 GiB of other reads between A and B | 8.01 / 8.10 s | 8.39 / 8.26 s | 9601 -> 9601 MiB (`750`: 8386-8724 before B) |
+
+README sweep preview: `readme_bench.py sweep`, same protocol and columns,
+05:20-06:15. Every sf run decided "lock". The first 2048 tokens, in t/s:
+
+| Column | `750` (README table) | `750` + `760` |
+|---|---|---|
+| sf | 144.4 | 179.7 |
+| sf + copy | 188.8 | 241.8 |
+| sf `80GB` | 153.5 | 183.3 |
+| `max_performance_82` | 188.9 | 242.1 |
+
+Every later frontier, generation and steady decode stayed within 1-2% of the
+`750` table. With the lock, `80GB` no longer gains on the first frontier. The
+summary is in the session scratchpad (`night/readme-sweep-760`). When `760`
+lands, the README tables are re-measured.
+
+256K sessions on the landing tree: bench, the copy, `--boost`,
+`--ctx-alloc 262144`, one frontier of 245760 tokens and 256 decoded, peak by
+`speed-bench/residency/memsample.py` (0.25 s samples):
+
+| Cache | planned | peak wired | under the limit | min free | prefill | steady decode |
+|---|---|---|---|---|---|---|
+| `82GB` | 101.26 GiB | 102.42 GiB | 6.4 GiB | 0.11 GiB | 801.6 t/s | 29.8 t/s |
+| `80GB` | 99.26 GiB | 99.55 GiB | 9.3 GiB | 0.12 GiB | 810.4 t/s | 29.7 t/s |
+
+Both locked the statics and every cache slot; pressure stayed at level 1
+(normal). The probe's 105.66 GiB at 256K was the README sweep shape
+(frontiers up to 32K in a 256K allocation): the GPU's transient wiring above
+the plan was larger there than in one long session.
+
 ## Adding a row
 
 1. `SF_PARITY_FLAGS=--ssd-streaming tools/parity-check.sh sf-ds4-1flash` from

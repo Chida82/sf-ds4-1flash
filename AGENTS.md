@@ -108,10 +108,27 @@ below `82GB`'s. `DS4_METAL_DISABLE_STREAMING_CACHE_LOCK_AHEAD=1` restores lazy
 locking. `--ssd-streaming-full-layers` is gone: it only ever applied
 to GLM graph streaming, and V4.1 warned and ignored it.
 
-At `82GB` the 9.37 GiB of static weights do not fit next to the cache, so they
-stay pageable ("static weights remain pageable"), and the lock-ahead evicts
-the oldest file pages. Those are often static weights an earlier process
-left. Since `750`, engine open checks which static pages are missing
+The static weights are the 9.37 GiB every token reads: token embedding,
+attention, norms, router, shared expert, HC, indexer, compressor and output
+head (`weights_model_map_decode_static_spans`). Upstream locks them when the
+7/8 working-set budget admits them next to the cache, and at `80GB` or
+`82GB` it does not ("static weights remain pageable"). Pageable statics cost
+time once free memory sits at the kernel floor (a full file cache): every
+GPU command batch then waits about 290 ms for the kernel to wire them, about
+3 s on a 2048 prefill (`DS4_METAL_CB_TIMES`). Since `760`, when the budget
+refuses, engine open adds the context buffers, the statics, the cache and the
+prefill reserve, and locks the statics if that total fits under
+`vm.global_user_wire_limit` less 6 GiB ("... GiB planned wired against the
+108.80 GiB user wire limit less 6 GiB: lock"). The first 2048 prefill went
+from 144 to 180 t/s and prefill 5000 +22% (harness A/B), output bitwise
+identical. Peak wired rose only 0.4 GiB at 32K, since the GPU wired the
+pageable statics while it used them anyway; what changes is that they stay
+wired between requests too.
+`DS4_METAL_DISABLE_STREAMING_STATIC_LOCK=1` keeps them pageable.
+
+When the statics stay pageable, the lock-ahead evicts the oldest file pages,
+often static weights an earlier process left. Since `750`, engine open checks
+which static pages are missing
 (`mincore`) and reads them back before the first prefill ("static weights
 prefaulted X of 9.37 GiB"). This costs about 0.1 s when nothing is missing
 and 1.8 s cold. The first prefill is then 16% sooner cold and 7% sooner with
