@@ -631,6 +631,7 @@ shipped; the method, the KPIs and the accepting runs are recorded in
 ## Detailed Guides
 
 - [The model and vision](docs/MODELS.md): downloads, memory, and the encoder.
+- [What we know about the model](docs/MODEL_KNOWLEDGE.md): layers, costs, determinism, interfaces, and what is still unknown.
 - [SSD streaming](docs/SSD_STREAMING.md): run larger than RAM and size the cache.
 - [Inference across machines](docs/DISTRIBUTED.md): two-Mac TP/RDMA and layer pipelines.
 - [Serving](docs/SERVER.md): APIs, images, batching, and disk KV caches.
