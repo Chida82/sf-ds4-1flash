@@ -218,6 +218,9 @@ static void print_steering(FILE *fp, const help_colors *c, ds4_help_tool tool) {
         opt(fp, c, "--dir-steering-attn F", "Apply steering after attention outputs. Default: 0");
     }
     if (tool == DS4_HELP_SERVER) {
+        opt(fp, c, "--sysone-calibration FILE", "Temperatures per question type for POST /v1/systemone, written by sysone-bench/fit.py. Refuses to start when the file's model size, model mtime, template version or layout does not match.");
+        opt(fp, c, "--sysone-state-cache N", "State snapshots kept across POST /v1/systemone requests (default 4, 0 disables). A request whose state equals a cached one skips the state prefill; one that extends it prefills only the new tokens.");
+        opt(fp, c, "--sysone-state-cache-mb M", "Byte budget of the System One state cache in MiB (default 2048). Also the largest chat state saved and restored around a decision.");
         opt(fp, c, "--steering-profile-on-request NAME|FILE", "Load one .sfsteer file (or a name in com-steering/profiles), off by default: a request turns it on with a -steering model id (deepseek-v4.1-flash-steering, deepseek-chat-steering, deepseek-reasoner-steering). Not with TP or distributed roles. The CLI/eval --steering-profile means always on.");
     } else {
         opt(fp, c, "--steering-profile NAME|FILE", "One .sfsteer file (or a name in com-steering/profiles) carrying both slots' vectors, scales and think/answer gates, applied to every prompt; the only way to steer V4.1 (com-steering/make.md builds one).");

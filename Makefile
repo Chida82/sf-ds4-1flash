@@ -46,6 +46,7 @@ help:
 	@echo "  make test-mxfp4-metal  Check the MXFP4 half LUT, then run Metal MXFP4 exactness tests"
 	@echo "  make test-deepseek41-metal  Run the DeepSeek V4.1 Metal kernel tests"
 	@echo "  make test-deepseek41-decode-switch SWITCH=VAR  Decode bitwise with and without a switch"
+	@echo "  make test-sysone             System One readout: symbols, fixtures, isolation, determinism"
 	@echo "  make test-deepseek41-steering-session  Steering off with a profile loaded == no profile, bitwise"
 	@echo "  make test-engram         Run the Engram store tests"
 	@echo "  make clean        Remove build outputs"
@@ -53,8 +54,8 @@ help:
 $(BIN): ds4_cli.o ds4_help.o ds4_prompt_prefix.o linenoise.o $(CORE_OBJS)
 	$(CC) $(CFLAGS) -o $@ ds4_cli.o ds4_help.o ds4_prompt_prefix.o linenoise.o $(CORE_OBJS) $(METAL_LDLIBS)
 
-$(BIN)-server: ds4_server.o ds4_help.o ds4_kvstore.o rax.o $(CORE_OBJS)
-	$(CC) $(CFLAGS) -o $@ ds4_server.o ds4_help.o ds4_kvstore.o rax.o $(CORE_OBJS) $(METAL_LDLIBS)
+$(BIN)-server: ds4_server.o ds4_help.o ds4_kvstore.o rax.o sf_sysone.o $(CORE_OBJS)
+	$(CC) $(CFLAGS) -o $@ ds4_server.o ds4_help.o ds4_kvstore.o rax.o sf_sysone.o $(CORE_OBJS) $(METAL_LDLIBS)
 
 $(BIN)-bench: ds4_bench.o ds4_help.o $(CORE_OBJS)
 	$(CC) $(CFLAGS) -o $@ ds4_bench.o ds4_help.o $(CORE_OBJS) $(METAL_LDLIBS)
@@ -196,6 +197,17 @@ tests/test_deepseek41_graph.o: tests/test_deepseek41_graph.c ds4.c ds4_gpu.h ds4
 tests/test_deepseek41_graph: tests/test_deepseek41_graph.o $(filter-out ds4.o,$(CORE_OBJS))
 	$(CC) $(filter-out -ffast-math,$(CFLAGS)) -o $@ $^ $(METAL_LDLIBS)
 
+# sf: System One readout (change 800); public ds4.h API only.
+sf_sysone.o: sf_sysone.c sf_sysone.h ds4.h
+	$(CC) $(filter-out -ffast-math,$(CFLAGS)) -c -o $@ $<
+
+tests/test_sysone: tests/test_sysone.c sf_sysone.o $(CORE_OBJS)
+	$(CC) $(filter-out -ffast-math,$(CFLAGS)) -I. -o $@ $^ $(METAL_LDLIBS)
+
+.PHONY: test-sysone
+test-sysone: tests/test_sysone
+	./tests/test_sysone deepseek-v4.1-flash.gguf
+
 tests/test_deepseek41_prefill.o: tests/test_deepseek41_prefill.c ds4.c ds4_gpu.h ds4_engram.h
 	$(CC) $(filter-out -ffast-math,$(CFLAGS)) -Wno-unused-function -I. -c -o $@ $<
 
@@ -224,9 +236,9 @@ test-metal-dense-mpp: tests/test_metal_dense_mpp
 # default names, which make cannot tell apart from a Metal link: a plain `make`
 # afterwards relinks nothing and the next model run dies with "requires Metal".
 # Separate names make that state unreachable instead of documented (AGENTS.md).
-cpu: ds4_cli_cpu.o ds4_server_cpu.o ds4_bench_cpu.o ds4_eval_cpu.o ds4_eval_cases.o ds4_help.o ds4_prompt_prefix.o ds4_kvstore.o linenoise.o rax.o $(CPU_CORE_OBJS)
+cpu: sf_sysone.o ds4_cli_cpu.o ds4_server_cpu.o ds4_bench_cpu.o ds4_eval_cpu.o ds4_eval_cases.o ds4_help.o ds4_prompt_prefix.o ds4_kvstore.o linenoise.o rax.o $(CPU_CORE_OBJS)
 	$(CC) $(CFLAGS) -o $(BIN)-cpu ds4_cli_cpu.o ds4_help.o ds4_prompt_prefix.o linenoise.o $(CPU_CORE_OBJS) $(LDLIBS)
-	$(CC) $(CFLAGS) -o $(BIN)-cpu-server ds4_server_cpu.o ds4_help.o ds4_kvstore.o rax.o $(CPU_CORE_OBJS) $(LDLIBS)
+	$(CC) $(CFLAGS) -o $(BIN)-cpu-server ds4_server_cpu.o ds4_help.o ds4_kvstore.o rax.o sf_sysone.o $(CPU_CORE_OBJS) $(LDLIBS)
 	$(CC) $(CFLAGS) -o $(BIN)-cpu-bench ds4_bench_cpu.o ds4_help.o $(CPU_CORE_OBJS) $(LDLIBS)
 	$(CC) $(CFLAGS) -o $(BIN)-cpu-eval ds4_eval_cpu.o ds4_eval_cases.o ds4_help.o $(CPU_CORE_OBJS) $(LDLIBS)
 
@@ -257,7 +269,7 @@ ds4_help.o: ds4_help.c ds4_help.h
 ds4_prompt_prefix.o: ds4_prompt_prefix.c ds4_prompt_prefix.h ds4.h
 	$(CC) $(CFLAGS) -c -o $@ ds4_prompt_prefix.c
 
-ds4_server.o: ds4_server.c ds4.h ds4_ssd.h ds4_distributed.h ds4_help.h ds4_kvstore.h rax.h
+ds4_server.o: ds4_server.c ds4.h sf_sysone.h ds4_ssd.h ds4_distributed.h ds4_help.h ds4_kvstore.h rax.h
 	$(CC) $(CFLAGS) -c -o $@ ds4_server.c
 
 ds4_bench.o: ds4_bench.c ds4.h ds4_ssd.h ds4_distributed.h ds4_help.h
@@ -272,7 +284,7 @@ ds4_eval_cases.o: ds4_eval_cases.c ds4_eval_cases.h
 ds4_kvstore.o: ds4_kvstore.c ds4_kvstore.h ds4.h ds4_ssd.h
 	$(CC) $(CFLAGS) -c -o $@ ds4_kvstore.c
 
-ds4_test.o: tests/ds4_test.c ds4_server.c ds4.h ds4_image.h ds4_ssd.h ds4_distributed.h ds4_help.h ds4_kvstore.h rax.h
+ds4_test.o: tests/ds4_test.c ds4_server.c ds4.h sf_sysone.h ds4_image.h ds4_ssd.h ds4_distributed.h ds4_help.h ds4_kvstore.h rax.h
 	$(CC) $(CFLAGS) -Wno-unused-function -c -o $@ tests/ds4_test.c
 
 rax.o: rax.c rax.h rax_malloc.h
@@ -287,7 +299,7 @@ ds4_cpu.o: ds4.c ds4.h ds4_ssd.h ds4_distributed.h ds4_gpu.h ds4_gpu_tp.h
 ds4_cli_cpu.o: ds4_cli.c ds4.h ds4_ssd.h ds4_distributed.h ds4_help.h ds4_prompt_prefix.h linenoise.h
 	$(CC) $(CFLAGS) -DDS4_NO_GPU -c -o $@ ds4_cli.c
 
-ds4_server_cpu.o: ds4_server.c ds4.h ds4_ssd.h ds4_distributed.h ds4_help.h ds4_kvstore.h rax.h
+ds4_server_cpu.o: ds4_server.c ds4.h sf_sysone.h ds4_ssd.h ds4_distributed.h ds4_help.h ds4_kvstore.h rax.h
 	$(CC) $(CFLAGS) -DDS4_NO_GPU -c -o $@ ds4_server.c
 
 ds4_bench_cpu.o: ds4_bench.c ds4.h ds4_ssd.h ds4_distributed.h ds4_help.h
@@ -388,8 +400,8 @@ test-session-state: tests/test_session_state tests/test_session_state_gpu tests/
 	./tests/test_tp_rdma
 	./tests/test_tp_tcp
 
-ds4_test: ds4_test.o ds4_help.o ds4_kvstore.o rax.o $(CORE_OBJS)
-	$(CC) $(CFLAGS) -o $@ ds4_test.o ds4_help.o ds4_kvstore.o rax.o $(CORE_OBJS) $(METAL_LDLIBS)
+ds4_test: ds4_test.o ds4_help.o ds4_kvstore.o rax.o sf_sysone.o $(CORE_OBJS)
+	$(CC) $(CFLAGS) -o $@ ds4_test.o ds4_help.o ds4_kvstore.o rax.o sf_sysone.o $(CORE_OBJS) $(METAL_LDLIBS)
 
 tests/test_prompt_prefix.o: tests/test_prompt_prefix.c ds4_prompt_prefix.h
 	$(CC) $(CFLAGS) -I. -c -o $@ $<
@@ -424,7 +436,7 @@ env-check:
 test: env-check ds4_test $(BIN)-eval q4k-dot-test mxfp4-dot-test test-session-state test-engram \
 	tests/test_deepseek4_vision_image tests/test_image_decode \
 	tests/test_prompt_prefix tests/test_server_text_encoding $(SAMPLING_TEST) $(BIN) $(BIN)-server $(BIN)-bench \
-	tests/test_metal_slab_residency tests/test_deepseek41_prefill tests/test_deepseek41_graph
+	tests/test_metal_slab_residency tests/test_deepseek41_prefill tests/test_deepseek41_graph tests/test_sysone
 	./$(BIN)-eval --validate-cases
 	./$(BIN)-eval --self-test-extractors
 	./ds4_test --server
@@ -438,7 +450,9 @@ test: env-check ds4_test $(BIN)-eval q4k-dot-test mxfp4-dot-test test-session-st
 	./tests/test_deepseek41_graph --prefill-expert-discard
 	./tests/test_deepseek41_graph --prefill-expert-stream
 	./tests/test_deepseek41_graph --candidate-mask
+	./tests/test_sysone
 	sh tests/test_sfctl.sh
+	python3 tests/test_sysone_bench.py
 
 .PHONY: test-sfctl
 test-sfctl:
@@ -474,7 +488,7 @@ clean:
 	      tests/test_metal_ssd_experts tests/test_metal_command_memory tests/test_metal_slab_residency \
 	      tests/test_metal_tp_cancel tests/test_metal_tp_bulk \
 	      tests/test_deepseek41_metal tests/test_deepseek41_gguf tests/test_deepseek41_graph \
-	      tests/test_deepseek41_cli tests/test_deepseek41_prefill \
+	      tests/test_deepseek41_cli tests/test_deepseek41_prefill tests/test_sysone sf_sysone.o \
 	      tests/test_deepseek4_vision_image tests/test_image_decode tests/test_prompt_prefix \
 	      tests/test_server_text_encoding tests/test_sampling tests/test_quality_api \
 	      tests/test_ssd_cache tests/test_engram \

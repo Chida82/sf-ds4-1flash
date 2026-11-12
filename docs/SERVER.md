@@ -28,6 +28,7 @@ relative runtime files such as Metal kernels can be found.
 | `POST /v1/responses` | Responses-style requests and continuations |
 | `POST /v1/completions` | Text completions |
 | `POST /v1/messages` | Anthropic-style messages |
+| `POST /v1/systemone` | Typed decisions read from logits (TypeSafe's System One shape) |
 
 The model id is `deepseek-v4.1-flash`. `deepseek-chat` and `deepseek-reasoner`
 are accepted as thinking switches (off and on) for the same loaded model. The GGUF passed at startup selects the model.
@@ -83,6 +84,79 @@ Precedence: an explicit disable (`think:false`, `thinking:false`, a disabled
 thinking object) always wins; then an effort that means no thinking; then the
 model alias (`deepseek-chat` off, `deepseek-reasoner` on), only when no
 explicit thinking control was sent; then the effort, `high` by default.
+
+## System one
+
+`POST /v1/systemone` answers typed questions about a state with probabilities
+and generates no token. It speaks TypeSafe's request and response shape
+(`docs/system-one.md`, section 2), so the TypeSafe SDKs and Jev clients work
+with only the base URL changed.
+
+```sh
+curl http://127.0.0.1:8002/v1/systemone \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"jev-latest","state":"My package arrived broken and I want my money back.",
+       "questions":{"intent":{"type":"choice","criteria":{"refund_request":null,"shipping_question":null,"praise":null}},
+                    "satisfied":{"type":"noul","instructions":"The customer is satisfied."}}}'
+```
+
+- Types: `noul` (probability of yes), `choice` (1-26 options), `score` (1-10
+  levels). `box`, `assets` and more than 26 options answer 422.
+- Any `model` name is accepted and answered by the loaded model; the response
+  carries the local id. `GET /v1/models` also lists Jev's `models` array.
+- Errors: 422 with a `detail` list of `{loc, msg, type}`; 400 with
+  `max_tokens_exceeded` when the state and a question exceed `--ctx`.
+- Each question is read from the same prefilled state, restored from a
+  snapshot, so no question sees another (`sf_sysone.c`, change `800`).
+- `"sf": {}` in the request adds an `sf` object to the response: template
+  version, prefix tokens, prefill and per-question milliseconds, legal mass
+  (the probability the model gives the option symbols together; under 0.5 is
+  logged as a warning). `"sf": {"debug": true}` adds the raw option logits.
+  Without `sf` the response has exactly `model`, `answers`, `usage`.
+- Calibration: `--sysone-calibration FILE` loads one temperature per question
+  type (it divides the option logits before the softmax), fitted offline by
+  `sysone-bench/fit.py`. The file is bound to the model file's size and mtime,
+  the template version and the layout; any mismatch stops the server at
+  startup with a message naming the field. `"sf":{"temperature":T}` overrides
+  the file for one request, and the response's `sf` object echoes the
+  temperature each question used. An answer whose top-two raw option logits
+  are closer than `SF_SYSONE_DELTA95` (`sf_sysone.h`, measured in
+  `sysone-bench/record.md`) carries `"unstable":true` in `sf`: another prefill
+  schedule could change it.
+- Cost: a decision runs on a slot like any request, unsteered and without
+  thinking, and holds the model while it runs. The slot's chat state is saved
+  before the decision and restored after it (change `830`), so the next chat
+  turn of the same conversation prefills only its new tokens. A steered chat
+  session, or one larger than `--sysone-state-cache-mb`, cannot be saved: the
+  decision then drops it and the next chat turn prefills again or resumes
+  from the disk KV cache.
+- State cache (`830`): `--sysone-state-cache N` (default 4 entries, 0 turns
+  it off) and `--sysone-state-cache-mb M` (default 2048) keep snapshots of
+  recent states, keyed by their full prefix tokens. With `sf` in the request
+  the response says which path ran in `sf.state_cache`:
+  - `hit`: the same state as a cached one; no state prefill, and the answers
+    are bitwise those of the request that created the entry;
+  - `extend`: the state starts with a cached one; only the new tokens are
+    prefilled. A state must grow by **appending** to hit this path (a JSON
+    state re-serialized with a key in the middle is a miss). The answers can
+    differ in bits from a from-scratch prefill of the same state, because the
+    prefill schedule decides the bits (`docs/MODEL_KNOWLEDGE.md`,
+    Determinism);
+  - `miss`: prefilled from scratch, then stored. The least recently used
+    entry is evicted past N entries or the byte budget.
+- Conversation as the state (`835`): `"sf":{"state":"messages"}` with `state`
+  an array of `{"role","content"}` messages (`system`, `user`, `assistant`,
+  string content; tool roles, tool calls and content arrays answer 422). The
+  conversation is rendered by the chat endpoint's own template and each
+  question is asked as one more user turn with thinking off. When the slot
+  just generated that conversation with **thinking off**, its live session is
+  a token prefix of the rendering and only the few new tokens are prefilled
+  (measured: 76 of 77 reused, state prefill 0.15 s). After a turn with
+  **thinking on**, the live session holds the reasoning the client does not
+  send back, so nothing is reused and the conversation is prefilled again:
+  correct, only slow. The state cache is not used in this layout, and a
+  calibration file is not applied to it (temperature 1). With `sf` the
+  response reports `"layout":"live"` and `"reused_tokens"`.
 
 ## Multiple sessions
 

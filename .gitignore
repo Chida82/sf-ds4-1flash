@@ -41,6 +41,7 @@
 /tests/test_deepseek41_metal
 /tests/test_deepseek41_gguf
 /tests/test_deepseek41_graph
+/tests/test_sysone
 /tests/test_deepseek41_prefill
 /tests/test_deepseek41_cli
 /tests/test_engram

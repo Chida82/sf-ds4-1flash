@@ -5,6 +5,7 @@
 #include "ds4_kvstore.h"
 #include "ds4_tp.h"
 #include "rax.h"
+#include "sf_sysone.h"
 
 /* OpenAI/Anthropic compatible local server.
  *
@@ -9406,6 +9407,24 @@ static void server_image_cache_put(server_image_cache *cache,
 static bool id_list_contains(const stop_list *ids, const char *id);
 static void id_list_push_unique(stop_list *ids, const char *id);
 
+/* sf: 830 state snapshots across /v1/systemone requests, keyed by the full
+ * state-prefix tokens (never a hash: a collision would answer about the wrong
+ * state). Touched only inside sysone_job, under the model lock. */
+typedef struct {
+    char *state;                  /* the state text, the key; NULL = empty */
+    ds4_tokens tokens;            /* its state prefix tokens */
+    ds4_session_snapshot snap;    /* session state at tokens.len */
+    uint64_t last_used;
+} sysone_state_entry;
+
+typedef struct {
+    sysone_state_entry *e;
+    int cap;                      /* --sysone-state-cache; 0 = off */
+    uint64_t bytes_max;           /* --sysone-state-cache-mb */
+    uint64_t clock;
+    bool logged_oversize;
+} sysone_state_cache;
+
 struct server {
     ds4_engine *engine;
     ds4_tp *tp_leader;
@@ -9423,6 +9442,10 @@ struct server {
     bool disable_exact_dsml_tool_replay;
     bool steering_on_request;  /* sf: 640 a profile is loaded, off until a request asks */
     bool boost_on_request;     /* sf: 670 --boost-on-max-effort */
+    sf_sysone *sysone;         /* sf: 810 option-symbol tables */
+    sysone_state_cache sysone_cache; /* sf: 830 */
+    double sysone_temperature[3]; /* sf: 820 per sf_sysone_type, from --sysone-calibration; 1 without it */
+    char model_release_date[11]; /* sf: 810 YYYY-MM-DD of the GGUF mtime, for Jev's models list */
     bool enable_cors;
     pthread_mutex_t tool_mu;
     pthread_mutex_t kv_mu;
@@ -9483,9 +9506,12 @@ static bool server_encode_image(server *s, const server_image_input *input,
 /* Jobs are stack-owned by the client thread.  A resident-slot worker signals
  * completion after it has written the response, so request data and the socket
  * remain valid without heap-allocating per-request job objects. */
+typedef struct sysone_request sysone_request; /* sf: 810 */
+
 struct job {
     int fd;
     request req;
+    sysone_request *sysone;  /* sf: 810 a /v1/systemone decision; NULL otherwise */
     bool done;
     bool cancelled;
     pthread_mutex_t mu;
@@ -13943,6 +13969,912 @@ static bool boost_jobs_step(int *jobs, bool start) {
 /* Keep cancellation installed for the entire request, including every early
  * return in the large protocol/generation path. The callback is cleared before
  * the client thread can destroy its stack-owned job. */
+/* sf: 810 System One, POST /v1/systemone (docs/system-one.md section 2).
+ * Parsing and writing live here; the readout is sf_sysone.c. */
+#define SYSONE_MAX_QUESTIONS 64
+
+struct sysone_request {
+    char *model;                 /* as sent; echoed only in logs */
+    char *state;                 /* text; object/array states are minified JSON */
+    int n;                       /* questions */
+    char **names;                /* question keys, in request order */
+    sf_sysone_question *q;       /* owns its strings */
+    bool has_sf;                 /* request carried an "sf" object */
+    bool sf_debug;               /* sf.debug */
+    double sf_temperature;       /* sf: 820 sf.temperature, overrides the calibration file; 0 = unset */
+    const char *state_cache;     /* sf: 830 "hit", "extend" or "miss"; NULL when the cache is off */
+    bool live;                   /* sf: 835 sf.state == "messages": state is a conversation */
+    int n_msgs;
+    char **roles, **contents;    /* sf: 835 the conversation, in order */
+    int reused_tokens;           /* sf: 835 live prefix found before the sync */
+};
+
+typedef struct {
+    int status;        /* 400 or 422 */
+    bool code_body;    /* 400 with {"detail":{"code":...}} */
+    char loc[4][128];
+    int nloc;
+    char msg[200];
+} sysone_error;
+
+static void sysone_question_free(sf_sysone_question *q) {
+    free((char *)q->instructions);
+    for (int i = 0; i < q->n_options; i++) {
+        if (q->option_names) free((char *)q->option_names[i]);
+        if (q->option_texts) free((char *)q->option_texts[i]);
+    }
+    free((void *)q->option_names);
+    free((void *)q->option_texts);
+}
+
+static void sysone_request_free(sysone_request *sr) {
+    if (!sr) return;
+    free(sr->model);
+    free(sr->state);
+    for (int i = 0; i < sr->n; i++) {
+        free(sr->names[i]);
+        sysone_question_free(&sr->q[i]);
+    }
+    free(sr->names);
+    free(sr->q);
+    for (int i = 0; i < sr->n_msgs; i++) { free(sr->roles[i]); free(sr->contents[i]); }
+    free(sr->roles);
+    free(sr->contents);
+    memset(sr, 0, sizeof(*sr));
+}
+
+static bool sysone_fail(sysone_error *e, int status, const char *msg,
+                        const char *l1, const char *l2, const char *l3) {
+    memset(e, 0, sizeof(*e));
+    e->status = status;
+    snprintf(e->msg, sizeof(e->msg), "%s", msg);
+    const char *l[4] = {"body", l1, l2, l3};
+    for (int i = 0; i < 4 && l[i]; i++) snprintf(e->loc[e->nloc++], sizeof(e->loc[0]), "%s", l[i]);
+    return false;
+}
+
+/* string -> text; null -> NULL; anything else -> its minified JSON. */
+static bool sysone_text_value(const char **p, char **out) {
+    *out = NULL;
+    json_ws(p);
+    if (**p == '"') return json_string(p, out);
+    if (json_lit(p, "null")) return true;
+    char *raw = NULL;
+    if (!json_raw_value(p, &raw)) return false;
+    *out = json_minify_raw_value(raw);
+    free(raw);
+    return true;
+}
+
+/* Walk one JSON object; `fn` gets each key with *p at its value and must
+ * consume the value. False on malformed JSON or when fn fails; a fn that
+ * rejects a value sets the sysone_error, so an unset one means malformed. */
+typedef bool (*sysone_member_fn)(const char *key, const char **p, void *ud);
+
+static bool sysone_object(const char **p, sysone_member_fn fn, void *ud) {
+    json_ws(p);
+    if (**p != '{') return false;
+    (*p)++;
+    json_ws(p);
+    if (**p == '}') { (*p)++; return true; }
+    for (;;) {
+        char *key = NULL;
+        if (!json_string(p, &key)) return false;
+        json_ws(p);
+        if (**p != ':') { free(key); return false; }
+        (*p)++;
+        json_ws(p);
+        bool ok = fn(key, p, ud);
+        free(key);
+        if (!ok) return false;
+        json_ws(p);
+        if (**p == ',') { (*p)++; continue; }
+        if (**p == '}') { (*p)++; return true; }
+        return false;
+    }
+}
+
+typedef struct {
+    sysone_error *e;
+    const char *qname;
+    char *type, *criteria, *instructions;
+    bool has_criteria, has_assets, has_instructions, bad;
+} sysone_qparse;
+
+static bool sysone_question_member(const char *key, const char **p, void *ud) {
+    sysone_qparse *qp = ud;
+    if (!strcmp(key, "type")) {
+        free(qp->type);
+        if (!json_string(p, &qp->type)) {
+            qp->bad = true;
+            return sysone_fail(qp->e, 422, "type must be a string", "questions", qp->qname, "type");
+        }
+        return true;
+    }
+    if (!strcmp(key, "criteria")) {
+        free(qp->criteria);
+        qp->criteria = NULL;
+        qp->has_criteria = true;
+        return json_raw_value(p, &qp->criteria);
+    }
+    if (!strcmp(key, "instructions")) {
+        free(qp->instructions);
+        qp->has_instructions = true;
+        return sysone_text_value(p, &qp->instructions);
+    }
+    if (!strcmp(key, "assets")) qp->has_assets = true;
+    return json_skip_value(p);
+}
+
+typedef struct {
+    sysone_error *e;
+    const char *qname;
+    char **names;
+    char **texts;
+    int n, cap;
+    bool want_names;
+} sysone_crit;
+
+static bool sysone_crit_push(sysone_crit *c, const char *name, char *text) {
+    if (c->n == c->cap) {
+        c->cap = c->cap ? c->cap * 2 : 8;
+        c->names = xrealloc(c->names, (size_t)c->cap * sizeof(*c->names));
+        c->texts = xrealloc(c->texts, (size_t)c->cap * sizeof(*c->texts));
+    }
+    c->names[c->n] = name ? xstrdup(name) : NULL;
+    c->texts[c->n] = text;
+    c->n++;
+    return true;
+}
+
+static bool sysone_choice_member(const char *key, const char **p, void *ud) {
+    sysone_crit *c = ud;
+    if (!key[0]) {
+        json_skip_value(p);
+        return sysone_fail(c->e, 422, "option names must be non-empty", "questions", c->qname, "criteria");
+    }
+    for (int i = 0; i < c->n; i++) if (!strcmp(c->names[i], key)) {
+        json_skip_value(p);
+        return sysone_fail(c->e, 422, "duplicate option name", "questions", c->qname, "criteria");
+    }
+    char *text = NULL;
+    if (!sysone_text_value(p, &text)) return false;
+    return sysone_crit_push(c, key, text);
+}
+
+static bool sysone_noul_member(const char *key, const char **p, void *ud) {
+    sysone_crit *c = ud;
+    int slot = !strcmp(key, "true") ? 0 : !strcmp(key, "false") ? 1 : -1;
+    if (slot < 0) return json_skip_value(p);
+    free(c->texts[slot]);
+    return sysone_text_value(p, &c->texts[slot]);
+}
+
+static void sysone_crit_free(sysone_crit *c) {
+    for (int i = 0; i < c->n; i++) {
+        if (c->names) free(c->names[i]);
+        if (c->texts) free(c->texts[i]);
+    }
+    free(c->names);
+    free(c->texts);
+}
+
+/* Fill q from the collected fields. */
+static bool sysone_build_question(sysone_qparse *qp, sf_sysone_question *q) {
+    sysone_error *e = qp->e;
+    const char *n = qp->qname;
+    memset(q, 0, sizeof(*q));
+    if (qp->has_assets) return sysone_fail(e, 422, "assets are not supported by this model server", "questions", n, "assets");
+    if (!qp->type) return sysone_fail(e, 422, "field required", "questions", n, "type");
+    if (!strcmp(qp->type, "box")) return sysone_fail(e, 422, "box is not supported by this model server", "questions", n, "type");
+    q->instructions = qp->instructions ? qp->instructions : xstrdup("");
+    qp->instructions = NULL;
+    sysone_crit c = {.e = e, .qname = n};
+    const char *p = qp->criteria;
+    if (!strcmp(qp->type, "noul")) {
+        q->type = SF_SYSONE_NOUL;
+        q->n_options = 2;
+        c.texts = xmalloc(2 * sizeof(*c.texts));
+        c.texts[0] = c.texts[1] = NULL;
+        if (qp->criteria && strcmp(qp->criteria, "null")) {
+            const char *t = p;
+            json_ws(&t);
+            if (*t != '{' || !sysone_object(&p, sysone_noul_member, &c)) {
+                free(c.texts[0]); free(c.texts[1]); free(c.texts);
+                return e->status ? false : sysone_fail(e, 422, "criteria must be an object with optional true and false", "questions", n, "criteria");
+            }
+        }
+        q->option_texts = (const char *const *)c.texts;
+        return true;
+    }
+    if (!strcmp(qp->type, "choice")) {
+        q->type = SF_SYSONE_CHOICE;
+        const char *t = p;
+        if (t) json_ws(&t);
+        if (!qp->has_criteria || !t || *t != '{')
+            return sysone_fail(e, 422, "criteria must be an object of 1-26 options", "questions", n, "criteria");
+        if (!sysone_object(&p, sysone_choice_member, &c)) {
+            sysone_crit_free(&c);
+            return e->status ? false : sysone_fail(e, 422, "invalid criteria", "questions", n, "criteria");
+        }
+        if (c.n < 1 || c.n > 255) {
+            sysone_crit_free(&c);
+            return sysone_fail(e, 422, "criteria must have 1-255 options", "questions", n, "criteria");
+        }
+        if (c.n > SF_SYSONE_MAX_OPTIONS) {
+            sysone_crit_free(&c);
+            return sysone_fail(e, 422, "more than 26 options is not supported yet", "questions", n, "criteria");
+        }
+        q->n_options = c.n;
+        q->option_names = (const char *const *)c.names;
+        q->option_texts = (const char *const *)c.texts;
+        return true;
+    }
+    if (!strcmp(qp->type, "score")) {
+        q->type = SF_SYSONE_SCORE;
+        const char *t = p;
+        if (t) json_ws(&t);
+        if (!qp->has_criteria || !t || *t != '[')
+            return sysone_fail(e, 422, "criteria must be an array of 1-10 levels", "questions", n, "criteria");
+        p = t + 1;
+        json_ws(&p);
+        bool ok = true;
+        if (*p == ']') p++;
+        else for (;;) {
+            char *text = NULL;
+            if (!sysone_text_value(&p, &text)) { ok = false; break; }
+            sysone_crit_push(&c, NULL, text);
+            json_ws(&p);
+            if (*p == ',') { p++; continue; }
+            if (*p == ']') { p++; break; }
+            ok = false;
+            break;
+        }
+        if (!ok || c.n < 1 || c.n > 10) {
+            sysone_crit_free(&c);
+            return sysone_fail(e, 422, "criteria must be an array of 1-10 levels", "questions", n, "criteria");
+        }
+        free(c.names);
+        q->n_options = c.n;
+        q->option_texts = (const char *const *)c.texts;
+        return true;
+    }
+    free((char *)q->instructions);
+    q->instructions = NULL;
+    return sysone_fail(e, 422, "type must be one of noul, choice, score", "questions", n, "type");
+}
+
+typedef struct {
+    sysone_request *sr;
+    sysone_error *e;
+    int cap;
+} sysone_qs;
+
+static bool sysone_questions_member(const char *key, const char **p, void *ud) {
+    sysone_qs *qs = ud;
+    sysone_request *sr = qs->sr;
+    if (!key[0]) { json_skip_value(p); return sysone_fail(qs->e, 422, "question names must be non-empty", "questions", NULL, NULL); }
+    for (int i = 0; i < sr->n; i++) if (!strcmp(sr->names[i], key)) {
+        json_skip_value(p);
+        return sysone_fail(qs->e, 422, "duplicate question name", "questions", key, NULL);
+    }
+    if (sr->n == SYSONE_MAX_QUESTIONS) {
+        json_skip_value(p);
+        return sysone_fail(qs->e, 422, "at most 64 questions", "questions", NULL, NULL);
+    }
+    json_ws(p);
+    if (**p != '{') { json_skip_value(p); return sysone_fail(qs->e, 422, "question must be an object", "questions", key, NULL); }
+    sysone_qparse qp = {.e = qs->e, .qname = key};
+    bool ok = sysone_object(p, sysone_question_member, &qp);
+    sf_sysone_question q;
+    if (ok) {
+        ok = sysone_build_question(&qp, &q);
+        if (!ok) free((char *)q.instructions);
+    }
+    free(qp.type);
+    free(qp.criteria);
+    free(qp.instructions);
+    if (!ok) return false;
+    if (sr->n == qs->cap) {
+        qs->cap = qs->cap ? qs->cap * 2 : 4;
+        sr->names = xrealloc(sr->names, (size_t)qs->cap * sizeof(*sr->names));
+        sr->q = xrealloc(sr->q, (size_t)qs->cap * sizeof(*sr->q));
+    }
+    sr->names[sr->n] = xstrdup(key);
+    sr->q[sr->n++] = q;
+    return true;
+}
+
+typedef struct {
+    sysone_request *sr;
+    sysone_error *e;
+    bool has_model, has_state, has_questions, has_assets;
+    sysone_qs qs;
+} sysone_top;
+
+static bool sysone_sf_member(const char *key, const char **p, void *ud) {
+    if (!strcmp(key, "state")) {  /* sf: 835 */
+        sysone_request *r = ud;
+        char *v = NULL;
+        if (!json_string(p, &v)) return false;
+        r->live = !strcmp(v, "messages");
+        free(v);
+        return true;
+    }
+    sysone_request *sr = ud;
+    if (!strcmp(key, "debug")) {
+        json_ws(p);
+        if (json_lit(p, "true")) { sr->sf_debug = true; return true; }
+        if (json_lit(p, "false")) { sr->sf_debug = false; return true; }
+    }
+    if (!strcmp(key, "temperature")) {  /* sf: 820 A/B override of the calibration file */
+        double t = 0;
+        json_ws(p);
+        if (json_number(p, &t) && isfinite(t) && t > 0) { sr->sf_temperature = t; return true; }
+    }
+    return json_skip_value(p);
+}
+
+static bool sysone_top_member(const char *key, const char **p, void *ud) {
+    sysone_top *t = ud;
+    sysone_request *sr = t->sr;
+    json_ws(p);
+    if (!strcmp(key, "model")) {
+        free(sr->model);
+        if (!json_string(p, &sr->model)) {
+            json_skip_value(p);
+            return sysone_fail(t->e, 422, "model must be a string", "model", NULL, NULL);
+        }
+        t->has_model = true;
+        return true;
+    }
+    if (!strcmp(key, "state")) {
+        free(sr->state);
+        sr->state = NULL;
+        if (**p == '"') { t->has_state = json_string(p, &sr->state); return t->has_state; }
+        if (**p == '{' || **p == '[') {
+            char *raw = NULL;
+            if (!json_raw_value(p, &raw)) return false;
+            sr->state = json_minify_raw_value(raw);
+            free(raw);
+            t->has_state = true;
+            return true;
+        }
+        json_skip_value(p);
+        return sysone_fail(t->e, 422, "state must be a string, an object or an array", "state", NULL, NULL);
+    }
+    if (!strcmp(key, "questions")) {
+        if (t->has_questions) { json_skip_value(p); return sysone_fail(t->e, 422, "duplicate questions", "questions", NULL, NULL); }
+        t->has_questions = true;
+        if (**p != '{') { json_skip_value(p); return sysone_fail(t->e, 422, "questions must be an object", "questions", NULL, NULL); }
+        return sysone_object(p, sysone_questions_member, &t->qs);
+    }
+    if (!strcmp(key, "assets")) {
+        t->has_assets = true;
+        return json_skip_value(p);
+    }
+    if (!strcmp(key, "sf")) {
+        if (**p != '{') return json_skip_value(p);
+        sr->has_sf = true;
+        return sysone_object(p, sysone_sf_member, sr);
+    }
+    return json_skip_value(p);
+}
+
+/* sf: 835 one message of a live state: {"role": system|user|assistant, "content": string}. */
+typedef struct { sysone_request *sr; sysone_error *e; int idx; char *role, *content; bool bad; } sysone_msg;
+
+static bool sysone_msg_member(const char *key, const char **p, void *ud) {
+    sysone_msg *m = ud;
+    char idx[16];
+    snprintf(idx, sizeof(idx), "%d", m->idx);
+    if (!strcmp(key, "role") || !strcmp(key, "content")) {
+        char **dst = key[0] == 'r' ? &m->role : &m->content;
+        free(*dst);
+        json_ws(p);
+        if (**p != '"' || !json_string(p, dst)) {
+            json_skip_value(p);
+            return sysone_fail(m->e, 422, "must be a string", "state", idx, key);
+        }
+        return true;
+    }
+    if (!strcmp(key, "tool_calls") || !strcmp(key, "tool_call_id") || !strcmp(key, "images"))
+        { json_skip_value(p); return sysone_fail(m->e, 422, "tools and images are not supported in a live state", "state", idx, key); }
+    return json_skip_value(p);
+}
+
+static bool sysone_parse_messages(sysone_request *sr, sysone_error *e) {
+    const char *p = sr->state;
+    if (!p || *p != '[') return sysone_fail(e, 422, "a messages state must be an array", "state", NULL, NULL);
+    p++;
+    json_ws(&p);
+    int cap = 0;
+    while (*p && *p != ']') {
+        char idx[16];
+        snprintf(idx, sizeof(idx), "%d", sr->n_msgs);
+        if (*p != '{') return sysone_fail(e, 422, "a message must be an object", "state", idx, NULL);
+        sysone_msg m = {.sr = sr, .e = e, .idx = sr->n_msgs};
+        bool ok = sysone_object(&p, sysone_msg_member, &m);
+        if (ok && (!m.role || (strcmp(m.role, "system") && strcmp(m.role, "user") && strcmp(m.role, "assistant"))))
+            ok = sysone_fail(e, 422, "role must be system, user or assistant", "state", idx, "role");
+        if (ok && !m.content) ok = sysone_fail(e, 422, "field required", "state", idx, "content");
+        if (!ok) { free(m.role); free(m.content); return e->status ? false : sysone_fail(e, 422, "invalid message", "state", idx, NULL); }
+        if (sr->n_msgs == cap) {
+            cap = cap ? cap * 2 : 8;
+            sr->roles = xrealloc(sr->roles, (size_t)cap * sizeof(*sr->roles));
+            sr->contents = xrealloc(sr->contents, (size_t)cap * sizeof(*sr->contents));
+        }
+        sr->roles[sr->n_msgs] = m.role;
+        sr->contents[sr->n_msgs++] = m.content;
+        json_ws(&p);
+        if (*p == ',') { p++; json_ws(&p); }
+    }
+    if (sr->n_msgs == 0) return sysone_fail(e, 422, "at least one message", "state", NULL, NULL);
+    return true;
+}
+
+/* Returns true on success; otherwise *e says what to answer. */
+static bool parse_sysone_request(const char *body, sysone_request *sr, sysone_error *e) {
+    memset(sr, 0, sizeof(*sr));
+    memset(e, 0, sizeof(*e));
+    sysone_top t = {.sr = sr, .e = e, .qs = {.sr = sr, .e = e}};
+    const char *p = body ? body : "";
+    bool ok = sysone_object(&p, sysone_top_member, &t);
+    if (ok) { json_ws(&p); if (*p) ok = false; }
+    if (!ok && !e->status) {
+        sysone_request_free(sr);
+        e->status = 400;
+        snprintf(e->msg, sizeof(e->msg), "request body must be one valid JSON object");
+        return false;
+    }
+    if (ok && t.has_assets) ok = sysone_fail(e, 422, "assets are not supported by this model server", "assets", NULL, NULL);
+    if (ok && !t.has_model) ok = sysone_fail(e, 422, "field required", "model", NULL, NULL);
+    if (ok && !t.has_state) ok = sysone_fail(e, 422, "field required", "state", NULL, NULL);
+    if (ok && !t.has_questions) ok = sysone_fail(e, 422, "field required", "questions", NULL, NULL);
+    if (ok && sr->n == 0) ok = sysone_fail(e, 422, "at least one question", "questions", NULL, NULL);
+    if (ok && sr->live) ok = sysone_parse_messages(sr, e);
+    if (!ok) sysone_request_free(sr);
+    return ok;
+}
+
+static void sysone_error_json(buf *b, const sysone_error *e) {
+    if (e->status == 422) {
+        buf_puts(b, "{\"detail\":[{\"loc\":[");
+        for (int i = 0; i < e->nloc; i++) {
+            if (i) buf_putc(b, ',');
+            json_escape(b, e->loc[i]);
+        }
+        buf_puts(b, "],\"msg\":");
+        json_escape(b, e->msg);
+        buf_puts(b, ",\"type\":\"value_error\"}]}\n");
+    } else if (e->code_body) {
+        buf_puts(b, "{\"detail\":{\"code\":\"max_tokens_exceeded\",\"message\":");
+        json_escape(b, e->msg);
+        buf_puts(b, "}}\n");
+    } else {
+        buf_puts(b, "{\"detail\":");
+        json_escape(b, e->msg);
+        buf_puts(b, "}\n");
+    }
+}
+
+static bool sysone_send_error(int fd, bool enable_cors, const sysone_error *e) {
+    buf b = {0};
+    sysone_error_json(&b, e);
+    bool ok = http_response(fd, enable_cors, e->status, "application/json", b.ptr);
+    buf_free(&b);
+    return ok;
+}
+
+static void sysone_num(buf *b, double v) {
+    if (!isfinite(v)) v = 0;
+    buf_printf(b, "%.6g", v);
+}
+
+static void sysone_response_json(buf *b, const char *model, const sysone_request *sr,
+                                 const sf_sysone_answer *a, const double *temperature,
+                                 int prefix_tokens, double prefill_ms) {
+    int input_tokens = prefix_tokens;
+    buf_puts(b, "{\"model\":");
+    json_escape(b, model);
+    buf_puts(b, ",\"answers\":{");
+    for (int k = 0; k < sr->n; k++) {
+        const sf_sysone_question *q = &sr->q[k];
+        input_tokens += a[k].suffix_tokens;
+        if (k) buf_putc(b, ',');
+        json_escape(b, sr->names[k]);
+        if (q->type == SF_SYSONE_NOUL) {
+            buf_puts(b, ":{\"type\":\"noul\",\"noul\":");
+            sysone_num(b, a[k].value);
+            buf_putc(b, '}');
+            continue;
+        }
+        if (q->type == SF_SYSONE_CHOICE) {
+            buf_puts(b, ":{\"type\":\"choice\",\"choice\":");
+            json_escape(b, q->option_names[a[k].top]);
+        } else {
+            buf_puts(b, ":{\"type\":\"score\",\"score\":");
+            sysone_num(b, a[k].value);
+        }
+        buf_puts(b, ",\"confidence\":");
+        sysone_num(b, a[k].confidence);
+        if (q->type == SF_SYSONE_SCORE) {
+            buf_puts(b, ",\"legend\":{");
+            for (int i = 0; i < q->n_options; i++) {
+                buf_printf(b, "%s\"%d\":", i ? "," : "", i);
+                if (q->option_texts[i]) json_escape(b, q->option_texts[i]);
+                else buf_puts(b, "null");
+            }
+            buf_putc(b, '}');
+        }
+        buf_puts(b, ",\"probabilities\":{");
+        for (int i = 0; i < q->n_options; i++) {
+            if (i) buf_putc(b, ',');
+            if (q->type == SF_SYSONE_CHOICE) json_escape(b, q->option_names[i]);
+            else buf_printf(b, "\"%d\"", i);
+            buf_putc(b, ':');
+            sysone_num(b, a[k].p[i]);
+        }
+        buf_puts(b, "}}");
+    }
+    buf_printf(b, "},\"usage\":{\"input_tokens\":%d,\"output_tokens\":0}", input_tokens);
+    if (sr->has_sf) {
+        buf_printf(b, ",\"sf\":{\"template_version\":%d,\"prefix_tokens\":%d,\"prefill_ms\":",
+                   SF_SYSONE_TEMPLATE_VERSION, prefix_tokens);
+        buf_printf(b, "%.1f", prefill_ms);
+        if (sr->state_cache) buf_printf(b, ",\"state_cache\":\"%s\"", sr->state_cache);
+        if (sr->live) buf_printf(b, ",\"layout\":\"live\",\"reused_tokens\":%d", sr->reused_tokens);
+        buf_puts(b, ",\"questions\":{");
+        for (int k = 0; k < sr->n; k++) {
+            if (k) buf_putc(b, ',');
+            json_escape(b, sr->names[k]);
+            buf_printf(b, ":{\"suffix_tokens\":%d,\"ms\":%.1f,\"legal_mass\":", a[k].suffix_tokens, a[k].ms);
+            sysone_num(b, a[k].legal_mass);
+            if (temperature) {  /* sf: 820 */
+                buf_puts(b, ",\"temperature\":");
+                sysone_num(b, temperature[k]);
+            }
+            if (a[k].unstable) buf_puts(b, ",\"unstable\":true");
+            if (sr->sf_debug) {
+                buf_puts(b, ",\"logits\":{");
+                for (int i = 0; i < sr->q[k].n_options; i++) {
+                    if (i) buf_putc(b, ',');
+                    if (sr->q[k].type == SF_SYSONE_CHOICE) json_escape(b, sr->q[k].option_names[i]);
+                    else if (sr->q[k].type == SF_SYSONE_NOUL) buf_puts(b, i ? "\"false\"" : "\"true\"");
+                    else buf_printf(b, "\"%d\"", i);
+                    buf_putc(b, ':');
+                    buf_printf(b, "%.9g", (double)a[k].logit[i]);
+                }
+                buf_putc(b, '}');
+            }
+            buf_putc(b, '}');
+        }
+        buf_puts(b, "}}");
+    }
+    buf_puts(b, "}\n");
+}
+
+/* sf: 820 --sysone-calibration: one temperature per question type, bound to the
+ * model file and the template (sysone-bench/fit.py writes it). */
+typedef struct {
+    double t[3];
+    bool has[4];      /* model_bytes, model_mtime, template_version, layout */
+    double bytes, mtime, version;
+    char layout[32];
+    bool bad;
+} sysone_cal;
+
+static bool sysone_cal_temp(const char *key, const char **p, void *ud) {
+    sysone_cal *c = ud;
+    int k = !strcmp(key, "noul") ? SF_SYSONE_NOUL : !strcmp(key, "choice") ? SF_SYSONE_CHOICE
+          : !strcmp(key, "score") ? SF_SYSONE_SCORE : -1;
+    if (k < 0) return json_skip_value(p);
+    double v = 0;
+    if (!json_number(p, &v) || !isfinite(v) || v <= 0) { c->bad = true; return false; }
+    c->t[k] = v;
+    return true;
+}
+
+static bool sysone_cal_binding(const char *key, const char **p, void *ud) {
+    sysone_cal *c = ud;
+    double *dst = !strcmp(key, "model_bytes") ? &c->bytes : !strcmp(key, "model_mtime") ? &c->mtime
+                : !strcmp(key, "template_version") ? &c->version : NULL;
+    if (dst) {
+        c->has[dst == &c->bytes ? 0 : dst == &c->mtime ? 1 : 2] = true;
+        return json_number(p, dst);
+    }
+    if (!strcmp(key, "layout")) {
+        char *v = NULL;
+        if (!json_string(p, &v)) return false;
+        snprintf(c->layout, sizeof(c->layout), "%s", v);
+        free(v);
+        c->has[3] = true;
+        return true;
+    }
+    return json_skip_value(p);
+}
+
+static bool sysone_cal_top(const char *key, const char **p, void *ud) {
+    if (!strcmp(key, "temperature")) return sysone_object(p, sysone_cal_temp, ud);
+    if (!strcmp(key, "binding")) return sysone_object(p, sysone_cal_binding, ud);
+    return json_skip_value(p);
+}
+
+/* Fills t[] (1 for a type the file leaves out). False with a message naming
+ * the field when the file does not parse or its binding does not match. */
+static bool sysone_calibration_parse(const char *json, uint64_t model_bytes, int64_t model_mtime,
+                                     double t[3], char *err, size_t errlen) {
+    sysone_cal c = {.t = {1, 1, 1}};
+    const char *p = json;
+    if (!sysone_object(&p, sysone_cal_top, &c)) {
+        snprintf(err, errlen, c.bad ? "temperature values must be positive numbers" : "not a valid JSON object");
+        return false;
+    }
+    static const char *const field[4] = {"model_bytes", "model_mtime", "template_version", "layout"};
+    for (int i = 0; i < 4; i++) if (!c.has[i]) { snprintf(err, errlen, "binding.%s is missing", field[i]); return false; }
+    if (c.bytes != (double)model_bytes) {
+        snprintf(err, errlen, "binding.model_bytes %.0f does not match the model (%llu)", c.bytes, (unsigned long long)model_bytes);
+        return false;
+    }
+    if (c.mtime != (double)model_mtime) {
+        snprintf(err, errlen, "binding.model_mtime %.0f does not match the model (%lld)", c.mtime, (long long)model_mtime);
+        return false;
+    }
+    if (c.version != SF_SYSONE_TEMPLATE_VERSION) {
+        snprintf(err, errlen, "binding.template_version %.0f does not match this build (%d)", c.version, SF_SYSONE_TEMPLATE_VERSION);
+        return false;
+    }
+    if (strcmp(c.layout, "state_first")) {
+        snprintf(err, errlen, "binding.layout \"%s\" does not match this build (state_first)", c.layout);
+        return false;
+    }
+    memcpy(t, c.t, sizeof(c.t));
+    return true;
+}
+
+/* Runs on the slot's worker, as one job. The slot's live chat state is
+ * replaced; 830 keeps it. */
+/* sf: 830 the entry with the same state text, else the longest entry whose
+ * text is a byte prefix of `state`, else -1. Keyed on text, not tokens: BPE
+ * merges appended text into the old state's last tokens, so a grown state is
+ * almost never a token extension of the old one (0 of 20 in the bench). */
+static int sysone_cache_lookup(const sysone_state_cache *c, const char *state, bool *exact) {
+    int best = -1;
+    size_t n = strlen(state), best_len = 0;
+    *exact = false;
+    for (int i = 0; i < c->cap; i++) {
+        const char *t = c->e[i].state;
+        if (!t) continue;
+        size_t len = strlen(t);
+        if (len > n || memcmp(t, state, len) != 0) continue;
+        if (len == n) { *exact = true; return i; }
+        if (best < 0 || len > best_len) { best = i; best_len = len; }
+    }
+    return best;
+}
+
+static uint64_t sysone_cache_bytes(const sysone_state_cache *c) {
+    uint64_t sum = 0;
+    for (int i = 0; i < c->cap; i++) if (c->e[i].state) sum += c->e[i].snap.len;
+    return sum;
+}
+
+static void sysone_cache_drop(sysone_state_entry *e) {
+    free(e->state);
+    ds4_tokens_free(&e->tokens);
+    ds4_session_snapshot_free(&e->snap);
+    memset(e, 0, sizeof(*e));
+}
+
+/* Takes ownership of *snap (zeroed on return). Returns the entry index, or -1
+ * when the snapshot alone exceeds the byte budget. */
+static int sysone_cache_store(sysone_state_cache *c, const char *state, const ds4_tokens *p,
+                              ds4_session_snapshot *snap) {
+    if (c->cap <= 0 || snap->len > c->bytes_max) {
+        if (c->cap > 0 && !c->logged_oversize) {
+            server_log(DS4_LOG_WARNING, "ds4-server: systemone state of %d tokens (%.1f MiB) exceeds the state cache budget; not cached",
+                       p->len, snap->len / 1048576.0);
+            c->logged_oversize = true;
+        }
+        ds4_session_snapshot_free(snap);
+        return -1;
+    }
+    for (;;) {
+        int lru = -1, empty = -1;
+        for (int i = 0; i < c->cap; i++) {
+            if (!c->e[i].state) { if (empty < 0) empty = i; continue; }
+            if (lru < 0 || c->e[i].last_used < c->e[lru].last_used) lru = i;
+        }
+        if (empty >= 0 && sysone_cache_bytes(c) + snap->len <= c->bytes_max) {
+            sysone_state_entry *e = &c->e[empty];
+            e->state = xstrdup(state);
+            ds4_tokens_copy(&e->tokens, p);
+            e->snap = *snap;
+            memset(snap, 0, sizeof(*snap));
+            e->last_used = ++c->clock;
+            return empty;
+        }
+        sysone_cache_drop(&c->e[lru]);
+    }
+}
+
+static double sysone_since_ms(const struct timespec *t) {
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return (now.tv_sec - t->tv_sec) * 1e3 + (now.tv_nsec - t->tv_nsec) / 1e6;
+}
+
+/* Runs on the slot's worker, as one job. sf: 830 the slot's chat state is
+ * saved before and restored after when it can be. */
+/* sf: 835 the conversation rendered by the chat path's own renderer, so a live
+ * session left by a chat turn is a token prefix of it. Question k is the
+ * conversation plus one user turn; the shared prefix is what all renderings
+ * have in common with the conversation alone. */
+static void sysone_live_render(server *s, const sysone_request *sr, const char *question, ds4_tokens *out) {
+    chat_msgs msgs = {0};
+    for (int i = 0; i <= sr->n_msgs; i++) {
+        if (i == sr->n_msgs && !question) break;
+        chat_msg m;
+        memset(&m, 0, sizeof(m));
+        m.role = xstrdup(i < sr->n_msgs ? sr->roles[i] : "user");
+        m.content = xstrdup(i < sr->n_msgs ? sr->contents[i] : question);
+        chat_msgs_push(&msgs, m);
+    }
+    char *text = render_chat_prompt_text_for_syntax(server_model_syntax_for_engine(s->engine),
+                                                    &msgs, NULL, NULL, DS4_THINK_NONE, NULL);
+    tokenize_rendered(s->engine, text, 0, NULL, out);
+    free(text);
+    chat_msgs_free(&msgs);
+}
+
+static int sysone_live_answer(server *s, ds4_session *sess, sysone_request *sr, const double *temp,
+                              sf_sysone_answer *a, ds4_tokens *prefix, char *err, size_t errlen) {
+    ds4_tokens *full = xmalloc((size_t)sr->n * sizeof(*full));
+    memset(full, 0, (size_t)sr->n * sizeof(*full));
+    int rc = 1;
+    sysone_live_render(s, sr, NULL, prefix);
+    for (int k = 0; k < sr->n; k++) {
+        char *q = sf_sysone_turn_text(&sr->q[k]);
+        sysone_live_render(s, sr, q, &full[k]);
+        free(q);
+        int c = 0;
+        while (c < prefix->len && c < full[k].len && prefix->v[c] == full[k].v[c]) c++;
+        prefix->len = c;
+    }
+    for (int k = 0; k < sr->n; k++) {  /* the suffixes, in place */
+        memmove(full[k].v, full[k].v + prefix->len, (size_t)(full[k].len - prefix->len) * sizeof(int));
+        full[k].len -= prefix->len;
+        if (prefix->len + full[k].len >= ds4_session_ctx(sess)) { snprintf(err, errlen, "max_tokens_exceeded"); goto done; }
+    }
+    sr->reused_tokens = ds4_session_checkpoint_valid(sess) ? ds4_session_common_prefix(sess, prefix) : 0;
+    if (ds4_session_sync(sess, prefix, err, errlen) != 0) goto done;
+    rc = sf_sysone_answer_suffixes(s->sysone, sess, prefix, NULL, sr->q, sr->n, full, temp, a, err, errlen);
+done:
+    for (int k = 0; k < sr->n; k++) ds4_tokens_free(&full[k]);
+    free(full);
+    return rc;
+}
+
+static void sysone_job(server *s, server_slot *slot, job *j) {
+    sysone_request *sr = j->sysone;
+    sf_sysone_answer *a = xmalloc((size_t)sr->n * sizeof(*a));
+    char err[512] = "";
+    int rc = 1;
+    ds4_session *sess = slot->session;
+    sysone_state_cache *cache = &s->sysone_cache;
+    ds4_tokens prefix = {0};
+    ds4_session_snapshot chat = {0}, fresh = {0};
+    bool keep = false;
+    double *temp = xmalloc((size_t)sr->n * sizeof(*temp));  /* sf: 820 calibration */
+    for (int k = 0; k < sr->n; k++)
+        temp[k] = sr->sf_temperature > 0 ? sr->sf_temperature
+                : sr->live ? 1.0 : s->sysone_temperature[sr->q[k].type];  /* sf: 835 a state_first calibration is not applied to live */
+    struct timespec t0, t1;
+    clock_gettime(CLOCK_MONOTONIC, &t0);
+    if (!server_prefill_enter(s, slot)) {
+        snprintf(err, sizeof(err), "cancelled");
+        goto answered;
+    }
+    keep = ds4_session_checkpoint_valid(sess) && !ds4_session_steering(sess) &&
+           ds4_session_pos(sess) > 0 && ds4_session_payload_bytes(sess) <= cache->bytes_max &&
+           ds4_session_save_snapshot(sess, &chat, err, sizeof(err)) == 0;
+    if (!keep) request_live_state_clear(s, slot);
+    if (ds4_session_steering(sess) && ds4_session_set_steering(sess, false) != 0) {
+        snprintf(err, sizeof(err), "cannot turn the session's steering off");
+        goto leave;
+    }
+    ds4_session_set_think_level(sess, 0);
+    if (sr->live) {
+        rc = sysone_live_answer(s, sess, sr, temp, a, &prefix, err, sizeof(err));
+        goto leave;
+    }
+    {
+        const ds4_session_snapshot *snap = NULL;
+        int at = -1;
+        bool exact = false;
+        if (cache->cap > 0) at = sysone_cache_lookup(cache, sr->state, &exact);
+        /* an extension keeps the cached tokens and tokenizes only the appended text */
+        if (at >= 0) {
+            ds4_tokens_copy(&prefix, &cache->e[at].tokens);
+            if (!exact) ds4_tokenize_text(s->engine, sr->state + strlen(cache->e[at].state), &prefix);
+        } else {
+            sf_sysone_state_prefix(s->sysone, sr->state, &prefix);
+        }
+        if (prefix.len >= ds4_session_ctx(sess)) {
+            snprintf(err, sizeof(err), "max_tokens_exceeded");
+            goto leave;
+        }
+        if (at >= 0) {
+            cache->e[at].last_used = ++cache->clock;
+            clock_gettime(CLOCK_MONOTONIC, &t1);
+            if (ds4_session_load_snapshot(sess, &cache->e[at].snap, err, sizeof(err)) != 0) goto leave;
+            server_log(DS4_LOG_TIMING, "ds4-server: systemone state snapshot load: %d tokens, %.1f MiB, %.1f ms",
+                       cache->e[at].tokens.len, cache->e[at].snap.len / 1048576.0, sysone_since_ms(&t1));
+        }
+        if (at >= 0 && exact) {
+            sr->state_cache = "hit";
+            snap = &cache->e[at].snap;
+        } else {
+            if (cache->cap > 0) sr->state_cache = at >= 0 ? "extend" : "miss";
+            if (ds4_session_sync(sess, &prefix, err, sizeof(err)) != 0) goto leave;
+            clock_gettime(CLOCK_MONOTONIC, &t1);
+            if (cache->cap > 0 && ds4_session_save_snapshot(sess, &fresh, err, sizeof(err)) == 0) {
+                server_log(DS4_LOG_TIMING, "ds4-server: systemone state snapshot save: %d tokens, %.1f MiB, %.1f ms",
+                           prefix.len, fresh.len / 1048576.0, sysone_since_ms(&t1));
+                int idx = sysone_cache_store(cache, sr->state, &prefix, &fresh);
+                if (idx >= 0) snap = &cache->e[idx].snap;
+            }
+        }
+        rc = sf_sysone_answer_from(s->sysone, sess, &prefix, snap, sr->q, sr->n, temp, a, err, sizeof(err));
+    }
+leave:
+    if (keep) {
+        char rerr[256];
+        if (ds4_session_load_snapshot(sess, &chat, rerr, sizeof(rerr)) != 0) {
+            ds4_session_invalidate(sess);
+            request_live_state_clear(s, slot);
+            server_log(DS4_LOG_WARNING, "ds4-server: systemone could not restore the chat state of slot %d: %s", slot->id, rerr);
+        }
+    }
+    server_prefill_leave(s);
+answered:
+    ds4_session_snapshot_free(&chat);
+    ds4_session_snapshot_free(&fresh);
+    clock_gettime(CLOCK_MONOTONIC, &t1);
+    const double total_ms = (t1.tv_sec - t0.tv_sec) * 1e3 + (t1.tv_nsec - t0.tv_nsec) / 1e6;
+    if (rc != 0) {
+        if (strstr(err, "max_tokens_exceeded")) {
+            sysone_error e = {.status = 400, .code_body = true};
+            snprintf(e.msg, sizeof(e.msg), "the state and a question exceed the context of %d tokens", s->ctx_size);
+            sysone_send_error(j->fd, s->enable_cors, &e);
+        } else {
+            http_error(j->fd, s->enable_cors, 500, err);
+        }
+        server_log(DS4_LOG_WARNING, "ds4-server: systemone failed on slot %d: %s", slot->id, err);
+        goto done;
+    }
+    double q_ms = 0, min_mass = 1;
+    int min_q = 0;
+    for (int k = 0; k < sr->n; k++) {
+        q_ms += a[k].ms;
+        if (a[k].legal_mass < min_mass) { min_mass = a[k].legal_mass; min_q = k; }
+    }
+    buf b = {0};
+    sysone_response_json(&b, server_model_id_from_engine(s->engine), sr, a, temp, prefix.len, total_ms - q_ms);
+    http_response(j->fd, s->enable_cors, 200, "application/json", b.ptr);
+    buf_free(&b);
+    server_log(DS4_LOG_DEFAULT, "ds4-server: systemone slot %d: state %d tokens (%s), %d questions, %.0f ms, min legal mass %.4f, chat state %s",
+               slot->id, prefix.len, sr->state_cache ? sr->state_cache : "no cache", sr->n, total_ms, min_mass,
+               keep ? "kept" : "dropped");
+    if (min_mass < 0.5)
+        server_log(DS4_LOG_WARNING, "ds4-server: systemone question \"%s\": legal mass %.4f under 0.5",
+                   sr->names[min_q], min_mass);
+done:
+    ds4_tokens_free(&prefix);
+    free(a);
+    free(temp);
+}
+
 static void generate_job(server *s, server_slot *slot, job *j) {
     const bool boost = s->boost_on_request && request_boosts(&j->req);
     pthread_mutex_lock(&s->model_mu);
@@ -13955,6 +14887,10 @@ static void generate_job(server *s, server_slot *slot, job *j) {
     pthread_mutex_unlock(&s->model_mu);
 
     ds4_session_set_cancel(slot->session, job_cancelled, j);
+    if (j->sysone) {  /* sf: 810 */
+        if (!job_cancelled(j)) sysone_job(s, slot, j);
+        goto finish;
+    }
     ds4_session_set_think_level(slot->session, ds4_think_mode_effort_level(j->req.think_mode));  /* sf: 419 */
     /* sf: 640 the request's steering, before any sync: a change drops the
      * slot's live KV and the live tool state that described it. */
@@ -13965,6 +14901,7 @@ static void generate_job(server *s, server_slot *slot, job *j) {
         if (!steering_ok) http_error(j->fd, s->enable_cors, 500, "cannot set the session's steering");
     }
     if (steering_ok && !job_cancelled(j)) generate_job_inner(s, slot, j);
+finish:
     ds4_session_set_cancel(slot->session, NULL, NULL);
 
     pthread_mutex_lock(&s->model_mu);
@@ -14359,6 +15296,20 @@ static bool send_model(server *s, int fd, const char *id) {
     return ok;
 }
 
+/* sf: 810 Jev's "models" member, one entry per id the OpenAI list carries. */
+static void append_jev_models(buf *b, const server *s) {
+    buf_puts(b, "\"models\":[");
+    for (int i = 0; i < (s->steering_on_request ? 2 : 1); i++) {
+        if (i) buf_putc(b, ',');
+        buf_puts(b, "{\"name\":");
+        json_escape(b, i ? "deepseek-v4.1-flash-steering" : server_model_id_from_engine(s->engine));
+        buf_puts(b, ",\"description\":\"DeepSeek V4.1 Flash, system one readout\",\"release_date\":");
+        json_escape(b, s->model_release_date);
+        buf_putc(b, '}');
+    }
+    buf_putc(b, ']');
+}
+
 /* sf: 640 the steering id is listed only while a profile is loaded. */
 static void append_models_list(buf *b, const server *s) {
     buf_puts(b, "{\"object\":\"list\",\"data\":[");
@@ -14367,7 +15318,9 @@ static void append_models_list(buf *b, const server *s) {
         buf_putc(b, ',');
         append_model_json(b, s, "deepseek-v4.1-flash-steering");
     }
-    buf_puts(b, "]}\n");
+    buf_puts(b, "],");
+    append_jev_models(b, s);  /* sf: 810 */
+    buf_puts(b, "}\n");
 }
 
 /* sf: 640 a -steering id needs the loaded profile and a known base id. Sets
@@ -14502,6 +15455,28 @@ static void wait_for_job_or_disconnect(server *s, job *j) {
     pthread_mutex_unlock(&j->mu);
 }
 
+/* sf: 810 POST /v1/systemone: parse, queue as one job, wait. */
+static void sysone_serve(server *s, int fd, const char *body) {
+    sysone_request sr;
+    sysone_error e;
+    if (!parse_sysone_request(body, &sr, &e)) {
+        sysone_send_error(fd, s->enable_cors, &e);
+        return;
+    }
+    set_client_socket_nonblocking(fd);
+    job j;
+    memset(&j, 0, sizeof(j));
+    j.fd = fd;
+    j.sysone = &sr;
+    pthread_mutex_init(&j.mu, NULL);
+    pthread_cond_init(&j.cv, NULL);
+    if (!enqueue(s, &j)) http_error(fd, s->enable_cors, 503, "server shutting down");
+    else wait_for_job_or_disconnect(s, &j);
+    pthread_cond_destroy(&j.cv);
+    pthread_mutex_destroy(&j.mu);
+    sysone_request_free(&sr);
+}
+
 static void *client_main(void *arg) {
     client_arg *ca = arg;
     server *s = ca->srv;
@@ -14522,6 +15497,11 @@ static void *client_main(void *arg) {
 
     if (!strcmp(hr.method, "GET") && !strcmp(hr.path, "/v1/models")) {
         send_models(s, fd);
+        http_request_free(&hr);
+        goto done;
+    }
+    if (!strcmp(hr.method, "POST") && !strcmp(hr.path, "/v1/systemone")) {  /* sf: 810 */
+        sysone_serve(s, fd, hr.body);
         http_request_free(&hr);
         goto done;
     }
@@ -14666,6 +15646,9 @@ typedef struct {
     int mixed_prefill_quantum;
     bool steering_on_request;      /* sf: 640 --steering-profile-on-request */
     bool steering_profile_legacy;  /* sf: 640 the CLI flag, refused on the server */
+    const char *sysone_calibration; /* sf: 820 --sysone-calibration FILE */
+    int sysone_state_cache;         /* sf: 830 entries, 0 = off */
+    int sysone_state_cache_mb;      /* sf: 830 byte budget */
 } server_config;
 
 /* sf: 640 the steering and 670 boost configurations the server refuses
@@ -14781,6 +15764,9 @@ static void server_close_resources(server *s) {
     pthread_cond_destroy(&s->cv);
     pthread_mutex_destroy(&s->mu);
     if (s->tp_leader) ds4_tp_send_stop(s->tp_leader);
+    sf_sysone_close(s->sysone);  /* sf: 810 */
+    for (int i = 0; i < s->sysone_cache.cap; i++) sysone_cache_drop(&s->sysone_cache.e[i]);  /* sf: 830 */
+    free(s->sysone_cache.e);
     ds4_engine_close(s->engine);
     ds4_tp_free(s->tp_leader);
     memset(s, 0, sizeof(*s));
@@ -14818,6 +15804,8 @@ static server_config parse_options(int argc, char **argv) {
         .default_tokens = 393216,
         .tool_memory_max_ids = DS4_TOOL_MEMORY_DEFAULT_MAX_IDS,
         .mixed_prefill_quantum = 128,
+        .sysone_state_cache = 4,        /* sf: 830 */
+        .sysone_state_cache_mb = 2048,
     };
     c.kv_cache = kv_cache_default_options();
 
@@ -14960,6 +15948,20 @@ static server_config parse_options(int argc, char **argv) {
                 exit(2);
             }
         /* sf-ablate(steering): upstream's --dir-steering-file/-ffn/-attn removed; the server steers only through a profile */
+        } else if (!strcmp(arg, "--sysone-calibration")) {  /* sf: 820 */
+            c.sysone_calibration = need_arg(&i, argc, argv, arg);
+        } else if (!strcmp(arg, "--sysone-state-cache")) {  /* sf: 830 */
+            c.sysone_state_cache = parse_nonneg_int_arg(need_arg(&i, argc, argv, arg), arg);
+            if (c.sysone_state_cache < 0 || c.sysone_state_cache > 64) {
+                server_log(DS4_LOG_DEFAULT, "ds4-server: --sysone-state-cache must be between 0 and 64");
+                exit(2);
+            }
+        } else if (!strcmp(arg, "--sysone-state-cache-mb")) {  /* sf: 830 */
+            c.sysone_state_cache_mb = parse_int_arg(need_arg(&i, argc, argv, arg), arg);
+            if (c.sysone_state_cache_mb < 1) {
+                server_log(DS4_LOG_DEFAULT, "ds4-server: --sysone-state-cache-mb must be at least 1");
+                exit(2);
+            }
         } else if (!strcmp(arg, "--steering-profile-on-request")) {
             /* sf: 640 one .sfsteer file or a name in com-steering/profiles, loaded
              * and off; a request turns it on with a -steering model id */
@@ -15163,6 +16165,47 @@ int main(int argc, char **argv) {
         if (ds4_session_set_steering(slot->session, false) != 0) {
             server_close_resources(&s);
             return 1;
+        }
+    }
+    {   /* sf: 810 the System One option symbols, checked once */
+        char so_err[1024];
+        if (sf_sysone_open(&s.sysone, engine, so_err, sizeof(so_err)) != 0) {
+            server_log(DS4_LOG_DEFAULT, "ds4-server: system one: %s", so_err);
+            server_close_resources(&s);
+            return 1;
+        }
+        struct stat st;
+        struct tm tm;
+        if (cfg.engine.model_path && stat(cfg.engine.model_path, &st) == 0 &&
+            localtime_r(&st.st_mtime, &tm))
+            strftime(s.model_release_date, sizeof(s.model_release_date), "%Y-%m-%d", &tm);
+        for (int k = 0; k < 3; k++) s.sysone_temperature[k] = 1.0;
+        s.sysone_cache.cap = cfg.sysone_state_cache;  /* sf: 830 */
+        s.sysone_cache.bytes_max = (uint64_t)cfg.sysone_state_cache_mb << 20;
+        if (s.sysone_cache.cap > 0) {
+            s.sysone_cache.e = xmalloc((size_t)s.sysone_cache.cap * sizeof(*s.sysone_cache.e));
+            memset(s.sysone_cache.e, 0, (size_t)s.sysone_cache.cap * sizeof(*s.sysone_cache.e));
+        }
+        if (cfg.sysone_calibration) {  /* sf: 820 */
+            FILE *fp = fopen(cfg.sysone_calibration, "rb");
+            buf cal = {0};
+            char chunk[4096];
+            size_t got;
+            while (fp && (got = fread(chunk, 1, sizeof(chunk), fp)) > 0) buf_append(&cal, chunk, got);
+            if (fp) fclose(fp);
+            bool ok = fp && cal.ptr && stat(cfg.engine.model_path, &st) == 0 &&
+                      sysone_calibration_parse(cal.ptr, (uint64_t)st.st_size, (int64_t)st.st_mtime,
+                                               s.sysone_temperature, so_err, sizeof(so_err));
+            if (!fp || !cal.ptr) snprintf(so_err, sizeof(so_err), "cannot read the file");
+            buf_free(&cal);
+            if (!ok) {
+                server_log(DS4_LOG_DEFAULT, "ds4-server: --sysone-calibration %s: %s", cfg.sysone_calibration, so_err);
+                server_close_resources(&s);
+                return 1;
+            }
+            server_log(DS4_LOG_DEFAULT, "ds4-server: system one temperatures noul %.4g choice %.4g score %.4g",
+                       s.sysone_temperature[SF_SYSONE_NOUL], s.sysone_temperature[SF_SYSONE_CHOICE],
+                       s.sysone_temperature[SF_SYSONE_SCORE]);
         }
     }
     if (cfg.steering_on_request)
@@ -19501,6 +20544,310 @@ static char *escape_frag_dup(const char *s, size_t n) {
 
 /* 501: the serializer must never emit invalid UTF-8; each maximal ill-formed
  * subpart (Unicode 3.9) becomes one U+FFFD, valid text is byte-identical. */
+/* sf: 810 one accepting and one rejecting case per parsing-table row. */
+static int sysone_parse_status(const char *body, const char *loc_last) {
+    sysone_request sr;
+    sysone_error e;
+    if (parse_sysone_request(body, &sr, &e)) {
+        sysone_request_free(&sr);
+        return 200;
+    }
+    if (loc_last) TEST_ASSERT(e.nloc > 0 && !strcmp(e.loc[e.nloc - 1], loc_last));
+    return e.status;
+}
+
+#define SYSONE_Q(q) "{\"model\":\"jev-latest\",\"state\":\"s\",\"questions\":{\"a\":" q "}}"
+
+static void test_sysone_parse_table(void) {
+    /* body */
+    TEST_ASSERT(sysone_parse_status("not json", NULL) == 400);
+    TEST_ASSERT(sysone_parse_status("[1]", NULL) == 400);
+    TEST_ASSERT(sysone_parse_status(SYSONE_Q("{\"type\":\"noul\"}") "x", NULL) == 400);
+    /* model */
+    TEST_ASSERT(sysone_parse_status(SYSONE_Q("{\"type\":\"noul\"}"), NULL) == 200);
+    TEST_ASSERT(sysone_parse_status("{\"state\":\"s\",\"questions\":{\"a\":{\"type\":\"noul\"}}}", "model") == 422);
+    TEST_ASSERT(sysone_parse_status("{\"model\":3,\"state\":\"s\",\"questions\":{\"a\":{\"type\":\"noul\"}}}", "model") == 422);
+    /* state */
+    {
+        sysone_request sr;
+        sysone_error e;
+        TEST_ASSERT(parse_sysone_request("{\"model\":\"m\",\"state\":{ \"a\" : [1, 2] },\"questions\":{\"a\":{\"type\":\"noul\"}}}", &sr, &e));
+        TEST_ASSERT(!strcmp(sr.state, "{\"a\":[1,2]}"));
+        sysone_request_free(&sr);
+    }
+    TEST_ASSERT(sysone_parse_status("{\"model\":\"m\",\"questions\":{\"a\":{\"type\":\"noul\"}}}", "state") == 422);
+    TEST_ASSERT(sysone_parse_status("{\"model\":\"m\",\"state\":5,\"questions\":{\"a\":{\"type\":\"noul\"}}}", "state") == 422);
+    /* questions */
+    TEST_ASSERT(sysone_parse_status("{\"model\":\"m\",\"state\":\"s\",\"questions\":{}}", "questions") == 422);
+    TEST_ASSERT(sysone_parse_status("{\"model\":\"m\",\"state\":\"s\",\"questions\":{\"a\":{\"type\":\"noul\"},\"a\":{\"type\":\"noul\"}}}", "a") == 422);
+    TEST_ASSERT(sysone_parse_status("{\"model\":\"m\",\"state\":\"s\",\"questions\":{\"\":{\"type\":\"noul\"}}}", "questions") == 422);
+    {
+        buf b = {0};
+        buf_puts(&b, "{\"model\":\"m\",\"state\":\"s\",\"questions\":{");
+        for (int i = 0; i < 65; i++) buf_printf(&b, "%s\"q%d\":{\"type\":\"noul\"}", i ? "," : "", i);
+        buf_puts(&b, "}}");
+        TEST_ASSERT(sysone_parse_status(b.ptr, "questions") == 422);
+        buf_free(&b);
+    }
+    /* type */
+    TEST_ASSERT(sysone_parse_status(SYSONE_Q("{\"type\":\"maybe\"}"), "type") == 422);
+    TEST_ASSERT(sysone_parse_status(SYSONE_Q("{\"criteria\":{\"x\":null}}"), "type") == 422);
+    {
+        sysone_request sr;
+        sysone_error e;
+        TEST_ASSERT(!parse_sysone_request(SYSONE_Q("{\"type\":\"box\"}"), &sr, &e));
+        TEST_ASSERT(e.status == 422 && strstr(e.msg, "box is not supported") != NULL);
+    }
+    /* instructions */
+    {
+        sysone_request sr;
+        sysone_error e;
+        TEST_ASSERT(parse_sysone_request(SYSONE_Q("{\"type\":\"noul\",\"instructions\":{\"k\": 1}}"), &sr, &e));
+        TEST_ASSERT(!strcmp(sr.q[0].instructions, "{\"k\":1}"));
+        sysone_request_free(&sr);
+        TEST_ASSERT(parse_sysone_request(SYSONE_Q("{\"type\":\"noul\",\"instructions\":null}"), &sr, &e));
+        TEST_ASSERT(!strcmp(sr.q[0].instructions, ""));
+        sysone_request_free(&sr);
+    }
+    /* choice.criteria */
+    {
+        sysone_request sr;
+        sysone_error e;
+        TEST_ASSERT(parse_sysone_request(SYSONE_Q("{\"type\":\"choice\",\"criteria\":{\"x\":\"desc\",\"y\":null,\"z\":[1]}}"), &sr, &e));
+        TEST_ASSERT(sr.q[0].n_options == 3 && !strcmp(sr.q[0].option_names[1], "y"));
+        TEST_ASSERT(!strcmp(sr.q[0].option_texts[0], "desc") && sr.q[0].option_texts[1] == NULL);
+        TEST_ASSERT(!strcmp(sr.q[0].option_texts[2], "[1]"));
+        sysone_request_free(&sr);
+    }
+    TEST_ASSERT(sysone_parse_status(SYSONE_Q("{\"type\":\"choice\"}"), "criteria") == 422);
+    TEST_ASSERT(sysone_parse_status(SYSONE_Q("{\"type\":\"choice\",\"criteria\":{}}"), "criteria") == 422);
+    TEST_ASSERT(sysone_parse_status(SYSONE_Q("{\"type\":\"choice\",\"criteria\":{\"x\":1,\"x\":2}}"), "criteria") == 422);
+    {
+        buf b = {0};
+        buf_puts(&b, SYSONE_Q("{\"type\":\"choice\",\"criteria\":{"));
+        b.len -= 2; /* drop the macro's closing "}}" */
+        b.ptr[b.len] = '\0';
+        for (int i = 0; i < 27; i++) buf_printf(&b, "%s\"o%d\":null", i ? "," : "", i);
+        buf_puts(&b, "}}}}");
+        sysone_request sr;
+        sysone_error e;
+        TEST_ASSERT(!parse_sysone_request(b.ptr, &sr, &e));
+        TEST_ASSERT(e.status == 422 && strstr(e.msg, "more than 26") != NULL);
+        buf_free(&b);
+    }
+    /* score.criteria */
+    TEST_ASSERT(sysone_parse_status(SYSONE_Q("{\"type\":\"score\",\"criteria\":[\"low\",{\"k\":1},null]}"), NULL) == 200);
+    TEST_ASSERT(sysone_parse_status(SYSONE_Q("{\"type\":\"score\",\"criteria\":[]}"), "criteria") == 422);
+    TEST_ASSERT(sysone_parse_status(SYSONE_Q("{\"type\":\"score\",\"criteria\":[1,2,3,4,5,6,7,8,9,10,11]}"), "criteria") == 422);
+    TEST_ASSERT(sysone_parse_status(SYSONE_Q("{\"type\":\"score\",\"criteria\":{\"a\":1}}"), "criteria") == 422);
+    /* noul.criteria */
+    {
+        sysone_request sr;
+        sysone_error e;
+        TEST_ASSERT(parse_sysone_request(SYSONE_Q("{\"type\":\"noul\",\"criteria\":{\"false\":\"nope\"}}"), &sr, &e));
+        TEST_ASSERT(sr.q[0].option_texts[0] == NULL && !strcmp(sr.q[0].option_texts[1], "nope"));
+        sysone_request_free(&sr);
+    }
+    TEST_ASSERT(sysone_parse_status(SYSONE_Q("{\"type\":\"noul\",\"criteria\":[1]}"), "criteria") == 422);
+    /* assets */
+    TEST_ASSERT(sysone_parse_status("{\"model\":\"m\",\"state\":\"s\",\"assets\":{},\"questions\":{\"a\":{\"type\":\"noul\"}}}", "assets") == 422);
+    TEST_ASSERT(sysone_parse_status(SYSONE_Q("{\"type\":\"noul\",\"assets\":{}}"), "assets") == 422);
+    /* sf, other keys */
+    {
+        sysone_request sr;
+        sysone_error e;
+        TEST_ASSERT(parse_sysone_request("{\"model\":\"m\",\"extra\":[1],\"sf\":{\"debug\":true,\"x\":1},\"state\":\"s\",\"questions\":{\"b\":{\"type\":\"noul\"},\"a\":{\"type\":\"noul\"}}}", &sr, &e));
+        TEST_ASSERT(sr.has_sf && sr.sf_debug && sr.n == 2 && !strcmp(sr.names[0], "b"));
+        sysone_request_free(&sr);
+        TEST_ASSERT(parse_sysone_request(SYSONE_Q("{\"type\":\"noul\"}"), &sr, &e));
+        TEST_ASSERT(!sr.has_sf && !sr.sf_debug);
+        sysone_request_free(&sr);
+    }
+}
+
+static void test_sysone_error_bodies(void) {
+    sysone_error e;
+    buf b = {0};
+    sysone_fail(&e, 422, "field required", "questions", "q1", "criteria");
+    sysone_error_json(&b, &e);
+    TEST_ASSERT(!strcmp(b.ptr, "{\"detail\":[{\"loc\":[\"body\",\"questions\",\"q1\",\"criteria\"],\"msg\":\"field required\",\"type\":\"value_error\"}]}\n"));
+    buf_free(&b);
+    memset(&b, 0, sizeof(b));
+    e = (sysone_error){.status = 400, .code_body = true};
+    snprintf(e.msg, sizeof(e.msg), "too long");
+    sysone_error_json(&b, &e);
+    TEST_ASSERT(!strcmp(b.ptr, "{\"detail\":{\"code\":\"max_tokens_exceeded\",\"message\":\"too long\"}}\n"));
+    buf_free(&b);
+}
+
+static void test_sysone_response_golden(void) {
+    sysone_request sr;
+    sysone_error e;
+    TEST_ASSERT(parse_sysone_request("{\"model\":\"jev-latest\",\"state\":\"s\",\"questions\":{"
+        "\"n\":{\"type\":\"noul\"},"
+        "\"c\":{\"type\":\"choice\",\"criteria\":{\"refund\":null,\"praise\":null}},"
+        "\"s\":{\"type\":\"score\",\"criteria\":[\"bad\",\"ok\",\"good\"]}}}", &sr, &e));
+    sf_sysone_answer a[3] = {0};
+    a[0] = (sf_sysone_answer){.n_options = 2, .value = 0.25, .suffix_tokens = 10};
+    a[1] = (sf_sysone_answer){.n_options = 2, .top = 0, .confidence = 0.5, .p = {0.75, 0.25}, .suffix_tokens = 11};
+    a[2] = (sf_sysone_answer){.n_options = 3, .value = 1.43, .confidence = 0.35, .p = {0, 0.57, 0.43}, .suffix_tokens = 12};
+    buf b = {0};
+    sysone_response_json(&b, "deepseek-v4.1-flash", &sr, a, NULL, 100, 5.0);
+    TEST_ASSERT(!strcmp(b.ptr,
+        "{\"model\":\"deepseek-v4.1-flash\",\"answers\":{"
+        "\"n\":{\"type\":\"noul\",\"noul\":0.25},"
+        "\"c\":{\"type\":\"choice\",\"choice\":\"refund\",\"confidence\":0.5,\"probabilities\":{\"refund\":0.75,\"praise\":0.25}},"
+        "\"s\":{\"type\":\"score\",\"score\":1.43,\"confidence\":0.35,\"legend\":{\"0\":\"bad\",\"1\":\"ok\",\"2\":\"good\"},\"probabilities\":{\"0\":0,\"1\":0.57,\"2\":0.43}}},"
+        "\"usage\":{\"input_tokens\":133,\"output_tokens\":0}}\n"));
+    TEST_ASSERT(strstr(b.ptr, "\"sf\"") == NULL);
+    buf_free(&b);
+    memset(&b, 0, sizeof(b));
+    sr.has_sf = true;
+    sr.sf_debug = true;
+    a[0].logit[0] = 1.5f;
+    a[1].unstable = 1;
+    const double temps[3] = {1, 1.25, 2};
+    sysone_response_json(&b, "m", &sr, a, temps, 100, 5.0);
+    const char *json = b.ptr;
+    TEST_ASSERT(json_skip_value(&json) && *json == '\n');
+    TEST_ASSERT(strstr(b.ptr, ",\"sf\":{\"template_version\":1,\"prefix_tokens\":100,\"prefill_ms\":5.0,") != NULL);
+    TEST_ASSERT(strstr(b.ptr, "\"logits\":{\"true\":1.5,\"false\":0}") != NULL);
+    TEST_ASSERT(strstr(b.ptr, "\"c\":{\"suffix_tokens\":11,\"ms\":0.0,\"legal_mass\":0,\"temperature\":1.25,\"unstable\":true,") != NULL);
+    TEST_ASSERT(strstr(b.ptr, "\"n\":{\"suffix_tokens\":10,\"ms\":0.0,\"legal_mass\":0,\"temperature\":1,\"logits\"") != NULL);
+    buf_free(&b);
+    sysone_request_free(&sr);
+}
+
+/* sf: 820 calibration file: a match loads, each binding field refuses by name. */
+static void test_sysone_calibration_file(void) {
+    const char *ok = "{\"binding\":{\"model_bytes\":1000,\"model_mtime\":77,\"template_version\":1,\"layout\":\"state_first\"},"
+                     "\"temperature\":{\"noul\":1.31,\"choice\":1.18},\"fitted_on\":\"x\",\"date\":\"2026-11-12\"}";
+    double t[3] = {0};
+    char err[256] = "";
+    TEST_ASSERT(sysone_calibration_parse(ok, 1000, 77, t, err, sizeof(err)));
+    TEST_ASSERT(t[SF_SYSONE_NOUL] == 1.31 && t[SF_SYSONE_CHOICE] == 1.18 && t[SF_SYSONE_SCORE] == 1.0);
+    TEST_ASSERT(!sysone_calibration_parse(ok, 1001, 77, t, err, sizeof(err)) && strstr(err, "model_bytes"));
+    TEST_ASSERT(!sysone_calibration_parse(ok, 1000, 78, t, err, sizeof(err)) && strstr(err, "model_mtime"));
+    const char *ver = "{\"binding\":{\"model_bytes\":1000,\"model_mtime\":77,\"template_version\":2,\"layout\":\"state_first\"},\"temperature\":{}}";
+    TEST_ASSERT(!sysone_calibration_parse(ver, 1000, 77, t, err, sizeof(err)) && strstr(err, "template_version"));
+    const char *lay = "{\"binding\":{\"model_bytes\":1000,\"model_mtime\":77,\"template_version\":1,\"layout\":\"schema_first\"},\"temperature\":{}}";
+    TEST_ASSERT(!sysone_calibration_parse(lay, 1000, 77, t, err, sizeof(err)) && strstr(err, "layout"));
+    const char *miss = "{\"binding\":{\"model_bytes\":1000,\"template_version\":1,\"layout\":\"state_first\"},\"temperature\":{}}";
+    TEST_ASSERT(!sysone_calibration_parse(miss, 1000, 77, t, err, sizeof(err)) && strstr(err, "model_mtime"));
+    const char *neg = "{\"binding\":{\"model_bytes\":1000,\"model_mtime\":77,\"template_version\":1,\"layout\":\"state_first\"},\"temperature\":{\"score\":-1}}";
+    TEST_ASSERT(!sysone_calibration_parse(neg, 1000, 77, t, err, sizeof(err)));
+    sysone_request sr;
+    sysone_error e;
+    TEST_ASSERT(parse_sysone_request("{\"model\":\"m\",\"state\":\"s\",\"sf\":{\"temperature\":1.5},\"questions\":{\"a\":{\"type\":\"noul\"}}}", &sr, &e));
+    TEST_ASSERT(sr.sf_temperature == 1.5);
+    sysone_request_free(&sr);
+}
+
+static void test_sysone_models_list(void) {
+    for (int steering = 0; steering <= 1; steering++) {
+        server s;
+        memset(&s, 0, sizeof(s));
+        s.steering_on_request = steering;
+        snprintf(s.model_release_date, sizeof(s.model_release_date), "2026-10-17");
+        buf b = {0};
+        buf_putc(&b, '{');
+        append_jev_models(&b, &s);
+        buf_putc(&b, '}');
+        const char *json = b.ptr;
+        TEST_ASSERT(json_skip_value(&json) && *json == '\0');
+        TEST_ASSERT(strstr(b.ptr, "{\"models\":[{\"name\":\"deepseek-v4.1-flash\",\"description\":") == b.ptr);
+        TEST_ASSERT(strstr(b.ptr, "\"release_date\":\"2026-10-17\"") != NULL);
+        TEST_ASSERT((strstr(b.ptr, "deepseek-v4.1-flash-steering") != NULL) == steering);
+        TEST_ASSERT(server_model_alias_known("deepseek-v4.1-flash"));
+        buf_free(&b);
+    }
+}
+
+/* sf: 830 state cache lookup, store and eviction on fake snapshots. */
+static void sysone_test_tokens(ds4_tokens *t, int n) {
+    t->len = 0;
+    for (int i = 0; i < n; i++) ds4_tokens_push(t, 100 + i);
+}
+
+static const char SYSONE_TEST_TEXT[] = "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMNOP";
+
+/* An entry whose state is the first `ntok` bytes of SYSONE_TEST_TEXT. */
+static int sysone_test_store(sysone_state_cache *c, int ntok, uint64_t bytes) {
+    ds4_tokens t = {0};
+    sysone_test_tokens(&t, ntok);
+    char state[64];
+    snprintf(state, sizeof(state), "%.*s", ntok, SYSONE_TEST_TEXT);
+    ds4_session_snapshot snap = {.ptr = xmalloc(bytes ? bytes : 1), .len = bytes, .cap = bytes};
+    int idx = sysone_cache_store(c, state, &t, &snap);
+    TEST_ASSERT(snap.ptr == NULL);
+    ds4_tokens_free(&t);
+    return idx;
+}
+
+static void test_sysone_state_cache(void) {
+    sysone_state_cache c = {.cap = 3, .bytes_max = 1000};
+    c.e = xmalloc(3 * sizeof(*c.e));
+    memset(c.e, 0, 3 * sizeof(*c.e));
+    char p[64];
+    bool exact = false;
+
+    snprintf(p, sizeof(p), "%.10s", SYSONE_TEST_TEXT);
+    TEST_ASSERT(sysone_cache_lookup(&c, p, &exact) == -1);
+    int a = sysone_test_store(&c, 5, 100);
+    int b = sysone_test_store(&c, 8, 100);
+    TEST_ASSERT(a >= 0 && b >= 0 && a != b);
+    /* longest extension wins */
+    TEST_ASSERT(sysone_cache_lookup(&c, p, &exact) == b && !exact);
+    /* exact over extension */
+    int x = sysone_test_store(&c, 10, 100);
+    TEST_ASSERT(sysone_cache_lookup(&c, p, &exact) == x && exact);
+    /* a different byte breaks the prefix */
+    p[2] = '#';
+    TEST_ASSERT(sysone_cache_lookup(&c, p, &exact) == -1);
+    /* a shorter request does not match a longer entry */
+    snprintf(p, sizeof(p), "%.4s", SYSONE_TEST_TEXT);
+    TEST_ASSERT(sysone_cache_lookup(&c, p, &exact) == -1);
+
+    /* eviction by count: least recently used (a) goes */
+    c.e[a].last_used = 0;
+    int d = sysone_test_store(&c, 20, 100);
+    TEST_ASSERT(d == a && c.e[d].tokens.len == 20 && strlen(c.e[d].state) == 20);
+    /* eviction by bytes: 3 x 100 used, 800 more evicts the oldest one (b) */
+    int big = sysone_test_store(&c, 30, 800);
+    TEST_ASSERT(big >= 0);
+    int live = 0;
+    for (int i = 0; i < c.cap; i++) live += c.e[i].state != NULL;
+    TEST_ASSERT(live == 3 && sysone_cache_bytes(&c) == 1000 && c.e[b].tokens.len == 30);
+    /* oversize is not stored */
+    TEST_ASSERT(sysone_test_store(&c, 40, 1001) == -1);
+    TEST_ASSERT(sysone_cache_bytes(&c) == 1000);
+    /* disabled cache stores nothing */
+    sysone_state_cache off = {.cap = 0, .bytes_max = 1000};
+    TEST_ASSERT(sysone_test_store(&off, 3, 10) == -1);
+
+    for (int i = 0; i < c.cap; i++) sysone_cache_drop(&c.e[i]);
+    free(c.e);
+}
+
+/* sf: 835 the live-state rows: accepted roles, rejected roles and shapes, and
+ * an array state without sf.state keeps its 810 meaning. */
+static void test_sysone_live_parse(void) {
+    sysone_request sr;
+    sysone_error e;
+    TEST_ASSERT(parse_sysone_request("{\"model\":\"m\",\"sf\":{\"state\":\"messages\"},\"state\":[{\"role\":\"system\",\"content\":\"s\"},{\"role\":\"user\",\"content\":\"u\"},{\"role\":\"assistant\",\"content\":\"a\"}],\"questions\":{\"q\":{\"type\":\"noul\"}}}", &sr, &e));
+    TEST_ASSERT(sr.live && sr.n_msgs == 3 && !strcmp(sr.roles[2], "assistant") && !strcmp(sr.contents[1], "u"));
+    sysone_request_free(&sr);
+    TEST_ASSERT(parse_sysone_request("{\"model\":\"m\",\"state\":[{\"role\":\"user\",\"content\":\"u\"}],\"questions\":{\"q\":{\"type\":\"noul\"}}}", &sr, &e));
+    TEST_ASSERT(!sr.live && sr.n_msgs == 0 && sr.state[0] == '[');
+    sysone_request_free(&sr);
+    TEST_ASSERT(sysone_parse_status("{\"model\":\"m\",\"sf\":{\"state\":\"messages\"},\"state\":[{\"role\":\"tool\",\"content\":\"x\"}],\"questions\":{\"q\":{\"type\":\"noul\"}}}", "role") == 422);
+    TEST_ASSERT(sysone_parse_status("{\"model\":\"m\",\"sf\":{\"state\":\"messages\"},\"state\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\"}]}],\"questions\":{\"q\":{\"type\":\"noul\"}}}", "content") == 422);
+    TEST_ASSERT(sysone_parse_status("{\"model\":\"m\",\"sf\":{\"state\":\"messages\"},\"state\":[{\"role\":\"user\"}],\"questions\":{\"q\":{\"type\":\"noul\"}}}", "content") == 422);
+    TEST_ASSERT(sysone_parse_status("{\"model\":\"m\",\"sf\":{\"state\":\"messages\"},\"state\":[{\"role\":\"assistant\",\"content\":\"a\",\"tool_calls\":[]}],\"questions\":{\"q\":{\"type\":\"noul\"}}}", "tool_calls") == 422);
+    TEST_ASSERT(sysone_parse_status("{\"model\":\"m\",\"sf\":{\"state\":\"messages\"},\"state\":\"text\",\"questions\":{\"q\":{\"type\":\"noul\"}}}", "state") == 422);
+    TEST_ASSERT(sysone_parse_status("{\"model\":\"m\",\"sf\":{\"state\":\"messages\"},\"state\":[],\"questions\":{\"q\":{\"type\":\"noul\"}}}", "state") == 422);
+}
+
 static void test_json_escape_replaces_invalid_utf8(void) {
     struct { const char *in; size_t n; const char *want; } frags[] = {
         {"a\xe2(b", 4, "a" RP "(b"},          /* lead with no continuation */
@@ -21651,6 +22998,13 @@ static void ds4_server_unit_tests_run(void) {
     test_json_parser_handles_tool_heavy_requests();
     test_json_string_handles_surrogates();
     test_json_escape_replaces_invalid_utf8();
+    test_sysone_parse_table();  /* sf: 810 */
+    test_sysone_error_bodies();
+    test_sysone_response_golden();
+    test_sysone_models_list();
+    test_sysone_state_cache();  /* sf: 830 */
+    test_sysone_live_parse();  /* sf: 835 */
+    test_sysone_calibration_file();  /* sf: 820 */
     test_json_int_handles_non_finite_values();
     test_tool_history_validation_handles_large_replays();
     test_model_metadata_clamps_completion_to_context();

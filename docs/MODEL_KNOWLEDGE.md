@@ -275,7 +275,8 @@ unmeasured.
 ### Server (`docs/SERVER.md`, `ds4_server.c`)
 
 - Endpoints: `/v1/chat/completions`, `/v1/responses`, `/v1/messages`
-  (Anthropic), `/v1/completions`, `/v1/models`.
+  (Anthropic), `/v1/completions`, `/v1/models`, `/v1/systemone` (typed
+  decisions, change `810`).
 - `/v1/completions` is not raw completion: it wraps the prompt in the chat
   template with the system message "You are a helpful assistant"
   (`ds4_server.c:5214`).
@@ -294,7 +295,7 @@ unmeasured.
 |---|---|---|
 | Next-token logits, top-k logprobs | C API: `ds4_session_copy_logits`, `ds4_session_top_logprobs`, `ds4_session_token_logprob` (`ds4.h`) | available |
 | Logits to a file | CLI `--dump-logits`, `--dump-logprobs`; bench `--dump-frontier-logits-dir`; `DS4_GLM_LOGIT_DUMP` | available, one process per dump |
-| Logits over HTTP | — | not available |
+| Logits over HTTP | `POST /v1/systemone` with `"sf":{"debug":true}`: the option symbols' raw logits only | available for option symbols; no general logprobs |
 | Selected expert ids | `DS4_MOE_RECORD_SELECTED_IDS` writes 6 ids per entry, without a layer tag; the ids reach the CPU every decode token anyway (router readback) | recorder not verified on V4.1; no API |
 | Hidden states, per-layer tensors | `DS4_METAL_GRAPH_DUMP_*`, `ds4_session_eval_layer_slice` | generic-graph code the V4.1 graph never calls: not available |
 | Steering-site rows | — | the capture used by the steering work was removed |
@@ -311,8 +312,8 @@ Architecture:
 Cost:
 - time to first token of a fresh prompt under 256 tokens on the current tree;
 - a short turn on a cached system prefix through the server, end to end;
-- latency distribution (p50, p99) over many short requests, and of a
-  one-token answer;
+- latency distribution (p50, p99) over many short chat requests (a decision
+  read from logits: `sysone-bench/record.md`);
 - throughput with several concurrent sessions under streaming;
 - whether the expert cache stays warm across many unrelated short prompts;
 - HTTP and template overhead;
@@ -321,12 +322,14 @@ Cost:
 Behaviour:
 - any quality score on `1017`, and eval suite scores;
 - the effect of the reasoning level on answer quality;
-- calibration of the output probabilities;
+- calibration of the output probabilities in chat (for typed decisions read
+  from logits: `sysone-bench/record.md`, ECE 0.23 raw, 0.04 calibrated);
 - the steered model on benign tasks;
 - the cause of the cross-run label flips and of the first-prefill cost.
 
 Interfaces that do not exist:
 - logprobs over HTTP, constrained decoding (grammar, JSON schema,
   `logit_bias`), forced tool choice, assistant prefill;
-- a classification head, an embeddings endpoint, early exit;
+- an embeddings endpoint, early exit (typed decisions read from logits now
+  exist: `sf_sysone.h`, change `800`, `docs/system-one.md` "Template");
 - hidden-state or per-layer readout on the V4.1 graph.

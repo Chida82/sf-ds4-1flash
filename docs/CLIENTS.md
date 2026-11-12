@@ -13,6 +13,21 @@ consume that context; a client limit does not enlarge the server allocation.
 The examples use Flash and localhost. Change the address for a trusted remote
 server. The `dsv4-local` strings are placeholders, not server authentication.
 
+## System One (Jev) clients
+
+A client of TypeSafe's `POST /v1/systemone` needs only the base URL
+(`docs/SERVER.md`, "System one"). No key is checked; any `model` name works.
+
+```python
+# TypeSafe SDK or any HTTP client: point it at the local server
+BASE_URL = "http://127.0.0.1:8002"
+```
+
+```sh
+curl http://127.0.0.1:8002/v1/systemone -H 'Content-Type: application/json' \
+  -d '{"model":"jev-latest","state":"Meeting moved to Thursday 3pm.","questions":{"thursday":{"type":"noul","instructions":"The meeting is on Thursday."}}}'
+```
+
 ## Text encoding
 
 The server's JSON responses are always valid UTF-8. A model can emit a token
