@@ -75,5 +75,22 @@ for i in range(400):
 t = fit.fit_type(rows)
 check(1.6 <= t <= 2.5, f"fit recovers T = 2 (got {t:.2f})")
 
+# 915: headroom parser. Two requests: the first swept (2 layers), the second token by token.
+import headroom  # noqa: E402
+log = headroom.parse_log("""ds4: gpu busy accum 100.0 ms over 64 cbs
+ds4: V4.1 prefill layer=0 pos=0 rows=300 encoder_resident=0 map=10.000 engram=0.010 encode=1.000 drain=50.000 seed=0.500 ms
+ds4: V4.1 prefill layer=1 pos=0 rows=300 encoder_resident=0 map=5.500 engram=0.010 encode=1.000 drain=40.000 seed=0.500 ms
+ds4-server: systemone slot 0: state 300 tokens (miss), 2 questions, 900 ms, min legal mass 0.9990, chat state none
+ds4-server: systemone slot 0: state 40 tokens (miss), 1 questions, 500 ms, min legal mass 0.9990, chat state none
+ds4: gpu busy accum 250.5 ms over 128 cbs
+ds4:   streaming expert timing total selected_calls=9 read_avg=1.000 ms split_layers=200 resident_experts_avg=5.00 missing_load_avg=0.617 ms missing_slot_avg=0.000 ms
+""".splitlines())
+items = [{"state_id": "a", "wall_ms": 450.0}, {"state_id": "a", "wall_ms": 450.0}, {"state_id": "b", "wall_ms": 500.0}]
+s = headroom.summarize(log, [("r", items)])
+r0 = s["rows"][0]
+check(r0["requests"] == 2 and r0["wall_ms"] == 1400 and r0["sweep_wait_ms"] == 15.5 and r0["sweep_drain_ms"] == 90
+      and r0["swept_requests"] == 1 and abs(s["decode_wait_ms"] - 123.4) < 1e-9 and s["split_layers"] == 200
+      and s["gpu_ms"] == 250.5, "headroom parser sums")
+
 print(f"sysone-bench: {'FAILED ' + ', '.join(FAIL) if FAIL else 'all tests passed'}")
 sys.exit(1 if FAIL else 0)

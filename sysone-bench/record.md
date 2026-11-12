@@ -50,12 +50,12 @@ Rizzo Flow 0.648, Jev 0.727, Laya fine-tuned on the train split 0.766.
 
 - **System One gap** (think minus sysone, the same 50 typed-decisions items):
   0.720 - 0.600 = **+12.0 points** (noul +7.1, choice +25.0, score +5.0; 14,
-  16 and 20 items). Above 5 points: the bounded think of `860` is justified.
+  16 and 20 items). Above 5 points: the bounded think of `a025` is justified.
   The interval is wide at n = 50. `gen` (thinking off, generated answer)
   matches System One on 477 items: 0.679 against 0.675.
 - **Flip rate under rotation** (choice, `--rotate 1`): typed-decisions
   **21.3%** (32/150; accuracy 0.680 at rotate 0, 0.693 at rotate 1); Italian
-  fixtures 5.0% (1/20). Above 5%: the prior correction of `845` is justified.
+  fixtures 5.0% (1/20). Above 5%: the prior correction of `a020` is justified.
 - **ECE before and after the temperature** (typed-decisions subset; fitted on
   even ids, reported on the 258 odd ids, applied offline by `fit.py`, which is
   exactly what the server computes since T divides the logits):
@@ -203,3 +203,84 @@ Not measured here: accuracy of the live layout against `state_first` (the
 question wording differs, "Question about the conversation above"); a live
 decision after a thinking turn (reuses nothing by plain prefix, measured once:
 `reused_tokens` 1, state prefill 2.0 s on a 68-token conversation).
+
+## Residency headroom (915, stage 1, 2026-11-12)
+
+How much of a decision is waiting for the SSD, hence the most that resident
+weights (two Macs in tensor parallel, or one 256 GB machine) could remove.
+One 128 GB Mac, branch sys1 at `01c989f` plus this change. Server:
+`./sf-ds4-1flash-server --ssd-streaming --ctx 32768
+--ssd-streaming-cache-experts 82GB --sysone-state-cache 0`, a fresh process
+per run, stopped with SIGTERM. Static weights locked at open ("98.77 GiB
+planned wired ...: lock"), so no read wait hides in GPU time from pageable
+statics. Items: S = the 60 Italian fixtures (states of 67-80 tokens, one
+question each: token by token); L = the first 30 states of `td500.jsonl`
+(150 decisions, states of 122-507 tokens, median 272: 17 states over 256
+tokens prefill as one sweep, 13 token by token); L2 = run L again in the same
+process.
+
+Probes (inline): `DS4_METAL_GRAPH_PREFILL_PROFILE=1` (per sweep layer,
+`map=` is the wait for that layer's experts, so sweep read wait is split per
+request), `DS4_METAL_STREAMING_EXPERT_TIMING_SUMMARY=1` (process totals at
+exit: `missing_load` is the CPU time spent reading a decode token's missing
+experts, while the resident ones run on the GPU), `DS4_METAL_GPU_BUSY_PROFILE=1`
+(GPU execution time, process total). The design's `DS4_METAL_CB_TIMES`
+prints only the first 400 command buffers of a process and was not used;
+`DS4_METAL_V41_DECODE_KEEPALIVE=1` was set but counts only tokens that
+produce logits through `ds41_graph_step`, and counted none. Decode read wait
+is therefore a per-run total, not per decision. Parser:
+`sysone-bench/headroom.py`.
+
+| Run | Decisions | Median request ms | Wall s | GPU busy | Sweep read wait | Decode miss reads | Read wait share | Predicted resident wall s |
+|---|---|---|---|---|---|---|---|---|
+| S | 60 | 3993 | 258.2 | 80% | 0 | 17.8 s (6.9%) | **0.07** | 240.4 (x1.07) |
+| L | 150 | 20933 | 638.1 | 59% | 85.9 s (13.5%) | 63.9 s (10.0%) | **0.235** | 488.3 (x1.31) |
+| L2 | 150 | 19226 | 582.4 | - | 84.7 s (14.5%) | about 55.0 s (9.4%) | **0.24** | about 442.7 (x1.32) |
+
+L2's decode reads are the two-pass process total (118.9 s) less run L's;
+its GPU time is not separable. GPU busy overlaps the decode miss reads (the
+resident stage runs while they load), so the shares do not add to 100%.
+
+Per swept request of run L: median wall 21.0 s, median sweep read wait
+5.07 s (share 0.244, before its suffix tokens' miss reads). A sweep is about
+6.7 s, of which about 5.1 s is waiting for the SSD and 1.7 s GPU drain.
+
+Probe overhead: S 230.4 s without the probes against 258.2 s with them
+(+12.0%), L 574.9 against 638.1 (+11.0%); over 10%, so every wall figure
+above is about 11% high, and the shares are relative to the probed wall.
+Top answers equal with and without probes: 60/60 and 150/150.
+
+**Outcome: modest, at the lower edge.** The run-level share for L is 0.235;
+the median request (a swept one) is about 0.34 (0.244 sweep plus about 0.10
+decode). By the 0.25/0.5 rule: residency would make a decision about 1.3
+times faster on swept states and 1.07 times on short ones, not halve it.
+Stage 2 is optional, and two Macs are not justified by decision latency
+alone (they still double the throughput of independent requests). A
+decision's cost is per-token compute at about 31 ms a token: fewer suffix
+tokens (`a000`, `a015`) move it more than residency.
+
+For `a045`: its case does not come from residency, it comes from streaming. A
+sweep is about three quarters read wait, so extra rows in it are almost free
+on this machine; resident, a sweep would lose that wait and `a045`'s
+advantage over branches shrinks. `a045` stays alive on one box, on its own
+gate.
+
+Stage 2 (two Macs in tensor parallel) was dropped: no second Mac exists.
+**Estimated, not measured**, from the figures above:
+
+| Stage 2 question | Estimate | Basis |
+|---|---|---|
+| Speed-up of a decision | at most x1.07 (short states) and x1.3 (swept states) | removing every read wait is the ceiling of residency; TP adds a link round trip per layer, not measured in this tree, so the real figure is lower. Cross-check: streaming decode here is about 31 t/s (`docs/MODEL_KNOWLEDGE.md`), upstream claims 36 t/s resident on an M3 Ultra |
+| Top answers equal to one machine (95% wanted) | about 96%, at the limit | by analogy only: TP kernels round differently, as sweep and token-major prefill do, and that pair changed the top on 4 of 100 (Schedule stability) |
+| Session batching of question branches | unknown | the code admits it only resident and from 3 sessions under TP (`ds41_sessions_batch_supported`); nothing here measures it |
+
+Commands (W = a scratch dir; `td-l30.jsonl` is every item of the first 30
+states of `td500.jsonl`):
+
+```sh
+PROBE="DS4_METAL_GRAPH_PREFILL_PROFILE=1 DS4_METAL_STREAMING_EXPERT_TIMING_SUMMARY=1 DS4_METAL_GPU_BUSY_PROFILE=1"
+env $PROBE ./sf-ds4-1flash-server --ssd-streaming --ctx 32768 --ssd-streaming-cache-experts 82GB --sysone-state-cache 0 > $W/server-L.log 2>&1 &
+python3 sysone-bench/run.py --items $W/td-l30.jsonl --mode sysone --out $W/r-L.jsonl
+kill -TERM %1; wait
+python3 sysone-bench/headroom.py --log $W/server-L.log --results $W/r-L.jsonl   # decode_wait_ms = missing_load
+```
