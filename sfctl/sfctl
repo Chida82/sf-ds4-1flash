@@ -42,7 +42,7 @@ usage: sfctl <command> [<model>]
   plist <model>       print the launchd agent definition, write nothing
   uninstall <model>   remove the agent and serve; keep KV, logs and models
 
-<model> is the child's name without "sf-": ds4-1flash runs sf-ds4-1flash.
+<model> is the child's name without "sf-"; its service is sfctl/sf-<model>.conf.
 EOF
     exit 2
 }

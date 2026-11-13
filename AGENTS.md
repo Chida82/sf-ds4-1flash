@@ -547,7 +547,9 @@ against upstream at the site, not by reading the child alone; fixed in
 "sync serve" means the "Syncing serve" procedure in `sfctl/README.md`, run only
 after the change is merged into `main`; never update serve from a work branch
 and never edit it. `install` and `uninstall` change the machine: ask the owner
-first. `sfctl/` stays generic: no user name or machine path in it
+first. `sfctl/sfctl`, `sfctl/README.md` and `tests/test_sfctl.sh` are the same
+files in every child that has them; only `sfctl/sf-ds4-1flash.conf` is this
+model's. `sfctl/` stays generic: no user name or machine path in it
 (`tests/test_sfctl.sh` checks).
 
 ## Syncing with upstream
