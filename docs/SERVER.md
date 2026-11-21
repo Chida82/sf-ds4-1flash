@@ -123,6 +123,10 @@ curl http://127.0.0.1:8002/v1/systemone \
   are closer than `SF_SYSONE_DELTA95` (`sf_sysone.h`, measured in
   `sysone-bench/record.md`) carries `"unstable":true` in `sf`: another prefill
   schedule could change it.
+- Template: `--sysone-template N` picks the question suffix, 2 by default
+  (one string with no `Options:` header, change `a000`); 1 is the earlier
+  layout. The `sf` object reports the version in use, and a calibration file
+  must be fitted for that version (`fit.py --template-version N`).
 - Cost: a decision runs on a slot like any request, unsteered and without
   thinking, and holds the model while it runs. The slot's chat state is saved
   before the decision and restored after it (change `830`), so the next chat

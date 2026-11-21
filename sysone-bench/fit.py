@@ -54,6 +54,7 @@ def main():
     ap.add_argument("--model-path")
     ap.add_argument("--out", required=True)
     ap.add_argument("--fitted-on", default="")
+    ap.add_argument("--template-version", type=int, default=2)
     ap.add_argument("--apply")
     a = ap.parse_args()
     rows = [r for r in load(a.results) if r.get("logits") and r.get("label") is not None]
@@ -89,7 +90,7 @@ def main():
         return 0
     st = os.stat(a.model_path)  # follows the symlink to the GGUF, as the server's stat does
     cal = {"binding": {"model_bytes": st.st_size, "model_mtime": int(st.st_mtime),
-                       "template_version": 1, "layout": "state_first"},
+                       "template_version": a.template_version, "layout": "state_first"},
            "temperature": temps,
            "fitted_on": a.fitted_on or f"{os.path.basename(a.results)} even ids, {sum(is_even(r['id']) for r in rows)} items",
            "date": datetime.date.today().isoformat()}

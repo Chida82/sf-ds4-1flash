@@ -7,7 +7,7 @@
 #include "ds4.h"
 
 #define SF_SYSONE_MAX_OPTIONS 26
-#define SF_SYSONE_TEMPLATE_VERSION 1
+#define SF_SYSONE_TEMPLATE_VERSION 2 /* the default; 1 stays selectable (a000) */
 /* Top-two option logit gap under which a different prefill schedule can change
  * the answer: the 95th percentile of the gap change between the layer-major and
  * the token-major schedule, 100 decisions (sysone-bench/record.md, schedule
@@ -34,12 +34,23 @@ typedef struct {
     double value;        /* noul: p[0] (yes). score: sum i*p[i]. choice: p[top] */
     int suffix_tokens;
     double ms;           /* this question: restore, suffix eval and readout */
+    double restore_ms;   /* a080: snapshot load and its checks; 0 for the first evaluated question */
+    double eval_ms;      /* a080: ds4_session_sync of prefix + suffix */
     int unstable;        /* top-two raw logit gap under SF_SYSONE_DELTA95 */
 } sf_sysone_answer;
 
+/* a080: phases outside the questions, in milliseconds. */
+typedef struct {
+    double prefill_ms;  /* ds4_session_sync of the state prefix (sf_sysone_decide) */
+    double save_ms;     /* ds4_session_save_snapshot; 0 with one question or a caller's snapshot */
+} sf_sysone_timing;
+
 typedef struct sf_sysone sf_sysone;   /* symbol token tables, built once */
 
-int  sf_sysone_open(sf_sysone **out, ds4_engine *e, char *err, size_t errlen);
+/* template_version: 1 or 2 (SF_SYSONE_TEMPLATE_VERSION); any other id fails
+ * with "unknown template version N". */
+int  sf_sysone_open(sf_sysone **out, ds4_engine *e, int template_version, char *err, size_t errlen);
+int  sf_sysone_template(const sf_sysone *so);
 void sf_sysone_close(sf_sysone *so);
 
 /* Tokens of the state prefix. Appends to `out`. */
@@ -58,7 +69,7 @@ int sf_sysone_answer_from(sf_sysone *so, ds4_session *s, const ds4_tokens *prefi
                           const ds4_session_snapshot *snap,
                           const sf_sysone_question *q, int n_questions,
                           const double *temperature, sf_sysone_answer *answers,
-                          char *err, size_t errlen);
+                          char *err, size_t errlen, sf_sysone_timing *timing /* may be NULL */);
 
 /* As sf_sysone_answer_from, but question k's suffix is suffixes[k] (tokens
  * after `prefix`) instead of the template's (835 live layout). */
@@ -67,7 +78,7 @@ int sf_sysone_answer_suffixes(sf_sysone *so, ds4_session *s, const ds4_tokens *p
                               const sf_sysone_question *q, int n_questions,
                               const ds4_tokens *suffixes,
                               const double *temperature, sf_sysone_answer *answers,
-                              char *err, size_t errlen);
+                              char *err, size_t errlen, sf_sysone_timing *timing);
 
 /* 835: the text of a question asked as the next user turn of a conversation
  * (options and instruction line as the template). Caller frees. */
@@ -80,7 +91,7 @@ int sf_sysone_decide(sf_sysone *so, ds4_session *s, const char *state,
                      const sf_sysone_question *q, int n_questions,
                      const double *temperature /* per question, or NULL */,
                      sf_sysone_answer *answers, int *prefix_tokens,
-                     char *err, size_t errlen);
+                     char *err, size_t errlen, sf_sysone_timing *timing /* may be NULL */);
 
 /* Pure math, no engine: fills p, top, confidence, value from logit[]. */
 void sf_sysone_finish(sf_sysone_type type, double temperature, sf_sysone_answer *a);

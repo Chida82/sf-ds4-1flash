@@ -14471,9 +14471,9 @@ static void sysone_num(buf *b, double v) {
     buf_printf(b, "%.6g", v);
 }
 
-static void sysone_response_json(buf *b, const char *model, const sysone_request *sr,
+static void sysone_response_json(buf *b, const char *model, int template_version, const sysone_request *sr,
                                  const sf_sysone_answer *a, const double *temperature,
-                                 int prefix_tokens, double prefill_ms) {
+                                 int prefix_tokens, double prefill_ms, double save_ms) {
     int input_tokens = prefix_tokens;
     buf_puts(b, "{\"model\":");
     json_escape(b, model);
@@ -14520,15 +14520,16 @@ static void sysone_response_json(buf *b, const char *model, const sysone_request
     buf_printf(b, "},\"usage\":{\"input_tokens\":%d,\"output_tokens\":0}", input_tokens);
     if (sr->has_sf) {
         buf_printf(b, ",\"sf\":{\"template_version\":%d,\"prefix_tokens\":%d,\"prefill_ms\":",
-                   SF_SYSONE_TEMPLATE_VERSION, prefix_tokens);
-        buf_printf(b, "%.1f", prefill_ms);
+                   template_version, prefix_tokens);
+        buf_printf(b, "%.1f,\"save_ms\":%.1f", prefill_ms, save_ms);  /* sf: a080 */
         if (sr->state_cache) buf_printf(b, ",\"state_cache\":\"%s\"", sr->state_cache);
         if (sr->live) buf_printf(b, ",\"layout\":\"live\",\"reused_tokens\":%d", sr->reused_tokens);
         buf_puts(b, ",\"questions\":{");
         for (int k = 0; k < sr->n; k++) {
             if (k) buf_putc(b, ',');
             json_escape(b, sr->names[k]);
-            buf_printf(b, ":{\"suffix_tokens\":%d,\"ms\":%.1f,\"legal_mass\":", a[k].suffix_tokens, a[k].ms);
+            buf_printf(b, ":{\"suffix_tokens\":%d,\"ms\":%.1f,\"restore_ms\":%.1f,\"eval_ms\":%.1f,\"legal_mass\":",
+                       a[k].suffix_tokens, a[k].ms, a[k].restore_ms, a[k].eval_ms);
             sysone_num(b, a[k].legal_mass);
             if (temperature) {  /* sf: 820 */
                 buf_puts(b, ",\"temperature\":");
@@ -14603,7 +14604,7 @@ static bool sysone_cal_top(const char *key, const char **p, void *ud) {
 /* Fills t[] (1 for a type the file leaves out). False with a message naming
  * the field when the file does not parse or its binding does not match. */
 static bool sysone_calibration_parse(const char *json, uint64_t model_bytes, int64_t model_mtime,
-                                     double t[3], char *err, size_t errlen) {
+                                     int template_version, double t[3], char *err, size_t errlen) {
     sysone_cal c = {.t = {1, 1, 1}};
     const char *p = json;
     if (!sysone_object(&p, sysone_cal_top, &c)) {
@@ -14620,8 +14621,8 @@ static bool sysone_calibration_parse(const char *json, uint64_t model_bytes, int
         snprintf(err, errlen, "binding.model_mtime %.0f does not match the model (%lld)", c.mtime, (long long)model_mtime);
         return false;
     }
-    if (c.version != SF_SYSONE_TEMPLATE_VERSION) {
-        snprintf(err, errlen, "binding.template_version %.0f does not match this build (%d)", c.version, SF_SYSONE_TEMPLATE_VERSION);
+    if (c.version != template_version) {
+        snprintf(err, errlen, "binding.template_version %.0f does not match this build (%d)", c.version, template_version);
         return false;
     }
     if (strcmp(c.layout, "state_first")) {
@@ -14728,7 +14729,8 @@ static void sysone_live_render(server *s, const sysone_request *sr, const char *
 }
 
 static int sysone_live_answer(server *s, ds4_session *sess, sysone_request *sr, const double *temp,
-                              sf_sysone_answer *a, ds4_tokens *prefix, char *err, size_t errlen) {
+                              sf_sysone_answer *a, ds4_tokens *prefix, sf_sysone_timing *tm,
+                              char *err, size_t errlen) {
     ds4_tokens *full = xmalloc((size_t)sr->n * sizeof(*full));
     memset(full, 0, (size_t)sr->n * sizeof(*full));
     int rc = 1;
@@ -14747,8 +14749,11 @@ static int sysone_live_answer(server *s, ds4_session *sess, sysone_request *sr, 
         if (prefix->len + full[k].len >= ds4_session_ctx(sess)) { snprintf(err, errlen, "max_tokens_exceeded"); goto done; }
     }
     sr->reused_tokens = ds4_session_checkpoint_valid(sess) ? ds4_session_common_prefix(sess, prefix) : 0;
+    struct timespec tp;
+    clock_gettime(CLOCK_MONOTONIC, &tp);
     if (ds4_session_sync(sess, prefix, err, errlen) != 0) goto done;
-    rc = sf_sysone_answer_suffixes(s->sysone, sess, prefix, NULL, sr->q, sr->n, full, temp, a, err, errlen);
+    tm->prefill_ms = sysone_since_ms(&tp);  /* sf: a080 */
+    rc = sf_sysone_answer_suffixes(s->sysone, sess, prefix, NULL, sr->q, sr->n, full, temp, a, err, errlen, tm);
 done:
     for (int k = 0; k < sr->n; k++) ds4_tokens_free(&full[k]);
     free(full);
@@ -14769,7 +14774,8 @@ static void sysone_job(server *s, server_slot *slot, job *j) {
     for (int k = 0; k < sr->n; k++)
         temp[k] = sr->sf_temperature > 0 ? sr->sf_temperature
                 : sr->live ? 1.0 : s->sysone_temperature[sr->q[k].type];  /* sf: 835 a state_first calibration is not applied to live */
-    struct timespec t0, t1;
+    struct timespec t0, t1, tp;
+    sf_sysone_timing tm = {0};  /* sf: a080 state prefill (cache load included) and snapshot save */
     clock_gettime(CLOCK_MONOTONIC, &t0);
     if (!server_prefill_enter(s, slot)) {
         snprintf(err, sizeof(err), "cancelled");
@@ -14785,11 +14791,12 @@ static void sysone_job(server *s, server_slot *slot, job *j) {
     }
     ds4_session_set_think_level(sess, 0);
     if (sr->live) {
-        rc = sysone_live_answer(s, sess, sr, temp, a, &prefix, err, sizeof(err));
+        rc = sysone_live_answer(s, sess, sr, temp, a, &prefix, &tm, err, sizeof(err));
         goto leave;
     }
     {
         const ds4_session_snapshot *snap = NULL;
+        double cache_save_ms = 0;
         int at = -1;
         bool exact = false;
         if (cache->cap > 0) at = sysone_cache_lookup(cache, sr->state, &exact);
@@ -14804,6 +14811,7 @@ static void sysone_job(server *s, server_slot *slot, job *j) {
             snprintf(err, sizeof(err), "max_tokens_exceeded");
             goto leave;
         }
+        clock_gettime(CLOCK_MONOTONIC, &tp);
         if (at >= 0) {
             cache->e[at].last_used = ++cache->clock;
             clock_gettime(CLOCK_MONOTONIC, &t1);
@@ -14818,14 +14826,18 @@ static void sysone_job(server *s, server_slot *slot, job *j) {
             if (cache->cap > 0) sr->state_cache = at >= 0 ? "extend" : "miss";
             if (ds4_session_sync(sess, &prefix, err, sizeof(err)) != 0) goto leave;
             clock_gettime(CLOCK_MONOTONIC, &t1);
+            tm.prefill_ms = sysone_since_ms(&tp);
             if (cache->cap > 0 && ds4_session_save_snapshot(sess, &fresh, err, sizeof(err)) == 0) {
+                cache_save_ms = sysone_since_ms(&t1);
                 server_log(DS4_LOG_TIMING, "ds4-server: systemone state snapshot save: %d tokens, %.1f MiB, %.1f ms",
                            prefix.len, fresh.len / 1048576.0, sysone_since_ms(&t1));
                 int idx = sysone_cache_store(cache, sr->state, &prefix, &fresh);
                 if (idx >= 0) snap = &cache->e[idx].snap;
             }
         }
-        rc = sf_sysone_answer_from(s->sysone, sess, &prefix, snap, sr->q, sr->n, temp, a, err, sizeof(err));
+        if (at >= 0 && exact) tm.prefill_ms = sysone_since_ms(&tp);
+        rc = sf_sysone_answer_from(s->sysone, sess, &prefix, snap, sr->q, sr->n, temp, a, err, sizeof(err), &tm);
+        tm.save_ms += cache_save_ms;  /* the state cache's save replaces the readout's own */
     }
 leave:
     if (keep) {
@@ -14853,14 +14865,13 @@ answered:
         server_log(DS4_LOG_WARNING, "ds4-server: systemone failed on slot %d: %s", slot->id, err);
         goto done;
     }
-    double q_ms = 0, min_mass = 1;
+    double min_mass = 1;
     int min_q = 0;
     for (int k = 0; k < sr->n; k++) {
-        q_ms += a[k].ms;
         if (a[k].legal_mass < min_mass) { min_mass = a[k].legal_mass; min_q = k; }
     }
     buf b = {0};
-    sysone_response_json(&b, server_model_id_from_engine(s->engine), sr, a, temp, prefix.len, total_ms - q_ms);
+    sysone_response_json(&b, server_model_id_from_engine(s->engine), sf_sysone_template(s->sysone), sr, a, temp, prefix.len, tm.prefill_ms, tm.save_ms);
     http_response(j->fd, s->enable_cors, 200, "application/json", b.ptr);
     buf_free(&b);
     server_log(DS4_LOG_DEFAULT, "ds4-server: systemone slot %d: state %d tokens (%s), %d questions, %.0f ms, min legal mass %.4f, chat state %s",
@@ -15647,6 +15658,7 @@ typedef struct {
     bool steering_on_request;      /* sf: 640 --steering-profile-on-request */
     bool steering_profile_legacy;  /* sf: 640 the CLI flag, refused on the server */
     const char *sysone_calibration; /* sf: 820 --sysone-calibration FILE */
+    int sysone_template;            /* sf: a000 --sysone-template N */
     int sysone_state_cache;         /* sf: 830 entries, 0 = off */
     int sysone_state_cache_mb;      /* sf: 830 byte budget */
 } server_config;
@@ -15805,6 +15817,7 @@ static server_config parse_options(int argc, char **argv) {
         .tool_memory_max_ids = DS4_TOOL_MEMORY_DEFAULT_MAX_IDS,
         .mixed_prefill_quantum = 128,
         .sysone_state_cache = 4,        /* sf: 830 */
+        .sysone_template = SF_SYSONE_TEMPLATE_VERSION,  /* sf: a000 */
         .sysone_state_cache_mb = 2048,
     };
     c.kv_cache = kv_cache_default_options();
@@ -15950,6 +15963,8 @@ static server_config parse_options(int argc, char **argv) {
         /* sf-ablate(steering): upstream's --dir-steering-file/-ffn/-attn removed; the server steers only through a profile */
         } else if (!strcmp(arg, "--sysone-calibration")) {  /* sf: 820 */
             c.sysone_calibration = need_arg(&i, argc, argv, arg);
+        } else if (!strcmp(arg, "--sysone-template")) {  /* sf: a000; sf_sysone_open refuses unknown ids */
+            c.sysone_template = parse_nonneg_int_arg(need_arg(&i, argc, argv, arg), arg);
         } else if (!strcmp(arg, "--sysone-state-cache")) {  /* sf: 830 */
             c.sysone_state_cache = parse_nonneg_int_arg(need_arg(&i, argc, argv, arg), arg);
             if (c.sysone_state_cache < 0 || c.sysone_state_cache > 64) {
@@ -16169,7 +16184,7 @@ int main(int argc, char **argv) {
     }
     {   /* sf: 810 the System One option symbols, checked once */
         char so_err[1024];
-        if (sf_sysone_open(&s.sysone, engine, so_err, sizeof(so_err)) != 0) {
+        if (sf_sysone_open(&s.sysone, engine, cfg.sysone_template, so_err, sizeof(so_err)) != 0) {
             server_log(DS4_LOG_DEFAULT, "ds4-server: system one: %s", so_err);
             server_close_resources(&s);
             return 1;
@@ -16195,7 +16210,7 @@ int main(int argc, char **argv) {
             if (fp) fclose(fp);
             bool ok = fp && cal.ptr && stat(cfg.engine.model_path, &st) == 0 &&
                       sysone_calibration_parse(cal.ptr, (uint64_t)st.st_size, (int64_t)st.st_mtime,
-                                               s.sysone_temperature, so_err, sizeof(so_err));
+                                               cfg.sysone_template, s.sysone_temperature, so_err, sizeof(so_err));
             if (!fp || !cal.ptr) snprintf(so_err, sizeof(so_err), "cannot read the file");
             buf_free(&cal);
             if (!ok) {
@@ -20692,7 +20707,7 @@ static void test_sysone_response_golden(void) {
     a[1] = (sf_sysone_answer){.n_options = 2, .top = 0, .confidence = 0.5, .p = {0.75, 0.25}, .suffix_tokens = 11};
     a[2] = (sf_sysone_answer){.n_options = 3, .value = 1.43, .confidence = 0.35, .p = {0, 0.57, 0.43}, .suffix_tokens = 12};
     buf b = {0};
-    sysone_response_json(&b, "deepseek-v4.1-flash", &sr, a, NULL, 100, 5.0);
+    sysone_response_json(&b, "deepseek-v4.1-flash", 1, &sr, a, NULL, 100, 5.0, 0.0);
     TEST_ASSERT(!strcmp(b.ptr,
         "{\"model\":\"deepseek-v4.1-flash\",\"answers\":{"
         "\"n\":{\"type\":\"noul\",\"noul\":0.25},"
@@ -20707,13 +20722,13 @@ static void test_sysone_response_golden(void) {
     a[0].logit[0] = 1.5f;
     a[1].unstable = 1;
     const double temps[3] = {1, 1.25, 2};
-    sysone_response_json(&b, "m", &sr, a, temps, 100, 5.0);
+    sysone_response_json(&b, "m", 1, &sr, a, temps, 100, 5.0, 2.5);
     const char *json = b.ptr;
     TEST_ASSERT(json_skip_value(&json) && *json == '\n');
-    TEST_ASSERT(strstr(b.ptr, ",\"sf\":{\"template_version\":1,\"prefix_tokens\":100,\"prefill_ms\":5.0,") != NULL);
+    TEST_ASSERT(strstr(b.ptr, ",\"sf\":{\"template_version\":1,\"prefix_tokens\":100,\"prefill_ms\":5.0,\"save_ms\":2.5,") != NULL);
     TEST_ASSERT(strstr(b.ptr, "\"logits\":{\"true\":1.5,\"false\":0}") != NULL);
-    TEST_ASSERT(strstr(b.ptr, "\"c\":{\"suffix_tokens\":11,\"ms\":0.0,\"legal_mass\":0,\"temperature\":1.25,\"unstable\":true,") != NULL);
-    TEST_ASSERT(strstr(b.ptr, "\"n\":{\"suffix_tokens\":10,\"ms\":0.0,\"legal_mass\":0,\"temperature\":1,\"logits\"") != NULL);
+    TEST_ASSERT(strstr(b.ptr, "\"c\":{\"suffix_tokens\":11,\"ms\":0.0,\"restore_ms\":0.0,\"eval_ms\":0.0,\"legal_mass\":0,\"temperature\":1.25,\"unstable\":true,") != NULL);
+    TEST_ASSERT(strstr(b.ptr, "\"n\":{\"suffix_tokens\":10,\"ms\":0.0,\"restore_ms\":0.0,\"eval_ms\":0.0,\"legal_mass\":0,\"temperature\":1,\"logits\"") != NULL);
     buf_free(&b);
     sysone_request_free(&sr);
 }
@@ -20724,18 +20739,19 @@ static void test_sysone_calibration_file(void) {
                      "\"temperature\":{\"noul\":1.31,\"choice\":1.18},\"fitted_on\":\"x\",\"date\":\"2026-11-12\"}";
     double t[3] = {0};
     char err[256] = "";
-    TEST_ASSERT(sysone_calibration_parse(ok, 1000, 77, t, err, sizeof(err)));
+    TEST_ASSERT(sysone_calibration_parse(ok, 1000, 77, 1, t, err, sizeof(err)));
     TEST_ASSERT(t[SF_SYSONE_NOUL] == 1.31 && t[SF_SYSONE_CHOICE] == 1.18 && t[SF_SYSONE_SCORE] == 1.0);
-    TEST_ASSERT(!sysone_calibration_parse(ok, 1001, 77, t, err, sizeof(err)) && strstr(err, "model_bytes"));
-    TEST_ASSERT(!sysone_calibration_parse(ok, 1000, 78, t, err, sizeof(err)) && strstr(err, "model_mtime"));
+    TEST_ASSERT(!sysone_calibration_parse(ok, 1001, 77, 1, t, err, sizeof(err)) && strstr(err, "model_bytes"));
+    TEST_ASSERT(!sysone_calibration_parse(ok, 1000, 78, 1, t, err, sizeof(err)) && strstr(err, "model_mtime"));
     const char *ver = "{\"binding\":{\"model_bytes\":1000,\"model_mtime\":77,\"template_version\":2,\"layout\":\"state_first\"},\"temperature\":{}}";
-    TEST_ASSERT(!sysone_calibration_parse(ver, 1000, 77, t, err, sizeof(err)) && strstr(err, "template_version"));
+    TEST_ASSERT(!sysone_calibration_parse(ver, 1000, 77, 1, t, err, sizeof(err)) && strstr(err, "template_version"));
+    TEST_ASSERT(sysone_calibration_parse(ver, 1000, 77, 2, t, err, sizeof(err)));
     const char *lay = "{\"binding\":{\"model_bytes\":1000,\"model_mtime\":77,\"template_version\":1,\"layout\":\"schema_first\"},\"temperature\":{}}";
-    TEST_ASSERT(!sysone_calibration_parse(lay, 1000, 77, t, err, sizeof(err)) && strstr(err, "layout"));
+    TEST_ASSERT(!sysone_calibration_parse(lay, 1000, 77, 1, t, err, sizeof(err)) && strstr(err, "layout"));
     const char *miss = "{\"binding\":{\"model_bytes\":1000,\"template_version\":1,\"layout\":\"state_first\"},\"temperature\":{}}";
-    TEST_ASSERT(!sysone_calibration_parse(miss, 1000, 77, t, err, sizeof(err)) && strstr(err, "model_mtime"));
+    TEST_ASSERT(!sysone_calibration_parse(miss, 1000, 77, 1, t, err, sizeof(err)) && strstr(err, "model_mtime"));
     const char *neg = "{\"binding\":{\"model_bytes\":1000,\"model_mtime\":77,\"template_version\":1,\"layout\":\"state_first\"},\"temperature\":{\"score\":-1}}";
-    TEST_ASSERT(!sysone_calibration_parse(neg, 1000, 77, t, err, sizeof(err)));
+    TEST_ASSERT(!sysone_calibration_parse(neg, 1000, 77, 1, t, err, sizeof(err)));
     sysone_request sr;
     sysone_error e;
     TEST_ASSERT(parse_sysone_request("{\"model\":\"m\",\"state\":\"s\",\"sf\":{\"temperature\":1.5},\"questions\":{\"a\":{\"type\":\"noul\"}}}", &sr, &e));

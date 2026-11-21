@@ -17,10 +17,16 @@ and a verdict.
 
 - Converters for three public sets into the `820` item format.
 - Full runs (not subsets) in three modes: plain readout, readout with a
-  temperature fitted on held-out items, and the model's own thinking answer on
-  a sample.
+  temperature fitted on held-out items, and the model's own answer after
+  medium-effort reasoning (the reasoning is not part of the answer) on
+  jevbench, the jevify policy suites and a 200-decision typed-decisions sample.
+- Four fixed references on every set: Jev 1.13.0, CLM-8B, the best
+  Qwen-derived system and Rizzo Flow, with an empty cell where one has no
+  published figure, plus the best other non-DeepSeek figure.
+- A quantization check: our thinking answers on the jevbench public items
+  against the same model's full-precision production API, item by item.
 - `sysone-bench/record.md` gains "Public benchmarks": our scores with
-  intervals beside each published score, and a verdict per set and overall.
+  intervals beside each reference, and a verdict per set and overall.
 
 ## Non-goals
 
@@ -28,9 +34,14 @@ and a verdict.
 - Sets with more than 26 options per question (CLINC-150, Banking77) wait for
   `a040`; they are listed in the record as "not run: needs `a040`".
 - No reproduction of other systems: their numbers are quoted as published.
+- No jevbench sealed set: it needs a public endpoint, which the owner does
+  not want now.
+- No DeepSeek system as a reference: the API run serves only the
+  quantization check.
 
 ## Impact
 
-- `sysone-bench/convert.py`: two more sources. `sysone-bench/record.md`,
-  `docs/system-one.md` section 8.
-- About four hours of model time.
+- `sysone-bench/convert.py`: two more sources. `sysone-bench/run.py`:
+  `--effort` and token counts. `sysone-bench/jb_compare.py` (new).
+  `sysone-bench/record.md`, `docs/system-one.md` section 8.
+- About five hours of model time (2 h of it the thinking runs).

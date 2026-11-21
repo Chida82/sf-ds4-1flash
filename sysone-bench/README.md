@@ -9,8 +9,10 @@ installed, and downloaded sets stay outside the repository (`--work`).
 |---|---|
 | `run.py` | sends a JSONL item set in one of four modes (`sysone`, `gen`, `think`, `teacher`) and prints one table row per question type, one overall, and a line for `record.md` |
 | `metrics.py` | accuracy, NLL, Brier, ECE (10 bins), latency percentiles, legal mass, a state-level bootstrap interval, AUROC |
-| `fit.py` | fits one temperature per question type on the even half of a `sysone` run and writes the file `--sysone-calibration` loads; `--apply` tempers a run offline |
-| `convert.py` | fetches `typed-decisions` and writes it in the item format |
+| `fit.py` | fits one temperature per question type on the even half of a `sysone` run and writes the file `--sysone-calibration` loads, bound to `--template-version` (default 2); `--apply` tempers a run offline |
+| `template_gate.py` | compares a question-suffix template with the base one on paired runs and prints the `a000` gate as JSON |
+| `convert.py` | fetches `typed-decisions` and writes it in the item format; `--source jevbench|jevify` converts a local clone of those public sets (`a010`) |
+| `inject.py` | builds prompt-injection twins of labelled items and reports their flip rate (`a005`) |
 | `abstain_items.py` | builds the abstention twins and scores the four detectors |
 | `fixtures-it.jsonl` | 60 Italian items, 20 per type, labels by construction, each with the `evidence` sentence that carries its answer |
 

@@ -8,7 +8,7 @@
 #include <string.h>
 #include <time.h>
 
-/* Template version 1 (docs/system-one.md, "Template"). */
+/* Template versions 1 and 2 (docs/system-one.md, "Template"); they differ only in the question suffix. */
 static const char SYS[] =
     "You are a decision function. Read the state and answer the question by "
     "choosing exactly one of the listed options.";
@@ -19,6 +19,7 @@ static const char ANSWER_PREFILL[] = "";
 
 struct sf_sysone {
     ds4_engine *e;
+    int template_version;
     int symbol[N_SYMBOLS];
 };
 
@@ -44,11 +45,16 @@ static void dump_tokens(sf_sysone *so, const ds4_tokens *t, char *buf, size_t le
     }
 }
 
-int sf_sysone_open(sf_sysone **out, ds4_engine *e, char *err, size_t errlen) {
+int sf_sysone_open(sf_sysone **out, ds4_engine *e, int template_version, char *err, size_t errlen) {
     *out = NULL;
+    if (template_version != 1 && template_version != 2) {
+        snprintf(err, errlen, "unknown template version %d", template_version);
+        return 1;
+    }
     sf_sysone *so = calloc(1, sizeof(*so));
     if (!so) { snprintf(err, errlen, "out of memory"); return 1; }
     so->e = e;
+    so->template_version = template_version;
     ds4_tokens p = {0};
     ds4_tokenize_text(e, ANSWER_PREFILL, &p);
     for (int k = 0; k < N_SYMBOLS; k++) {
@@ -78,6 +84,8 @@ int sf_sysone_open(sf_sysone **out, ds4_engine *e, char *err, size_t errlen) {
 
 void sf_sysone_close(sf_sysone *so) { free(so); }
 
+int sf_sysone_template(const sf_sysone *so) { return so->template_version; }
+
 int sf_sysone_symbol_token(const sf_sysone *so, sf_sysone_type type, int i) {
     return so->symbol[type == SF_SYSONE_SCORE ? 26 + i : i];
 }
@@ -105,7 +113,35 @@ static char *option_line(const sf_sysone_question *q, int i) {
     return line;
 }
 
+static void text_add(char **buf, size_t *len, size_t *cap, const char *s) {
+    size_t n = strlen(s);
+    if (*len + n + 1 > *cap) {
+        *cap = (*len + n + 1) * 2;
+        *buf = realloc(*buf, *cap);
+    }
+    memcpy(*buf + *len, s, n + 1);
+    *len += n;
+}
+
 void sf_sysone_question_suffix(sf_sysone *so, const sf_sysone_question *q, ds4_tokens *out) {
+    if (so->template_version == 2) {  /* a000: no "Options:" header, the suffix tokenized as one string */
+        char *text = NULL;
+        size_t len = 0, cap = 0;
+        text_add(&text, &len, &cap, "\n\nQuestion: ");
+        text_add(&text, &len, &cap, q->instructions);
+        text_add(&text, &len, &cap, "\n");
+        for (int i = 0; i < q->n_options; i++) {
+            char *line = option_line(q, i);
+            text_add(&text, &len, &cap, line);
+            free(line);
+        }
+        text_add(&text, &len, &cap, "Answer with the identifier only.");
+        ds4_tokenize_text(so->e, text, out);
+        free(text);
+        ds4_chat_append_assistant_prefix(so->e, out, DS4_THINK_NONE);
+        if (ANSWER_PREFILL[0]) ds4_tokenize_text(so->e, ANSWER_PREFILL, out);
+        return;
+    }
     ds4_tokenize_text(so->e, "\n\nQuestion: ", out);
     ds4_tokenize_text(so->e, q->instructions, out);
     ds4_tokenize_text(so->e, "\nOptions:\n", out);
@@ -186,9 +222,9 @@ int sf_sysone_answer_from(sf_sysone *so, ds4_session *s, const ds4_tokens *prefi
                           const ds4_session_snapshot *snap,
                           const sf_sysone_question *q, int n_questions,
                           const double *temperature, sf_sysone_answer *answers,
-                          char *err, size_t errlen) {
+                          char *err, size_t errlen, sf_sysone_timing *timing) {
     return sf_sysone_answer_suffixes(so, s, prefix, snap, q, n_questions, NULL,
-                                     temperature, answers, err, errlen);
+                                     temperature, answers, err, errlen, timing);
 }
 
 int sf_sysone_answer_suffixes(sf_sysone *so, ds4_session *s, const ds4_tokens *prefix,
@@ -196,15 +232,18 @@ int sf_sysone_answer_suffixes(sf_sysone *so, ds4_session *s, const ds4_tokens *p
                               const sf_sysone_question *q, int n_questions,
                               const ds4_tokens *suffixes,
                               const double *temperature, sf_sysone_answer *answers,
-                              char *err, size_t errlen) {
+                              char *err, size_t errlen, sf_sysone_timing *timing) {
     if (ds4_session_steering(s)) { snprintf(err, errlen, "system one needs an unsteered session"); return 1; }
     for (int k = 0; k < n_questions; k++) if (!question_valid(&q[k], k, err, errlen)) return 1;
 
     ds4_tokens full = {0};
     ds4_session_snapshot own = {0};
     int rc = 1, dirty = 0, logged_sweep = 0;
+    if (timing) timing->save_ms = 0;
     if (!snap && n_questions > 1) {
+        const double ts = now_ms();
         if (ds4_session_save_snapshot(s, &own, err, errlen) != 0) goto done;
+        if (timing) timing->save_ms = now_ms() - ts;
         snap = &own;
     }
 
@@ -220,12 +259,14 @@ int sf_sysone_answer_suffixes(sf_sysone *so, ds4_session *s, const ds4_tokens *p
             continue;
         }
         if (dirty) {
+            const double tr = now_ms();
             if (ds4_session_load_snapshot(s, snap, err, errlen) != 0) goto done;
             if (ds4_session_pos(s) != prefix->len || !ds4_session_checkpoint_valid(s)) {
                 snprintf(err, errlen, "snapshot restore left pos %d (want %d), checkpoint %s",
                          ds4_session_pos(s), prefix->len, ds4_session_checkpoint_valid(s) ? "valid" : "invalid");
                 goto done;
             }
+            a->restore_ms = now_ms() - tr;
         }
         full.len = 0;
         ds4_tokens_copy(&full, prefix);
@@ -237,7 +278,9 @@ int sf_sysone_answer_suffixes(sf_sysone *so, ds4_session *s, const ds4_tokens *p
             fprintf(stderr, "sysone: question suffix of %d tokens runs as a prefill sweep (slow)\n", a->suffix_tokens);
             logged_sweep = 1;
         }
+        const double te = now_ms();
         if (ds4_session_sync(s, &full, err, errlen) != 0) goto done;
+        a->eval_ms = now_ms() - te;
         dirty = 1;
         for (int i = 0; i < a->n_options; i++) {
             ds4_token_score sc;
@@ -261,16 +304,20 @@ done:
 int sf_sysone_decide(sf_sysone *so, ds4_session *s, const char *state,
                      const sf_sysone_question *q, int n_questions,
                      const double *temperature, sf_sysone_answer *answers,
-                     int *prefix_tokens, char *err, size_t errlen) {
+                     int *prefix_tokens, char *err, size_t errlen, sf_sysone_timing *timing) {
     if (ds4_session_steering(s)) { snprintf(err, errlen, "system one needs an unsteered session"); return 1; }
     for (int k = 0; k < n_questions; k++) if (!question_valid(&q[k], k, err, errlen)) return 1;
     ds4_tokens prefix = {0};
     int rc = 1;
     sf_sysone_state_prefix(so, state, &prefix);
     if (prefix_tokens) *prefix_tokens = prefix.len;
+    if (timing) *timing = (sf_sysone_timing){0};
+    const double tp = now_ms();
     if (prefix.len >= ds4_session_ctx(s)) snprintf(err, errlen, "max_tokens_exceeded");
-    else if (ds4_session_sync(s, &prefix, err, errlen) == 0)
-        rc = sf_sysone_answer_from(so, s, &prefix, NULL, q, n_questions, temperature, answers, err, errlen);
+    else if (ds4_session_sync(s, &prefix, err, errlen) == 0) {
+        if (timing) timing->prefill_ms = now_ms() - tp;
+        rc = sf_sysone_answer_from(so, s, &prefix, NULL, q, n_questions, temperature, answers, err, errlen, timing);
+    }
     ds4_tokens_free(&prefix);
     return rc;
 }
