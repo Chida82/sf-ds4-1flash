@@ -60,12 +60,13 @@ for v in $SF_VARIANTS; do
     check "$m-$v plist passes -m ${spec#*:}" plist_has "<string>-m</string>
     <string>${spec#*:}</string>"
     check "$m-$v no placeholder left" sh -c '! printf "%s\n" "$1" | grep -q "@HOME@\|@VARIANT@"' sh "$plist"
-    kvs="$kvs$(printf '%s\n' "$plist" | grep -A1 -F '<string>--kv-disk-dir</string>' | tail -n 1)
+    kvs="$kvs${spec#*:} $(printf '%s\n' "$plist" | grep -A1 -F '<string>--kv-disk-dir</string>' | tail -n 1)
 "
 done
 if [ -n "$SF_VARIANTS" ]; then
-    distinct_kv() { [ -z "$(printf '%s' "$kvs" | sort | uniq -d)" ]; }
-    check "$m variants keep separate KV dirs" distinct_kv
+    # Variants on the same weights may share a KV dir; different weights may not.
+    distinct_kv() { [ -z "$(printf '%s' "$kvs" | sort -u | awk '{print $2}' | sort | uniq -d)" ]; }
+    check "$m variants on different weights keep separate KV dirs" distinct_kv
     names_variants() { sfctl start "$m" 2>&1 | grep -qF "$m-${SF_VARIANTS%% *}"; }
     check "start $m is a usage error" usage_error start "$m"
     check "start $m names the variants" names_variants
