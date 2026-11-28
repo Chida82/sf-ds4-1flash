@@ -7,11 +7,15 @@ installed, and downloaded sets stay outside the repository (`--work`).
 
 | File | What it does |
 |---|---|
-| `run.py` | sends a JSONL item set in one of four modes (`sysone`, `gen`, `think`, `teacher`) and prints one table row per question type, one overall, and a line for `record.md` |
+| `run.py` | sends a JSONL item set in one of four modes (`sysone`, `gen`, `think`, `teacher`) and prints one table row per question type, one overall, and a line for `record.md`; `--effort` and `--max-tokens` set the thinking budget (`a010`; rows carry `completion_tokens`, `finish_reason`, the reasoning length), `--blank-state` asks each distinct question of the state "(no state given)" (`a020`) |
 | `metrics.py` | accuracy, NLL, Brier, ECE (10 bins), latency percentiles, legal mass, a state-level bootstrap interval, AUROC |
 | `fit.py` | fits one temperature per question type on the even half of a `sysone` run and writes the file `--sysone-calibration` loads, bound to `--template-version` (default 2); `--apply` tempers a run offline |
 | `template_gate.py` | compares a question-suffix template with the base one on paired runs and prints the `a000` gate as JSON |
-| `convert.py` | fetches `typed-decisions` and writes it in the item format; `--source jevbench|jevify` converts a local clone of those public sets (`a010`) |
+| `convert.py` | fetches `typed-decisions` and writes it in the item format; `--source jevbench|jevify` converts a local clone of those public sets; `--source s1b` rebuilds system-one-bench suites from the datasets-server rows and refuses one whose hash differs from its `data.lock.json` (`a010`; `banking77` for `a040`) |
+| `jb_compare.py` | our results against a jevbench system item for item: discordant pairs and the exact sign test (`a010`) |
+| `contrast_fit.py` | the prior contrast `softmax((z - beta*u)/T0)`, content-free and batch priors, fitted and tested on state halves (`a020`) |
+| `trajectory.py` | writes the item file for `tests/test_sysone --think-trajectory` and reads its curves: accuracy and legal mass if the reasoning had closed at N (`a025`) |
+| `results/` | raw per-item rows of the recorded runs, reused by later changes (`results/README.md`) |
 | `inject.py` | builds prompt-injection twins of labelled items and reports their flip rate (`a005`) |
 | `abstain_items.py` | builds the abstention twins and scores the four detectors |
 | `fixtures-it.jsonl` | 60 Italian items, 20 per type, labels by construction, each with the `evidence` sentence that carries its answer |

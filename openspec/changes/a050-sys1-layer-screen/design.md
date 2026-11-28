@@ -91,8 +91,9 @@ builds it. Writes a sidecar JSON mapping each item to its `T` job numbers and
 to its state id and schema id (the hash of its instructions and option
 names).
 
-Items: `fixtures-it.jsonl` (60), the first 240 `typed-decisions` test items
-with a state under 250 tokens, and 300 Banking77 test utterances over a fixed
+Items: `fixtures-it.jsonl` (60), all jevbench items whose state, as the JSON text `run.py` sends, is
+under 1,000 characters (about 250 tokens; about 150 items) and the first
+15 items of each of the seven system-one-bench suites of `a010` (105), and 300 Banking77 test utterances over a fixed
 26-intent subset (the 26 most frequent intents of the test split; with 26
 options the `800` letter readout is the teacher, no `a040` needed).
 

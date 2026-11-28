@@ -42,8 +42,9 @@ for one request.
 
 ## Bench sweep
 
-`sysone-bench/escalate_sweep.py`: on the `typed-decisions` test split (first
-200 items) and `fixtures-it.jsonl`, run `run.py --mode sysone --sf` with
+`sysone-bench/escalate_sweep.py`: on jevbench (231) and the 30-item
+system-one-bench subsets of `a010` (`s1b-*-30.jsonl`, 210 items; the sets
+where `a010` has thinking rows), run `run.py --mode sysone --sf` with
 `below` in {0, 0.6, 0.7, 0.8, 0.9, 0.95} and `think` fixed at the `N` that
 `a025`'s trajectory run chose. Report per `below`: accuracy (interval),
 escalated share, mean and p95 ms per decision.

@@ -1,0 +1,13 @@
+{
+ "binding": {
+  "model_bytes": 365713686528,
+  "model_mtime": 1792535775,
+  "template_version": 2,
+  "layout": "state_first"
+ },
+ "temperature": {
+  "choice": 4.7568
+ },
+ "fitted_on": "r-s1b-xnli_fr-sys.jsonl even ids, 87 items",
+ "date": "2026-11-24"
+}

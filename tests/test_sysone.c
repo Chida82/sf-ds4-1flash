@@ -5,6 +5,11 @@
  *   ./tests/test_sysone MODEL --probe      template probe T-A/T-B/T-C
  *   ./tests/test_sysone MODEL --special-text  special-token text in a state stays text (a005)
  *   ./tests/test_sysone MODEL --timing     phase timings of a decision (a080)
+ *   ./tests/test_sysone MODEL --think-trajectory ITEMS OUT [LEVEL [EVERY]]
+ *       a025 step 0: reason greedily at effort LEVEL (default 50, the server's
+ *       "medium") and, every EVERY reasoning tokens (default 32; 0: never),
+ *       read what a forced close would answer; ITEMS is written by
+ *       sysone-bench/trajectory.py
  * Every check prints a line naming it: an exit code alone proves nothing. */
 #include "sf_sysone.h"
 
@@ -35,7 +40,67 @@ static void set_p(sf_sysone_answer *a, int n, const double *p) {
     for (int i = 0; i < n; i++) a->logit[i] = p[i] > 0 ? (float)log(p[i]) : -1e30f;
 }
 
+/* a040: a fake readout over hand-written token paths. Digits are tokens 100-109,
+ * "]" is 50. Root: digit 1 has `p1`, the others 0.07 each; after "1": "]" 0.5,
+ * "0" 0.2, "1" 0.1. Any other node is a test failure (it should not be read). */
+typedef struct { double p1; int bad; } fake_trie;
+
+static int fake_read(void *ud, const int *path, int depth, const int *tokens, int n, double *prob) {
+    fake_trie *f = ud;
+    for (int i = 0; i < n; i++) {
+        if (depth == 0) prob[i] = tokens[i] == 101 ? f->p1 : 0.07;
+        else if (depth == 1 && path[0] == 101) prob[i] = tokens[i] == 50 ? 0.5 : tokens[i] == 100 ? 0.2 : 0.1;
+        else f->bad = 1;
+    }
+    return 0;
+}
+
+static void digit_paths(int n, int *paths, int *lens) {
+    for (int k = 0; k < n; k++) {
+        int *p = &paths[k * SF_SYSONE_TRIE_DEPTH], len = 0;
+        if (k >= 10) p[len++] = 100 + k / 10;
+        p[len++] = 100 + k % 10;
+        p[len++] = 50;
+        lens[k] = len;
+    }
+}
+
+static int trie_checks(void) {
+    int paths[12 * SF_SYSONE_TRIE_DEPTH] = {0}, lens[12], ev = 0;
+    float lp[12];
+    double mass = 0, sum = 0;
+    char err[256] = {0};
+    fake_trie f = {0.3, 0};
+    digit_paths(12, paths, lens);
+    int rc = sf_sysone_trie_probs(paths, lens, 12, fake_read, &f, lp, &mass, &ev, err, sizeof(err));
+    for (int k = 0; k < 12; k++) sum += exp(lp[k]);
+    const double r = 0.3 / 0.93;
+    check(!rc && !f.bad && ev == 2 && fabs(mass - 0.93) < 1e-12 && fabs(sum - 1) < 1e-6 &&
+          fabs(exp(lp[0]) - 0.07 / 0.93) < 1e-6 && fabs(exp(lp[1]) - r * 0.5 / 0.8) < 1e-6 &&
+          fabs(exp(lp[10]) - r * 0.2 / 0.8) < 1e-6 && fabs(exp(lp[11]) - r * 0.1 / 0.8) < 1e-6,
+          "trie 12 digit options: renormalised products, single-child nodes not read");
+    f = (fake_trie){1e-6, 0};
+    rc = sf_sysone_trie_probs(paths, lens, 12, fake_read, &f, lp, &mass, &ev, err, sizeof(err));
+    sum = 0;
+    for (int k = 0; k < 12; k++) sum += exp(lp[k]);
+    check(!rc && !f.bad && ev == 1 && fabs(sum - 1) < 1e-6 && fabs(lp[1] - lp[10]) < 1e-5 && fabs(lp[10] - lp[11]) < 1e-5,
+          "trie node under 1e-4 not expanded, equal shares, sum 1");
+    for (int k = 10; k < 12; k++) {  /* a tokenizer with two-digit tokens: every path is "kk" "]" */
+        paths[k * SF_SYSONE_TRIE_DEPTH] = 200 + k;
+        paths[k * SF_SYSONE_TRIE_DEPTH + 1] = 50;
+        lens[k] = 2;
+    }
+    rc = sf_sysone_trie_probs(paths, lens, 12, fake_read, &f, lp, &mass, &ev, err, sizeof(err));
+    check(!rc && ev == 1, "trie multi-digit tokens: root only");
+    lens[1] = 1;                             /* option 1's path is the single token "1" ... */
+    paths[10 * SF_SYSONE_TRIE_DEPTH] = 101;  /* ... and option 10's starts with it */
+    rc = sf_sysone_trie_probs(paths, lens, 12, fake_read, &f, lp, &mass, &ev, err, sizeof(err));
+    check(rc && strstr(err, "prefix") != NULL, "trie refuses a path that is a prefix of another");
+    return 0;
+}
+
 static int math_checks(void) {
+    trie_checks();
     {   /* 835: the live turn text */
         static const char *const names[] = {"x", "y"};
         sf_sysone_question q = {SF_SYSONE_CHOICE, "Pick one.", 2, names, NULL};
@@ -152,10 +217,10 @@ static ds4_engine *engine;
 static ds4_session *session;
 static sf_sysone *so;
 
-static int open_all(const char *model) {
+static int open_all(const char *model, int ctx) {
     char err[1024] = {0};
     ds4_engine_options opt = {.model_path = model, .backend = DS4_BACKEND_METAL,
-        .context_size = 4096, .power_percent = 100, .ssd_streaming = true,
+        .context_size = ctx, .power_percent = 100, .ssd_streaming = true,
         .ssd_streaming_cache_bytes = UINT64_C(32) << 30};
     if (ds4_engine_open(&engine, &opt) != 0) { fprintf(stderr, "engine open failed\n"); return 0; }
     if (ds4_session_create(&session, engine, opt.context_size) != 0) { fprintf(stderr, "session failed\n"); return 0; }
@@ -496,6 +561,26 @@ static int mode_checks(void) {
     rc = sf_sysone_decide(so, session, S1, &one, 1, NULL, &again, NULL, err, sizeof(err), NULL);
     check(!rc && again.p[0] == 1.0 && again.legal_mass == 1.0 && again.suffix_tokens == 0, "one option p=1 without eval");
 
+    /* a040: 40 options through the id trie */
+    static const char *const IT40[40] = {"uno", "due", "tre", "quattro", "cinque", "sei", "sette", "otto", "nove",
+        "dieci", "undici", "dodici", "tredici", "quattordici", "quindici", "sedici", "diciassette", "diciotto",
+        "diciannove", "venti", "ventuno", "ventidue", "ventitré", "ventiquattro", "venticinque", "ventisei",
+        "ventisette", "ventotto", "ventinove", "trenta", "trentuno", "trentadue", "trentatré", "trentaquattro",
+        "trentacinque", "trentasei", "trentasette", "trentotto", "trentanove", "quaranta"};
+    sf_sysone_question q40 = {SF_SYSONE_CHOICE, "Quale numero è stato scelto?", 40, IT40, NULL};
+    sf_sysone_answer b40, c40;
+    const char *s40 = "Il numero scelto è ventisette.";
+    rc = sf_sysone_decide(so, session, s40, &q40, 1, NULL, &b40, NULL, err, sizeof(err), NULL);
+    if (!rc) rc = sf_sysone_decide(so, session, s40, &q40, 1, NULL, &c40, NULL, err, sizeof(err), NULL);
+    if (rc) fprintf(stderr, "trie: %s\n", err);
+    double s = 0;
+    for (int i = 0; i < 40; i++) s += b40.p[i];
+    printf("sysone: trie 40 options top %d p %.4f legal mass %.4f evaluated nodes %d suffix %d ms %.0f\n",
+           b40.top, b40.p[b40.top], b40.legal_mass, b40.evaluated_nodes, b40.suffix_tokens, b40.ms);
+    check(!rc && b40.top == 26, "trie 40 Italian numbers: ventisette is option 26");
+    check(!rc && fabs(s - 1) < 1e-9, "trie probabilities sum to 1");
+    check(!rc && logits_equal(&b40, &c40) && b40.evaluated_nodes == c40.evaluated_nodes, "trie same request twice, bitwise");
+
     /* timing: 60-token and 600-token states, three questions */
     sf_sysone_question t3[3] = {FIX[0].q, FIX[1].q, FIX[2].q};
     /* long first: the short state must start from an empty session, not a cached prefix */
@@ -521,14 +606,141 @@ static int mode_checks_all(void) {
     return mode_checks() || rc;
 }
 
+/* ---- a025 step 0: think trajectory ---- */
+
+/* One length-prefixed field: "<bytes>\n<text>\n". Caller frees. */
+static char *read_field(FILE *f) {
+    long n;
+    if (fscanf(f, "%ld", &n) != 1 || n < 0 || fgetc(f) != '\n') return NULL;
+    char *b = malloc((size_t)n + 1);
+    if (fread(b, 1, (size_t)n, f) != (size_t)n || fgetc(f) != '\n') { free(b); return NULL; }
+    b[n] = 0;
+    return b;
+}
+
+/* A forced (or natural) close at the session's current position: </think>,
+ * read the option logits, then put the session back where it was. */
+static int trajectory_read(ds4_session *s, int close_id, int closed, const sf_sysone_question *q,
+                           ds4_session_snapshot *snap, sf_sysone_answer *a, char *err, size_t errlen) {
+    if (!closed) {
+        if (ds4_session_save_snapshot(s, snap, err, errlen) != 0) return 1;
+        if (ds4_session_eval(s, close_id, err, errlen) != 0) return 1;
+    }
+    memset(a, 0, sizeof(*a));
+    a->n_options = q->n_options;
+    for (int i = 0; i < q->n_options; i++) {
+        ds4_token_score sc;
+        if (!ds4_session_token_logprob(s, sf_sysone_symbol_token(so, q->type, i), &sc)) {
+            snprintf(err, errlen, "no logits");
+            return 1;
+        }
+        a->logit[i] = sc.logit;
+        a->legal_mass += exp((double)sc.logprob);
+    }
+    sf_sysone_finish(q->type, 1.0, a);
+    if (!closed) {
+        if (ds4_session_load_snapshot(s, snap, err, errlen) != 0) return 1;
+        ds4_session_snapshot_free(snap);
+    }
+    return 0;
+}
+
+static void trajectory_row(FILE *out, const char *id, int n, const char *kind, const sf_sysone_answer *a) {
+    fprintf(out, "%s\t%d\t%s\t%d\t%.6f\t", id, n, kind, a->top, a->legal_mass);
+    for (int i = 0; i < a->n_options; i++) fprintf(out, "%s%.4f", i ? "," : "", a->logit[i]);
+    fprintf(out, "\n");
+    fflush(out);
+}
+
+static int mode_trajectory(const char *items_path, const char *out_path, const char *level, int every) {
+    char err[1024] = {0};
+    ds4_think_mode mode;
+    if (!ds4_think_mode_parse_level(level, &mode)) { fprintf(stderr, "bad level %s\n", level); return 1; }
+    ds4_tokens none = {0}, think = {0};
+    ds4_chat_append_assistant_prefix(engine, &none, DS4_THINK_NONE);
+    ds4_chat_append_assistant_prefix(engine, &think, mode);
+    int close_id = -1;
+    for (int i = 0; i < none.len; i++)
+        if (ds4_token_output_marker(engine, none.v[i]) == DS4_OUTPUT_MARKER_THINK_CLOSE) close_id = none.v[i];
+    const int none_len = none.len;
+    ds4_tokens_free(&none);
+    FILE *f = fopen(items_path, "rb"), *out = fopen(out_path, "w");
+    if (close_id < 0 || !f || !out) { fprintf(stderr, "trajectory: setup failed\n"); return 1; }
+    int n_items = 0;
+    char typ[16], idbuf[256];
+    int n_opt;
+    while (fscanf(f, "%255s %15s %d\n", idbuf, typ, &n_opt) == 3) {
+        char *state = read_field(f), *instr = read_field(f);
+        char *names[SF_SYSONE_MAX_OPTIONS] = {0}, *texts[SF_SYSONE_MAX_OPTIONS] = {0};
+        for (int i = 0; i < n_opt; i++) names[i] = read_field(f);
+        for (int i = 0; i < n_opt; i++) texts[i] = read_field(f);
+        sf_sysone_question q = {!strcmp(typ, "noul") ? SF_SYSONE_NOUL : !strcmp(typ, "score") ? SF_SYSONE_SCORE
+                                : SF_SYSONE_CHOICE, instr, n_opt, (const char *const *)names, (const char *const *)texts};
+        /* thinking prefix (effort line, system, state), the 800 suffix without its
+         * thinking-off assistant prefix, then the assistant marker with <think> */
+        ds4_tokens t = {0};
+        ds4_chat_begin(engine, &t);
+        ds4_chat_append_think_prefix(engine, &t, mode);
+        ds4_chat_append_message(engine, &t, "system",
+            "You are a decision function. Read the state and answer the question by "
+            "choosing exactly one of the listed options.");
+        ds4_tokens_push(&t, ds4_token_user(engine));
+        ds4_tokenize_text(engine, "State:\n", &t);
+        ds4_tokenize_text(engine, state, &t);
+        sf_sysone_question_suffix(so, &q, &t);
+        t.len -= none_len;
+        for (int i = 0; i < think.len; i++) ds4_tokens_push(&t, think.v[i]);
+        int rc = t.len + 1100 >= ds4_session_ctx(session) ? (snprintf(err, sizeof(err), "too long"), 1)
+                 : ds4_session_sync(session, &t, err, sizeof(err));
+        sf_sysone_answer a;
+        ds4_session_snapshot snap = {0};
+        int n = 0;
+        const char *end = "cap";
+        const double t0 = now_ms();
+        while (!rc) {
+            if (every && n % every == 0 && (rc = trajectory_read(session, close_id, 0, &q, &snap, &a, err, sizeof(err))) == 0)
+                trajectory_row(out, idbuf, n, "probe", &a);
+            if (rc) break;
+            int tok = ds4_session_argmax(session);
+            if (ds4_token_output_marker(engine, tok) == DS4_OUTPUT_MARKER_THINK_CLOSE) {
+                rc = ds4_session_eval(session, tok, err, sizeof(err));
+                if (!rc) rc = trajectory_read(session, close_id, 1, &q, &snap, &a, err, sizeof(err));
+                end = "natural";
+                break;
+            }
+            if (ds4_token_is_stop(engine, tok)) { end = "stop"; break; }
+            if (n == 1024) break;
+            rc = ds4_session_eval(session, tok, err, sizeof(err));
+            n++;
+        }
+        if (!rc && strcmp(end, "natural")) {  /* stop token or cap: a forced close */
+            rc = ds4_session_eval(session, close_id, err, sizeof(err));
+            if (!rc) rc = trajectory_read(session, close_id, 1, &q, &snap, &a, err, sizeof(err));
+        }
+        if (!rc) trajectory_row(out, idbuf, n, end, &a);
+        else fprintf(stderr, "trajectory: %s: %s\n", idbuf, err);
+        fprintf(stderr, "trajectory: %d %s n=%d %s %.0f ms\n", ++n_items, idbuf, n, end, now_ms() - t0);
+        ds4_session_snapshot_free(&snap);
+        ds4_tokens_free(&t);
+        free(state); free(instr);
+        for (int i = 0; i < n_opt; i++) { free(names[i]); free(texts[i]); }
+    }
+    ds4_tokens_free(&think);
+    fclose(f); fclose(out);
+    check(n_items > 0, "think trajectory rows written");
+    return 0;
+}
+
 int main(int argc, char **argv) {
     if (argc == 1) return math_checks();
     int rc = 1;
-    if (open_all(argv[1])) {
+    if (open_all(argv[1], argc >= 3 && !strcmp(argv[2], "--think-trajectory") ? 8192 : 4096)) {
         if (argc == 3 && !strcmp(argv[2], "--tokens")) rc = mode_tokens();
         else if (argc == 3 && !strcmp(argv[2], "--probe")) rc = mode_probe();
         else if (argc == 3 && !strcmp(argv[2], "--special-text")) rc = mode_special_text();
         else if (argc == 3 && !strcmp(argv[2], "--timing")) rc = mode_timing();
+        else if (argc >= 5 && argc <= 7 && !strcmp(argv[2], "--think-trajectory"))
+            rc = mode_trajectory(argv[3], argv[4], argc >= 6 ? argv[5] : "50", argc == 7 ? atoi(argv[6]) : 32);
         else if (argc == 2) rc = mode_checks_all();
         else fprintf(stderr, "usage: %s [MODEL [--tokens|--probe|--special-text|--timing]]\n", argv[0]);
     }

@@ -1,0 +1,316 @@
+diff --git a/sf_sysone.c b/sf_sysone.c
+index cbd63ae..9b75e7a 100644
+--- a/sf_sysone.c
++++ b/sf_sysone.c
+@@ -166,6 +166,47 @@ void sf_sysone_question_suffix(sf_sysone *so, const sf_sysone_question *q, ds4_t
+     if (ANSWER_PREFILL[0]) ds4_tokenize_text(so->e, ANSWER_PREFILL, out);
+ }
+ 
++/* ---- a015: schema_first ---- */
++
++static const char SYS2[] =
++    "You are a decision function. Several questions are defined below, then a state. "
++    "For the question you are asked about, choose exactly one of its listed options.";
++
++void sf_sysone_schema_prefix(sf_sysone *so, const sf_sysone_question *q, int n, ds4_tokens *out) {
++    ds4_chat_begin(so->e, out);
++    ds4_chat_append_message(so->e, out, "system", SYS2);
++    ds4_tokens_push(out, ds4_token_user(so->e));
++    char *text = NULL, head[32];
++    size_t len = 0, cap = 0;
++    text_add(&text, &len, &cap, "Questions:\n");
++    for (int k = 0; k < n; k++) {
++        snprintf(head, sizeof(head), "Q%d: ", k + 1);
++        text_add(&text, &len, &cap, head);
++        text_add(&text, &len, &cap, q[k].instructions);
++        text_add(&text, &len, &cap, "\n");
++        for (int i = 0; i < q[k].n_options; i++) {
++            char *line = option_line(&q[k], i);
++            text_add(&text, &len, &cap, line);
++            free(line);
++        }
++        text_add(&text, &len, &cap, "\n");
++    }
++    ds4_tokenize_text(so->e, text, out);
++    free(text);
++}
++
++void sf_sysone_schema_state(sf_sysone *so, const char *state, ds4_tokens *out) {
++    ds4_tokenize_text(so->e, "State:\n", out);
++    ds4_tokenize_text(so->e, state, out);
++}
++
++void sf_sysone_pointer_suffix(sf_sysone *so, int index1, ds4_tokens *out) {
++    char text[64];
++    snprintf(text, sizeof(text), "\n\nAnswer Q%d with the identifier only.", index1);
++    ds4_tokenize_text(so->e, text, out);
++    ds4_chat_append_assistant_prefix(so->e, out, DS4_THINK_NONE);
++}
++
+ char *sf_sysone_turn_text(const sf_sysone_question *q) {
+     size_t cap = strlen(q->instructions) + 160, len = 0;
+     char *out = malloc(cap);
+diff --git a/sf_sysone.h b/sf_sysone.h
+index f3ce8b4..9d5ee67 100644
+--- a/sf_sysone.h
++++ b/sf_sysone.h
+@@ -83,6 +83,15 @@ int sf_sysone_answer_suffixes(sf_sysone *so, ds4_session *s, const ds4_tokens *p
+                               const double *temperature, sf_sysone_answer *answers,
+                               char *err, size_t errlen, sf_sysone_timing *timing);
+ 
++/* a015 schema_first layout: the questions first (a prefix shared by every
++ * state asked them), then the state, then a pointer suffix per question.
++ * `sf_sysone_schema_prefix` + `sf_sysone_schema_state` is the prefix to pass
++ * to sf_sysone_answer_suffixes with the pointer suffixes. Choices above 26
++ * options are not supported in this layout. */
++void sf_sysone_schema_prefix(sf_sysone *so, const sf_sysone_question *q, int n, ds4_tokens *out);
++void sf_sysone_schema_state(sf_sysone *so, const char *state, ds4_tokens *out);
++void sf_sysone_pointer_suffix(sf_sysone *so, int index1, ds4_tokens *out);
++
+ /* 835: the text of a question asked as the next user turn of a conversation
+  * (options and instruction line as the template). Caller frees. */
+ char *sf_sysone_turn_text(const sf_sysone_question *q);
+diff --git a/tests/test_sysone.c b/tests/test_sysone.c
+index c9d1500..b11aca0 100644
+--- a/tests/test_sysone.c
++++ b/tests/test_sysone.c
+@@ -5,6 +5,9 @@
+  *   ./tests/test_sysone MODEL --probe      template probe T-A/T-B/T-C
+  *   ./tests/test_sysone MODEL --special-text  special-token text in a state stays text (a005)
+  *   ./tests/test_sysone MODEL --timing     phase timings of a decision (a080)
++ *   ./tests/test_sysone MODEL --schema-first ITEMS OUT
++ *       a015: each item asked in the schema_first layout; consecutive items
++ *       with the same question share one schema snapshot (ITEMS as below)
+  *   ./tests/test_sysone MODEL --think-trajectory ITEMS OUT [LEVEL [EVERY]]
+  *       a025 step 0: reason greedily at effort LEVEL (default 50, the server's
+  *       "medium") and, every EVERY reasoning tokens (default 32; 0: never),
+@@ -731,6 +734,91 @@ static int mode_trajectory(const char *items_path, const char *out_path, const c
+     return 0;
+ }
+ 
++/* ---- a015: schema_first measured on a stream of states sharing one question ---- */
++
++/* One item of the trajectory.py format; fields owned by the caller (item_free). */
++typedef struct {
++    char id[256], typ[16];
++    int n;
++    char *state, *instr, *names[SF_SYSONE_MAX_OPTIONS], *texts[SF_SYSONE_MAX_OPTIONS];
++    sf_sysone_question q;
++} item_in;
++
++static int item_read(FILE *f, item_in *it) {
++    memset(it, 0, sizeof(*it));
++    if (fscanf(f, "%255s %15s %d\n", it->id, it->typ, &it->n) != 3 || it->n < 1 || it->n > SF_SYSONE_MAX_OPTIONS) return 0;
++    it->state = read_field(f);
++    it->instr = read_field(f);
++    for (int i = 0; i < it->n; i++) it->names[i] = read_field(f);
++    for (int i = 0; i < it->n; i++) it->texts[i] = read_field(f);
++    it->q = (sf_sysone_question){!strcmp(it->typ, "noul") ? SF_SYSONE_NOUL : !strcmp(it->typ, "score") ? SF_SYSONE_SCORE
++                                : SF_SYSONE_CHOICE, it->instr, it->n, (const char *const *)it->names, (const char *const *)it->texts};
++    return it->state && it->instr;
++}
++
++static void item_free(item_in *it) {
++    free(it->state); free(it->instr);
++    for (int i = 0; i < it->n; i++) { free(it->names[i]); free(it->texts[i]); }
++}
++
++static int same_question(const item_in *a, const item_in *b) {
++    if (a->n != b->n || strcmp(a->typ, b->typ) || strcmp(a->instr, b->instr)) return 0;
++    for (int i = 0; i < a->n; i++)
++        if (strcmp(a->names[i], b->names[i]) || strcmp(a->texts[i], b->texts[i])) return 0;
++    return 1;
++}
++
++static int mode_schema_first(const char *items_path, const char *out_path) {
++    char err[1024] = {0};
++    FILE *f = fopen(items_path, "rb"), *out = fopen(out_path, "w");
++    if (!f || !out) { fprintf(stderr, "schema-first: cannot open files\n"); return 1; }
++    item_in cur = {0}, it;
++    int have = 0, n_items = 0, rc = 0;
++    ds4_tokens schema = {0}, prefix = {0}, pointer = {0};
++    ds4_session_snapshot snap = {0};
++    sf_sysone_answer a;
++    sf_sysone_pointer_suffix(so, 1, &pointer);
++    while (!rc && item_read(f, &it)) {
++        const double t0 = now_ms();
++        const char *kind = "hit";
++        if (!have || !same_question(&cur, &it)) {  /* a new schema: prefill it and keep a snapshot */
++            if (have) item_free(&cur);
++            cur = it;
++            have = 1;
++            schema.len = 0;
++            sf_sysone_schema_prefix(so, &cur.q, 1, &schema);
++            ds4_session_snapshot_free(&snap);
++            rc = ds4_session_sync(session, &schema, err, sizeof(err));
++            if (!rc) rc = ds4_session_save_snapshot(session, &snap, err, sizeof(err));
++            kind = "miss";
++        } else {
++            rc = ds4_session_load_snapshot(session, &snap, err, sizeof(err));
++        }
++        const double t1 = now_ms();
++        prefix.len = 0;
++        ds4_tokens_copy(&prefix, &schema);
++        sf_sysone_schema_state(so, it.state, &prefix);
++        if (!rc) rc = ds4_session_sync(session, &prefix, err, sizeof(err));
++        const double t2 = now_ms();
++        if (!rc) rc = sf_sysone_answer_suffixes(so, session, &prefix, NULL, &it.q, 1, &pointer, NULL, &a, err, sizeof(err), NULL);
++        if (!rc) {
++            fprintf(out, "%s\t%s\t%d\t%.6f\t%.1f\t%.1f\t%.1f\t%d\t%d\t", it.id, kind, a.top, a.legal_mass,
++                    t1 - t0, t2 - t1, a.ms, prefix.len - schema.len, a.suffix_tokens);
++            for (int i = 0; i < a.n_options; i++) fprintf(out, "%s%.6f", i ? "," : "", a.logit[i]);
++            fprintf(out, "\n");
++            fflush(out);
++            fprintf(stderr, "schema-first: %d %s %s %.0f ms\n", ++n_items, it.id, kind, now_ms() - t0);
++        } else fprintf(stderr, "schema-first: %s: %s\n", it.id, err);
++        if (cur.state != it.state) item_free(&it);
++    }
++    if (have) item_free(&cur);
++    ds4_session_snapshot_free(&snap);
++    ds4_tokens_free(&schema); ds4_tokens_free(&prefix); ds4_tokens_free(&pointer);
++    fclose(f); fclose(out);
++    check(n_items > 0 && !rc, "schema-first rows written");
++    return rc;
++}
++
+ int main(int argc, char **argv) {
+     if (argc == 1) return math_checks();
+     int rc = 1;
+@@ -739,6 +827,7 @@ int main(int argc, char **argv) {
+         else if (argc == 3 && !strcmp(argv[2], "--probe")) rc = mode_probe();
+         else if (argc == 3 && !strcmp(argv[2], "--special-text")) rc = mode_special_text();
+         else if (argc == 3 && !strcmp(argv[2], "--timing")) rc = mode_timing();
++        else if (argc == 5 && !strcmp(argv[2], "--schema-first")) rc = mode_schema_first(argv[3], argv[4]);
+         else if (argc >= 5 && argc <= 7 && !strcmp(argv[2], "--think-trajectory"))
+             rc = mode_trajectory(argv[3], argv[4], argc >= 6 ? argv[5] : "50", argc == 7 ? atoi(argv[6]) : 32);
+         else if (argc == 2) rc = mode_checks_all();
+diff --git a/tests/test_sysone_bench.py b/tests/test_sysone_bench.py
+index 7bd8bb3..1703e03 100644
+--- a/tests/test_sysone_bench.py
++++ b/tests/test_sysone_bench.py
+@@ -214,6 +214,17 @@ check(enc == b"a_b choice 2\n1\nS\n1\nI\n1\nx\n1\ny\n0\n\n3\nwhy\n" and sorted(c
+       and trajectory.stabilisation(trows) == {"a_b": (32, 40), "c": (0, 10)},
+       "trajectory encoding, curves, stabilisation")
+ 
++# a015: schema_first comparison: paired interval and per-item pairing.
++import schema_first  # noqa: E402
++
++lo, hi = schema_first.paired_diff([(1, 1)] * 50 + [(1, 0)] * 10)
++sitems = [{"id": "x", "state_id": "x", "workflow": "w", "label": "b",
++           "question": {"type": "choice", "instructions": "", "criteria": {"a": "", "b": ""}}}]
++srows = {"x": {"kind": "hit", "mass": 1.0, "schema_ms": 1.0, "state_ms": 10.0, "q_ms": 5.0, "logits": [0.0, 2.0]}}
++sbase = {"x": {"id": "x", "probs": {"a": 0.9, "b": 0.1}, "ms": 40.0}}
++pp, sfm, stm, _ = schema_first.compare(srows, sitems, sbase)
++check(hi < 0 and lo >= -0.35 and pp == [(0, 1)] and sfm == [16.0] and stm == [40.0], "schema_first pairing and interval")
++
+ # a020: prior contrast. A planted option bias, known through the blank-state prior.
+ import contrast_fit  # noqa: E402
+ 
+diff --git a/sysone-bench/README.md b/sysone-bench/README.md
+index bd8ee3e..b18fc94 100644
+--- a/sysone-bench/README.md
++++ b/sysone-bench/README.md
+@@ -14,6 +14,7 @@ installed, and downloaded sets stay outside the repository (`--work`).
+ | `convert.py` | fetches `typed-decisions` and writes it in the item format; `--source jevbench|jevify` converts a local clone of those public sets; `--source s1b` rebuilds system-one-bench suites from the datasets-server rows and refuses one whose hash differs from its `data.lock.json` (`a010`; `banking77` for `a040`) |
+ | `jb_compare.py` | our results against a jevbench system item for item: discordant pairs and the exact sign test (`a010`) |
+ | `contrast_fit.py` | the prior contrast `softmax((z - beta*u)/T0)`, content-free and batch priors, fitted and tested on state halves (`a020`) |
++| `schema_first.py` | the `schema_first` layout against `state_first` on the same items, from `tests/test_sysone --schema-first` rows (`a015`) |
+ | `trajectory.py` | writes the item file for `tests/test_sysone --think-trajectory` and reads its curves: accuracy and legal mass if the reasoning had closed at N (`a025`) |
+ | `inject.py` | builds prompt-injection twins of labelled items and reports their flip rate (`a005`) |
+ | `abstain_items.py` | builds the abstention twins and scores the four detectors |
+diff --git a/sysone-bench/schema_first.py b/sysone-bench/schema_first.py
+new file mode 100644
+index 0000000..95b09ac
+--- /dev/null
++++ b/sysone-bench/schema_first.py
+@@ -0,0 +1,90 @@
++#!/usr/bin/env python3
++"""schema_first against state_first on the same items (change a015, step 3).
++
++    schema_first.py --rows sf.tsv --items A.jsonl ... --base r-sys.jsonl ...
++
++`sf.tsv` is written by `tests/test_sysone MODEL --schema-first`: id, schema
++(hit|miss), top, legal mass, schema ms, state ms, question ms, state tokens,
++pointer tokens, option logits. `--base` are the `a010` state_first rows of the
++same items. Prints accuracy of both with the paired bootstrap interval of the
++difference, the latency per decision (schema hits only) and the design's rule.
++"""
++import argparse
++import json
++import random
++
++import metrics
++from run import label_key, load_items, option_keys
++
++
++def read_rows(path):
++    out = {}
++    for line in open(path):
++        f = line.rstrip("\n").split("\t")
++        out[f[0]] = {"kind": f[1], "mass": float(f[3]), "schema_ms": float(f[4]), "state_ms": float(f[5]),
++                     "q_ms": float(f[6]), "logits": [float(x) for x in f[9].split(",")]}
++    return out
++
++
++def paired_diff(pairs, n=2000, seed=0):
++    """95% interval of mean(b - a) over (a, b) correctness pairs, resampling items."""
++    rng = random.Random(seed)
++    k = len(pairs)
++    d = sorted(sum(b - a for a, b in (pairs[rng.randrange(k)] for _ in range(k))) / k for _ in range(n))
++    return d[int(0.025 * n)], d[int(0.975 * n) - 1]
++
++
++def compare(rows, items, base):
++    pairs, sf_ms, st_ms, mass = [], [], [], []
++    for it in items:
++        i = it["id"].replace(" ", "_")
++        if i not in rows or it["id"] not in base or not base[it["id"]].get("probs"):
++            continue
++        r, b = rows[i], base[it["id"]]
++        keys = option_keys(it["question"])
++        top_sf = keys[max(range(len(keys)), key=lambda k: r["logits"][k])]
++        lab = label_key(it)
++        pairs.append((int(metrics.top(b["probs"]) == lab), int(top_sf == lab)))
++        mass.append(r["mass"])
++        if r["kind"] == "hit":
++            sf_ms.append(r["schema_ms"] + r["state_ms"] + r["q_ms"])
++            st_ms.append(b["ms"])
++    return pairs, sf_ms, st_ms, mass
++
++
++def main():
++    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
++    ap.add_argument("--rows", required=True)
++    ap.add_argument("--items", nargs="+", required=True)
++    ap.add_argument("--base", nargs="+", required=True)
++    a = ap.parse_args()
++    rows = read_rows(a.rows)
++    items = [it for p in a.items for it in load_items(p)]
++    base = {r["id"]: r for p in a.base for r in map(json.loads, open(p))}
++    by = {}
++    for it in items:
++        by.setdefault(it.get("workflow", "?"), []).append(it)
++    print("| set | n | state_first | schema_first | difference (95% CI) | mass mean | p50 ms state_first | p50 ms schema_first (hits) |")
++    print("|---|---|---|---|---|---|---|---|")
++    allp, alls, allt = [], [], []
++    for name, its in sorted(by.items()) + [("all", items)]:
++        pairs, sf_ms, st_ms, mass = compare(rows, its, base)
++        if not pairs:
++            continue
++        lo, hi = paired_diff(pairs)
++        n = len(pairs)
++        print(f"| {name} | {n} | {sum(p[0] for p in pairs) / n:.3f} | {sum(p[1] for p in pairs) / n:.3f} | "
++              f"{(sum(p[1] - p[0] for p in pairs)) / n:+.3f} ({lo:+.3f} to {hi:+.3f}) | {sum(mass) / n:.4f} | "
++              f"{metrics.percentile(sorted(st_ms), 0.5):.0f} | {metrics.percentile(sorted(sf_ms), 0.5):.0f} |")
++        if name == "all":
++            allp, alls, allt = pairs, sf_ms, st_ms
++    _, hi = paired_diff(allp)
++    level = hi >= -0.010  # the interval does not lie wholly below -1 point
++    fast = metrics.percentile(sorted(alls), 0.5) <= 0.5 * metrics.percentile(sorted(allt), 0.5)
++    print(f"\nrule: difference interval not wholly below -0.010: {'ok' if level else 'FAIL'}; "
++          f"p50 latency at most half: {'ok' if fast else 'FAIL'} -> {'KEEP' if level and fast else 'DROP'}")
++    return 0
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())

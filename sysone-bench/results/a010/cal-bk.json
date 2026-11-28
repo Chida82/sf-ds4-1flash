@@ -1,0 +1,13 @@
+{
+ "binding": {
+  "model_bytes": 365713686528,
+  "model_mtime": 1792535775,
+  "template_version": 2,
+  "layout": "state_first"
+ },
+ "temperature": {
+  "choice": 2.0
+ },
+ "fitted_on": "r-s1b-banking77-sys.jsonl even ids, 108 items",
+ "date": "2026-11-24"
+}

@@ -31,7 +31,7 @@ The first step measures that before anything is built on it.
 - `usage.output_tokens` reports the thinking tokens generated.
 - A bench curve: accuracy, ECE and latency at N = 0, 32, 64, 128, 256 and at
   the natural stop.
-- Second stage, only if `a015` was kept: **think once, answer many** — one
+- Second stage, only if `a015` was kept (it was dropped on 2026-11-24, so not done): **think once, answer many** — one
   shared reasoning pass over the state and all question definitions, then the
   pointer readouts.
 

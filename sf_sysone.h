@@ -6,7 +6,9 @@
 #include <stddef.h>
 #include "ds4.h"
 
-#define SF_SYSONE_MAX_OPTIONS 26
+#define SF_SYSONE_MAX_OPTIONS 26  /* letter readout: one symbol token per option */
+#define SF_SYSONE_MAX_CHOICE 255  /* a040: a choice above 26 options is read through a trie of "[k]" ids */
+#define SF_SYSONE_TRIE_DEPTH 8
 #define SF_SYSONE_TEMPLATE_VERSION 2 /* the default; 1 stays selectable (a000) */
 /* Top-two option logit gap under which a different prefill schedule can change
  * the answer: the 95th percentile of the gap change between the layer-major and
@@ -26,8 +28,8 @@ typedef struct {
 
 typedef struct {
     int n_options;
-    float logit[SF_SYSONE_MAX_OPTIONS];  /* raw logit of each option symbol */
-    double p[SF_SYSONE_MAX_OPTIONS];     /* softmax over the options, after temperature */
+    float logit[SF_SYSONE_MAX_CHOICE];  /* raw logit of each option symbol; a trie choice: log p of each id */
+    double p[SF_SYSONE_MAX_CHOICE];     /* softmax over the options, after temperature */
     double legal_mass;   /* sum over options of the full-vocabulary probability */
     int top;             /* index of the largest p; ties go to the lowest index */
     double confidence;   /* choice and score: Jev formula. noul: |2p-1| */
@@ -37,6 +39,7 @@ typedef struct {
     double restore_ms;   /* a080: snapshot load and its checks; 0 for the first evaluated question */
     double eval_ms;      /* a080: ds4_session_sync of prefix + suffix */
     int unstable;        /* top-two raw logit gap under SF_SYSONE_DELTA95 */
+    int evaluated_nodes; /* a040: trie nodes read (root included); 0 on the letter path */
 } sf_sysone_answer;
 
 /* a080: phases outside the questions, in milliseconds. */
@@ -92,6 +95,18 @@ int sf_sysone_decide(sf_sysone *so, ds4_session *s, const char *state,
                      const double *temperature /* per question, or NULL */,
                      sf_sysone_answer *answers, int *prefix_tokens,
                      char *err, size_t errlen, sf_sysone_timing *timing /* may be NULL */);
+
+/* a040: probabilities of n token paths, read node by node. `read` fills prob[i]
+ * with the full-vocabulary probability of tokens[i] after path[0..depth). A node
+ * with one continuation is not read; a node whose path probability is under
+ * 1e-4 is not expanded and shares it equally among its options. Fills logp[k]
+ * (log probability of option k, the distribution summing to 1), the root's
+ * legal mass and the number of nodes read. Fails when a path is empty, longer
+ * than SF_SYSONE_TRIE_DEPTH, or a prefix of another. */
+typedef int (*sf_sysone_trie_read)(void *ud, const int *path, int depth, const int *tokens, int n, double *prob);
+int sf_sysone_trie_probs(const int *paths /* n x SF_SYSONE_TRIE_DEPTH */, const int *lens, int n,
+                         sf_sysone_trie_read read, void *ud, float *logp, double *legal_mass,
+                         int *evaluated, char *err, size_t errlen);
 
 /* Pure math, no engine: fills p, top, confidence, value from logit[]. */
 void sf_sysone_finish(sf_sysone_type type, double temperature, sf_sysone_answer *a);

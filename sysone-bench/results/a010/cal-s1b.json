@@ -1,0 +1,15 @@
+{
+ "binding": {
+  "model_bytes": 365713686528,
+  "model_mtime": 1792535775,
+  "template_version": 2,
+  "layout": "state_first"
+ },
+ "temperature": {
+  "noul": 3.3636,
+  "choice": 4.0,
+  "score": 3.3636
+ },
+ "fitted_on": "r-s1b-all-sys.jsonl even ids, 674 items",
+ "date": "2026-11-24"
+}

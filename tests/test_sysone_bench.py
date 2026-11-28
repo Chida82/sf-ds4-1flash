@@ -138,7 +138,7 @@ import convert  # noqa: E402
 with tempfile.TemporaryDirectory() as d:
     os.makedirs(os.path.join(d, "datasets", "public"))
     os.makedirs(os.path.join(d, "suites"))
-    jb = [{"id": "n1", "family": "policy", "group": "g1", "state": "S", "expected": "yes",
+    jb = [{"id": "n1", "family": "policy", "group": None, "state": "S", "expected": "yes",
            "question": {"type": "noul", "instructions": "I", "criteria": {"true": "t", "false": "f"}}},
           {"id": "c1", "family": "intent", "group": "g2", "state": "S", "expected": "refund",
            "question": {"type": "choice", "instructions": "I", "criteria": {"cancel": "x", "refund": "y"}}},
@@ -155,10 +155,84 @@ with tempfile.TemporaryDirectory() as d:
     items, skipped = convert.convert_jevbench(d)
     jf, jskip = convert.convert_jevify(d, "policy-29")
 by = {it["id"]: it for it in items}
-check(len(items) == 3 and skipped == {"box": 1} and by["n1"]["label"] is True and run.label_key(by["n1"]) == "true"
+check(len(items) == 3 and skipped == {"box": 1} and by["n1"]["label"] is True and by["n1"]["state_id"] == "n1" and run.label_key(by["n1"]) == "true"
       and by["c1"]["label"] == "refund" and run.label_key(by["s1"]) == "2" and by["c1"]["state_id"] == "g2"
       and jf[0]["question"]["criteria"] == {"keep": "", "cancel": ""} and jf[0]["label"] == "cancel" and not jskip,
       "public-set converters: jevbench noul/choice/score, box skipped, jevify choice")
+
+# a010: think answers come from `content` only, never from reasoning_content.
+saved_post = run.post
+run.post = lambda base, path, body, timeout=3600: (200, {"choices": [{"finish_reason": "stop", "message": {
+    "content": "C", "reasoning_content": "A looks right. Answer: A"}}], "usage": {"completion_tokens": 9, "total_tokens": 20}}, 5.0)
+ans, reply, _, toks, meta = run.chat_answer("x", {"state": "S", "question": q}, 0, "medium", 8192)
+run.post = saved_post
+check(ans == "z" and toks == 20 and meta == {"completion_tokens": 9, "finish_reason": "stop", "reasoning_chars": 24},
+      "think answer from content only, with token counts")
+
+# a010: a parse failure never counts as the first option.
+saved_post = run.post
+run.post = lambda base, path, body, timeout=3600: (200, {"choices": [{"finish_reason": "stop", "message": {
+    "content": "no idea"}}], "usage": {}}, 1.0)
+pf = run.run_chat("x", [{"id": "p", "state_id": "p", "state": "S", "label": "x", "question": q}], 0, "think")
+run.post = saved_post
+check(pf[0]["parse_failure"] and metrics.accuracy(pf) == 0, "think parse failure is wrong, not the first option")
+
+# a010: paired comparison with a jevbench system.
+import jb_compare  # noqa: E402
+
+tasks = {f"t{i}": ["c" if i < 6 else "w", 0.9] for i in range(10)}
+tasks["t9"] = ["n", 0]
+res = [{"id": f"t{i}", "label": "a", "probs": {"a": 0.9 if i >= 6 else 0.1, "b": 0.5}} for i in range(9)]
+cmp = jb_compare.compare(tasks, res)
+check(cmp["n"] == 9 and cmp["ours"] == 3 and cmp["theirs"] == 6 and cmp["ours_only"] == 3 and cmp["theirs_only"] == 6
+      and abs(cmp["p"] - 2 * 130 / 512) < 1e-12 and jb_compare.sign_test(0, 6) == 2 / 64,
+      "jb_compare discordant pairs and exact sign test")
+
+# a010: system-one-bench cases rebuilt in its own shape; items in ours.
+case = convert.s1b_case("xnli_fr", 3, {"premise": "P", "hypothesis": "H", "label": 2})
+item = convert.s1b_item(convert.s1b_case("sst2", 0, {"sentence": "good", "label": 1}))
+check(case["id"] == "xnli_fr-3" and case["gold"] == {"relation": {"type": "choice", "label": "contradiction"}}
+      and convert.s1b_item(case)["lang"] == "fr" and item["label"] is True and run.label_key(item) == "true"
+      and convert.s1b_sample(10, 3) == convert.s1b_sample(10, 3) and len(convert.s1b_hash([case])) == 64,
+      "s1b cases, items and sample")
+
+# a025: trajectory input encoding, curves and stabilisation.
+import trajectory  # noqa: E402
+
+titems = [{"id": "a b", "state_id": "s1", "state": "S", "label": "x",
+           "question": {"type": "choice", "instructions": "I", "criteria": {"x": "", "y": "why"}}},
+          {"id": "c", "state_id": "s2", "state": "T", "label": True, "question": {"type": "noul", "instructions": "J"}}]
+enc = trajectory.encode(titems[0])
+trows = [{"id": "a_b", "n": 0, "kind": "probe", "top": 1, "mass": 0.2, "logits": [0.0, 1.0]},
+         {"id": "a_b", "n": 32, "kind": "probe", "top": 0, "mass": 0.9, "logits": [2.0, 0.0]},
+         {"id": "a_b", "n": 40, "kind": "natural", "top": 0, "mass": 1.0, "logits": [3.0, 0.0]},
+         {"id": "c", "n": 0, "kind": "probe", "top": 0, "mass": 0.5, "logits": [1.0, 0.0]},
+         {"id": "c", "n": 10, "kind": "natural", "top": 0, "mass": 1.0, "logits": [1.0, 0.0]}]
+cur, _ = trajectory.curves(trows, titems)
+check(enc == b"a_b choice 2\n1\nS\n1\nI\n1\nx\n1\ny\n0\n\n3\nwhy\n" and sorted(cur) == [0, 32, 64]
+      and metrics.accuracy(cur[0][0]) == 0.5 and metrics.accuracy(cur[32][0]) == 1.0 and abs(cur[32][1] - 0.95) < 1e-12
+      and trajectory.stabilisation(trows) == {"a_b": (32, 40), "c": (0, 10)},
+      "trajectory encoding, curves, stabilisation")
+
+# a020: prior contrast. A planted option bias, known through the blank-state prior.
+import contrast_fit  # noqa: E402
+
+crng = random.Random(5)
+bias = [3.0, 0.0, -3.0]
+citems, cres = [], []
+for i in range(600):
+    true = [crng.gauss(0, 2) for _ in range(3)]
+    lab = max(range(3), key=lambda k: true[k] + crng.gauss(0, 1))
+    q = {"type": "choice", "instructions": "Q", "criteria": {"a": "", "b": "", "c": ""}}
+    citems.append({"id": f"c{i}", "state_id": f"s{i}", "state": "S", "question": q, "label": "abc"[lab]})
+    cres.append({"id": f"c{i}", "logits": dict(zip("abc", [t + b for t, b in zip(true, bias)]))})
+qkey = run.question_key(citems[0]["question"])
+crows = contrast_fit.build(citems, cres, {qkey: {"logits": dict(zip("abc", bias))}})
+contrast_fit.add_batch(crows)
+ev = contrast_fit.evaluate(crows, "u_free")["choice"]
+same = contrast_fit.scored(crows[0], "u_free", 0, 1.0)["probs"] == dict(zip("abc", metrics.softmax(crows[0]["z"])))
+check(same and 0.75 <= ev["beta"] <= 1.25 and ev["dnll"][1] < 0 and ev["acc"] > ev["acc0"]
+      and crows[0]["u_batch"] is not None, f"prior contrast: beta 0 is the baseline, planted bias gives beta {ev['beta']}")
 
 print(f"sysone-bench: {'FAILED ' + ', '.join(FAIL) if FAIL else 'all tests passed'}")
 sys.exit(1 if FAIL else 0)

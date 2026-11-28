@@ -6,9 +6,9 @@ on at least one question family; otherwise write that sentence in
 
 ## 0. Trajectory
 
-- [ ] 0.1 `tests/test_sysone --think-trajectory` as in the design (probe every 32 tokens through a snapshot).
-- [ ] 0.2 Check on fixture 1 that the probes do not change the reasoning: the token sequence with probes equals the sequence of a run with probes disabled.
-- [ ] 0.3 Run on the 12 fixtures, then on 200 bench items. Curve, forced-close legal mass and stabilisation histogram in `sysone-bench/record.md`. Apply the go/no-go rule.
+- [x] 0.1 `tests/test_sysone --think-trajectory` as in the design (probe every 32 tokens through a snapshot).
+- [x] 0.2 Check on fixture 1 that the probes do not change the reasoning: the token sequence with probes equals the sequence of a run with probes disabled.
+- [x] 0.3 Run on the 12 fixtures, then on 200 bench items. Curve, forced-close legal mass and stabilisation histogram in `sysone-bench/record.md`. Apply the go/no-go rule.
 
 ## 1. Option
 
@@ -21,7 +21,7 @@ on at least one question family; otherwise write that sentence in
 - [ ] 2.1 The confirming HTTP run at the chosen N and at N = 0; rows in `sysone-bench/record.md`.
 - [ ] 2.2 Decide by the rule. On failure remove the option, keep the record.
 
-## 3. Think once (only if `a015` was kept and section 2 passed)
+## 3. Think once (not done: `a015` was dropped, 2026-11-24)
 
 - [ ] 3.1 The stage-2 prompt and snapshot point; `sf.think_scope`: `"question"` (default) or `"request"`.
 - [ ] 3.2 Bench against per-question thinking; decide; record.
@@ -30,3 +30,15 @@ on at least one question family; otherwise write that sentence in
 
 - [ ] 4.1 `docs/SERVER.md`: the options, the cost per thinking token, determinism.
 - [ ] 4.2 `docs/system-one.md`: approach G result and the curve.
+
+## Progress (2026-11-24, overnight)
+
+Gate: `820` measured a System One gap of +12 points, and `a010` +11 on
+jevbench (226 against 200 of 231), so the change starts. Step 0 done:
+`tests/test_sysone --think-trajectory`, `sysone-bench/trajectory.py`, 200
+items of the `a010` sets at effort 50. **Go**: forced-close legal mass 0.98+
+at every N, accuracy 0.740 at N = 0, 0.800 at 128, 0.825 at 256, 0.86-0.875
+from about 450 (record, "Think trajectory"). The stabilisation note the design
+asks for: 143 of 200 items stabilise before a quarter of their length (140
+never change), which argues for `a035`'s escalation rather than for an early
+stop. Sections 1-4 (the option in `sf_sysone.c` and the server) are next.

@@ -109,8 +109,9 @@ answers nonsense at L < 40; only the timing is read.
 
 ## Stage 0b: the raw readout per layer
 
-Items: `fixtures-it.jsonl` (60) plus the first 240 `typed-decisions` test
-items whose state is under 250 tokens. For L in 40, 36, 32, 28, 24, 20, 16,
+Items: `fixtures-it.jsonl` (60) plus all jevbench items whose state, as the JSON text `run.py` sends, is
+under 1,000 characters (about 250 tokens; about 150 items) and the first
+15 items of each of the seven system-one-bench suites of `a010` (105), the same items as `a050`. For L in 40, 36, 32, 28, 24, 20, 16,
 12, 8: one server process (flags as in 0a plus `--sysone-state-cache 0`), then
 `run.py --mode sysone --sf '{"debug":true}' --out results-L<L>.jsonl`.
 About 2.8 h of model time in all. **Keep every results file**: stage 1 and the
@@ -173,8 +174,9 @@ and B; `score` uses digits.
 
 Report held-out agreement with the L = 40 top and KL to the L = 40
 distribution, per translator and L. For the centroids also report a
-**schema split**: fit on two `typed-decisions` workflows, test on the other
-two; a centroid result that holds by state but drops more than 10 points by
+**schema split**: fit on the system-one-bench items of AG News, BoolQ, SST-2
+and SST-5, test on those of XNLI en, XNLI fr and Emotion (jevbench and the
+fixtures stay out of this split); a centroid result that holds by state but drops more than 10 points by
 schema has learned the schemas, not the symbols.
 
 A fitted readout is bound to its layout and template version: one fitted at

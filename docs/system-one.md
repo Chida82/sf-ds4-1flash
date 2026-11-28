@@ -162,12 +162,12 @@ Facts from [MODEL_KNOWLEDGE.md](MODEL_KNOWLEDGE.md) that decide the design:
 | B | Jev wire API over HTTP | `810` | makes every existing Jev client and benchmark usable |
 | C | Bench: accuracy, calibration, latency; the model's own thinking answer as teacher | `820` | the instrument; no later change is accepted without it |
 | D | State cache across requests; preserve the chat session around a decision | `830` | turns the 6-7 s state prefill into a one-time cost |
-| E | **Schema-first layout**: question definitions before the state, a 4-8 token pointer suffix per question; **prior correction** read once per schema | `a015` | new here; cuts the per-question cost about tenfold; breaks strict isolation, so opt-in |
-| F | Numeric id trie for 27-255 options | `a040` | from LLM-as-Jev; options are listed once, extra depth costs one token per live branch |
-| G | **Bounded think**: N reasoning tokens, forced `</think>`, readout; think once, answer many | `a025` | new here; an accuracy/latency dial, started only if `820` shows a gap |
+| E | **Schema-first layout**: question definitions before the state, a 4-8 token pointer suffix per question; **prior correction** read once per schema | `a015` | measured 2026-11-24 and dropped: accuracy level, p50 only −34% (rule: −50%); a short appended state runs token by token (section 8) |
+| F | Numeric id trie for 27-255 options | `a040` | built 2026-11-24; ids 0-76 are single tokens, so the root alone answers; Banking77 0.775 (section 8) |
+| G | **Bounded think**: N reasoning tokens, forced `</think>`, readout; think once, answer many | `a025` | step 0 measured 2026-11-24, go: a forced close keeps legal mass 0.98+; 128 tokens give 0.800 against 0.740, 256 give 0.825, full thinking 0.87 (record, "Think trajectory") |
 | H | **Early exit**: readout at layer L through the model's own head (logit lens), or a self-distilled translator or linear probe; then never run layers above L | `a055` | research with stage gates; the owner doubts layers can go, and so does this page until measured |
 | I | **Conversation as state**: a decision on the chat the slot already holds, asked as a next user turn | `835` | new here; the state prefill is already paid |
-| J | **Fitted prior strength**: contextual calibration, CAD and CFG are one formula on option logits; fit its factor instead of assuming 1 | `a020` | free per request; kept only if it helps |
+| J | **Fitted prior strength**: contextual calibration, CAD and CFG are one formula on option logits; fit its factor instead of assuming 1 | `a020` | measured 2026-11-24: β 0.25 helps `choice` NLL a little on one set, nothing elsewhere; not applied (section 8) |
 | K | **Layer screen from snapshots**: per-layer rows at the readout position, with no engine edit; centroid probe and similarity readout (CLM-raw) for every layer | `a050` | answers "which layer" and the CLM question before `a055` edits anything |
 | L | **Indexer scores as evidence**: the model's trained per-row relevance score, read at the decision | `a065` | new here; a probe with a kill rule |
 | M | **Branch cost**: time snapshot save, restores and suffix evaluation per question | `a080` | added after `800` measured 2.4-3.7 s per decision that the suffix tokens do not explain |
@@ -471,6 +471,76 @@ Decision rules of the design:
 3. **Branch overhead within budget.** The question phase is the suffix
    evaluation itself, token by token at the decode rate. Shorter suffixes
    (`a000`) or batching the questions are the levers, not the branch.
+
+### Public benchmarks (change `a010`, 2026-11-24)
+
+jevbench (231 public items), the jevify policy suites (29 + 52) and seven
+system-one-bench suites (1,300 decisions, rebuilt item for item and checked
+against its hashes), plain readout on all, medium thinking on jevbench, the
+policy suites and 30 items per system-one-bench suite. Full table and sources:
+`sysone-bench/record.md`, "Public benchmarks".
+
+| Set | Plain | Think medium | Jev 1.13.0 | Best Qwen-derived |
+|---|---|---|---|---|
+| jevbench | 0.866 | 0.978 | 0.866 | 0.896 (NInfer, aggregate); reflex-27b 0.870 per item |
+| policy-hard-52 | 0.942 | 0.962 | - | 0.654 (reranker) |
+| AG News | 0.860 | (0.933 on 30) | 0.875 | 0.920 (Mammoth-1) |
+| BoolQ | 0.905 | (0.933) | 0.895 | 0.920 |
+| SST-2 | 0.965 | (0.967) | 0.945 | 0.960 |
+| SST-5 | 0.555 | (0.600) | 0.635 | 0.590 |
+| XNLI English | 0.847 | (0.767) | 0.880 | 0.913 |
+| XNLI French | 0.713 | (0.667) | 0.767 | 0.860 |
+| DAIR Emotion | 0.555 | (0.467) | 0.565 | 0.590 |
+
+- **No quality advantage in plain readout.** Level with Jev almost everywhere
+  (item for item on jevbench: 200 against 200), never ahead of the best
+  Qwen-derived system, behind Mammoth-1 (Qwen3.5-27B) on AG News and both
+  XNLI suites.
+- **Thinking helps only where the task needs reasoning**: +26 items on
+  jevbench (226/231, ahead of every reference), nothing on the classification
+  suites (160 against 159 of the same 210). Medium effort costs a median of
+  30-130 completion tokens, 5-12 s per decision.
+- **Q2 shows no loss against the production model**: on jevbench, medium
+  thinking matches DeepSeek's own API run at full precision item for item
+  (226 = 226, p = 1).
+- The raw readout is over-confident on every set; one temperature per type
+  fixes most of it (system-one-bench ECE 0.20 → 0.065).
+
+### Schema-first layout (change `a015`, 2026-11-24): dropped
+
+Questions first, the state after, an 11-token pointer per decision, the
+schema cached: on 420 system-one-bench decisions accuracy is level (−1.2
+points, −4.3 to +1.9) and the p50 latency falls only 34% (3.1 s against
+4.7 s), where the design asked for half. The cause is the prefill schedule: a
+state under 256 tokens appended to a cached prefix runs token by token, so a
+117-token BoolQ state costs 6.6 s alone, more than `state_first`'s single
+sweep. Removed; the patch is kept in the change directory.
+
+### Choices above 26 options (change `a040`, 2026-11-24)
+
+A `choice` of 27-255 options lists its options as `[k] name: text` and
+opens the answer with `[`; each id's token path (`k]`) is scored from that
+one prefill through a trie, renormalized over the legal continuations at each
+node (approach F). This tokenizer has whole-number tokens: on a 40-option
+test every id starts with its own token, so only the root is read and the
+answer costs nothing beyond the suffix. The option list is part of the
+suffix, though: 40 short options are 287 tokens, a prefill sweep of about
+7 s. On Banking77 (77 intents, 200 items of system-one-bench) the readout
+scores 0.775 (Jev 0.795, Mammoth-1 0.945), legal mass 1.000, still only the
+root read; about 1,000 suffix tokens, 8.4 s p50. Choices of 1-26 options keep
+the letter readout, bitwise (`sysone-bench/record.md`, "Choices above 26
+options").
+
+### Prior contrast (change `a020`, 2026-11-24)
+
+The option logits minus a fitted fraction β of the question's prior
+(contextual calibration, CAD and CFG are the same formula here). With the
+prior read on the state "(no state given)", β = 0.25 lowers held-out NLL on
+system-one-bench `choice` questions by 0.019 nats with no measurable change
+in accuracy, and does nothing on jevbench, the policy suites, `noul`, or with
+a prior averaged over other states. `a015`'s β = 1 is one point of this
+family and is too strong for this model. Not applied: archived as measured
+(owner, 2026-11-24; `sysone-bench/record.md`, "Prior contrast").
 
 ## 9. Conversation as the state (change `835`, 2026-11-12)
 

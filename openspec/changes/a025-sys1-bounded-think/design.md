@@ -80,9 +80,14 @@ A probe costs a snapshot save and load plus about 6 tokens (0.2 s), every 32
 reasoning tokens: about 20% on top of the thinking itself. The probes do not
 change the reasoning: each one is undone by the snapshot.
 
-Run it on the 12 fixtures of `800`, then on 200 items from `820` (prefer
-items where the N = 0 readout and the `think` answer disagree: they are the
-ones thinking can change). One run gives, for every N in 0, 32, 64, …:
+Run it on 200 items of the `a010` sets (jevbench, the jevify policy suites,
+the first 30 of each system-one-bench suite), every item where the `a010`
+plain readout and `think` answers disagree first, the rest drawn at random
+(seed 0): the disagreeing ones are those thinking can change.
+`sysone-bench/trajectory.py` writes the input file and reads the result.
+Effort level 50, the server's `medium` (revised 2026-11-24 from 25), so the
+natural-stop row can be checked against `a010`'s `think` answers; the 12
+fixtures are skipped, they are all right at N = 0. One run gives, for every N in 0, 32, 64, …:
 
 - accuracy and ECE if the request had stopped at N (the whole curve);
 - mean legal mass of a **forced** close at N, the unknown this change rests
@@ -112,7 +117,7 @@ at N = 0 on the same 200 items, effort 25 and 75. One row each in
 `sysone-bench/record.md`. Kept when the chosen N's accuracy interval is
 wholly above N = 0's. Otherwise remove the option and keep the record.
 
-## Stage 2: think once, answer many (`schema_first` only)
+## Stage 2: think once, answer many (`schema_first` only; void: `a015` was dropped on 2026-11-24, skip this section)
 
 Prefix: effort line, `SYS2`, user marker, the schema, the state, then
 `"\n\nThink about the state with respect to every question. Do not answer yet."`,

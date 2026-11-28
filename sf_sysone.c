@@ -98,18 +98,27 @@ void sf_sysone_state_prefix(sf_sysone *so, const char *state, ds4_tokens *out) {
     ds4_tokenize_text(so->e, state, out);
 }
 
-/* "X. name: text\n" for option i; caller frees. */
+static int is_big(const sf_sysone_question *q) {
+    return q->type == SF_SYSONE_CHOICE && q->n_options > SF_SYSONE_MAX_OPTIONS;
+}
+
+/* a040: a choice above 26 options numbers its lines "[k] " and the answer opens with "[". */
+static const char BIG_PREFILL[] = "[";
+
+/* "X. name: text\n" for option i ("[k] name: text\n" for a big choice); caller frees. */
 static char *option_line(const sf_sysone_question *q, int i) {
     const char *text = q->option_texts ? q->option_texts[i] : NULL;
     int has_text = text && text[0];
     const char *label = q->type == SF_SYSONE_CHOICE ? q->option_names[i]
                       : q->type == SF_SYSONE_NOUL ? (i == 0 ? "Yes" : "No") : NULL;
-    char sym = q->type == SF_SYSONE_SCORE ? (char)('0' + i) : (char)('A' + i);
+    char sym[8];
+    if (is_big(q)) snprintf(sym, sizeof(sym), "[%d]", i);
+    else snprintf(sym, sizeof(sym), "%c.", q->type == SF_SYSONE_SCORE ? (char)('0' + i) : (char)('A' + i));
     size_t n = (label ? strlen(label) : 0) + (text ? strlen(text) : 0) + 16;
     char *line = malloc(n);
-    if (label && has_text) snprintf(line, n, "%c. %s: %s\n", sym, label, text);
-    else if (label) snprintf(line, n, "%c. %s\n", sym, label);
-    else snprintf(line, n, "%c. %s\n", sym, text ? text : "");
+    if (label && has_text) snprintf(line, n, "%s %s: %s\n", sym, label, text);
+    else if (label) snprintf(line, n, "%s %s\n", sym, label);
+    else snprintf(line, n, "%s %s\n", sym, text ? text : "");
     return line;
 }
 
@@ -124,7 +133,8 @@ static void text_add(char **buf, size_t *len, size_t *cap, const char *s) {
 }
 
 void sf_sysone_question_suffix(sf_sysone *so, const sf_sysone_question *q, ds4_tokens *out) {
-    if (so->template_version == 2) {  /* a000: no "Options:" header, the suffix tokenized as one string */
+    /* a000: no "Options:" header, the suffix tokenized as one string. a040: big choices exist only in this shape. */
+    if (so->template_version == 2 || is_big(q)) {
         char *text = NULL;
         size_t len = 0, cap = 0;
         text_add(&text, &len, &cap, "\n\nQuestion: ");
@@ -139,7 +149,8 @@ void sf_sysone_question_suffix(sf_sysone *so, const sf_sysone_question *q, ds4_t
         ds4_tokenize_text(so->e, text, out);
         free(text);
         ds4_chat_append_assistant_prefix(so->e, out, DS4_THINK_NONE);
-        if (ANSWER_PREFILL[0]) ds4_tokenize_text(so->e, ANSWER_PREFILL, out);
+        if (is_big(q)) ds4_tokenize_text(so->e, BIG_PREFILL, out);
+        else if (ANSWER_PREFILL[0]) ds4_tokenize_text(so->e, ANSWER_PREFILL, out);
         return;
     }
     ds4_tokenize_text(so->e, "\n\nQuestion: ", out);
@@ -207,7 +218,7 @@ void sf_sysone_finish(sf_sysone_type type, double temperature, sf_sysone_answer 
 }
 
 static int question_valid(const sf_sysone_question *q, int k, char *err, size_t errlen) {
-    int max = q->type == SF_SYSONE_SCORE ? 10 : SF_SYSONE_MAX_OPTIONS;
+    int max = q->type == SF_SYSONE_SCORE ? 10 : q->type == SF_SYSONE_CHOICE ? SF_SYSONE_MAX_CHOICE : 2;
     if (!q->instructions || q->n_options < 1 || q->n_options > max ||
         (q->type == SF_SYSONE_NOUL && q->n_options != 2) ||
         (q->type == SF_SYSONE_CHOICE && !q->option_names) ||
@@ -216,6 +227,118 @@ static int question_valid(const sf_sysone_question *q, int k, char *err, size_t 
         return 0;
     }
     return 1;
+}
+
+/* ---- a040: trie readout ---- */
+
+typedef struct {
+    const int *paths; const int *lens;
+    sf_sysone_trie_read read; void *ud;
+    float *logp; int evaluated;
+    char *err; size_t errlen;
+} trie_ctx;
+
+static int trie_node(trie_ctx *c, const int *prefix, int depth, const int *members, int nm, double pathp,
+                     double *mass_out) {
+    int tok[SF_SYSONE_MAX_CHOICE], nt = 0;
+    double prob[SF_SYSONE_MAX_CHOICE];
+    for (int i = 0; i < nm; i++) {
+        int t = c->paths[members[i] * SF_SYSONE_TRIE_DEPTH + depth], seen = 0;
+        for (int j = 0; j < nt && !seen; j++) seen = tok[j] == t;
+        if (!seen) tok[nt++] = t;
+    }
+    if (c->read(c->ud, prefix, depth, tok, nt, prob) != 0) return 1;
+    c->evaluated++;
+    double m = 0;
+    for (int j = 0; j < nt; j++) m += prob[j];
+    if (mass_out) *mass_out = m;
+    if (!(m > 0)) { snprintf(c->err, c->errlen, "trie node at depth %d has no probability mass", depth); return 1; }
+    int sub[SF_SYSONE_MAX_CHOICE], next[SF_SYSONE_TRIE_DEPTH];
+    if (depth) memcpy(next, prefix, sizeof(int) * (size_t)depth);
+    for (int j = 0; j < nt; j++) {
+        int ns = 0;
+        for (int i = 0; i < nm; i++)
+            if (c->paths[members[i] * SF_SYSONE_TRIE_DEPTH + depth] == tok[j]) sub[ns++] = members[i];
+        const double p = pathp * prob[j] / m;
+        if (ns == 1) { c->logp[sub[0]] = (float)log(p); continue; }  /* one continuation: conditional 1 */
+        if (p < 1e-4) {                                                /* not expanded: equal shares */
+            for (int i = 0; i < ns; i++) c->logp[sub[i]] = (float)log(p / ns);
+            continue;
+        }
+        next[depth] = tok[j];
+        if (trie_node(c, next, depth + 1, sub, ns, p, NULL) != 0) return 1;
+    }
+    return 0;
+}
+
+int sf_sysone_trie_probs(const int *paths, const int *lens, int n, sf_sysone_trie_read read, void *ud,
+                         float *logp, double *legal_mass, int *evaluated, char *err, size_t errlen) {
+    if (n < 1 || n > SF_SYSONE_MAX_CHOICE) { snprintf(err, errlen, "trie: %d options", n); return 1; }
+    for (int k = 0; k < n; k++) {
+        if (lens[k] < 1 || lens[k] > SF_SYSONE_TRIE_DEPTH) {
+            snprintf(err, errlen, "option %d: id path of %d tokens", k, lens[k]);
+            return 1;
+        }
+        for (int j = 0; j < n; j++) {
+            if (j == k || lens[j] < lens[k]) continue;
+            if (!memcmp(&paths[k * SF_SYSONE_TRIE_DEPTH], &paths[j * SF_SYSONE_TRIE_DEPTH], sizeof(int) * (size_t)lens[k])) {
+                snprintf(err, errlen, "option %d: id path is a prefix of option %d's", k, j);
+                return 1;
+            }
+        }
+    }
+    int members[SF_SYSONE_MAX_CHOICE];
+    for (int k = 0; k < n; k++) members[k] = k;
+    trie_ctx c = {paths, lens, read, ud, logp, 0, err, errlen};
+    int rc = trie_node(&c, NULL, 0, members, n, 1.0, legal_mass);
+    *evaluated = c.evaluated;
+    return rc;
+}
+
+/* The session is at the root (prefix + big suffix); nodes below it are reached
+ * from a snapshot of the root, saved on first need. */
+typedef struct {
+    sf_sysone *so; ds4_session *s; ds4_session_snapshot root; int saved;
+    char *err; size_t errlen;
+} trie_session;
+
+static int trie_read_session(void *ud, const int *path, int depth, const int *tokens, int n, double *prob) {
+    trie_session *t = ud;
+    if (depth > 0) {
+        if (!t->saved) {
+            if (ds4_session_save_snapshot(t->s, &t->root, t->err, t->errlen) != 0) return 1;
+            t->saved = 1;
+        } else if (ds4_session_load_snapshot(t->s, &t->root, t->err, t->errlen) != 0) return 1;
+        for (int i = 0; i < depth; i++)
+            if (ds4_session_eval(t->s, path[i], t->err, t->errlen) != 0) return 1;
+    }
+    for (int i = 0; i < n; i++) {
+        ds4_token_score sc;
+        if (!ds4_session_token_logprob(t->s, tokens[i], &sc)) { snprintf(t->err, t->errlen, "no logits"); return 1; }
+        prob[i] = exp((double)sc.logprob);
+    }
+    return 0;
+}
+
+/* Token paths of "k]" after BIG_PREFILL, k = 0..n-1. */
+static int big_paths(sf_sysone *so, int n, int *paths, int *lens, char *err, size_t errlen) {
+    ds4_tokens head = {0}, f = {0};
+    ds4_tokenize_text(so->e, BIG_PREFILL, &head);
+    int rc = 0;
+    for (int k = 0; k < n && !rc; k++) {
+        char txt[16];
+        snprintf(txt, sizeof(txt), "%s%d]", BIG_PREFILL, k);
+        f.len = 0;
+        ds4_tokenize_text(so->e, txt, &f);
+        lens[k] = f.len - head.len;
+        if (!ds4_tokens_starts_with(&f, &head) || lens[k] < 1 || lens[k] > SF_SYSONE_TRIE_DEPTH) {
+            snprintf(err, errlen, "option %d: \"%s\" does not tokenize as \"%s\" plus an id path", k, txt, BIG_PREFILL);
+            rc = 1;
+        } else memcpy(&paths[k * SF_SYSONE_TRIE_DEPTH], &f.v[head.len], sizeof(int) * (size_t)lens[k]);
+    }
+    ds4_tokens_free(&head);
+    ds4_tokens_free(&f);
+    return rc;
 }
 
 int sf_sysone_answer_from(sf_sysone *so, ds4_session *s, const ds4_tokens *prefix,
@@ -234,7 +357,13 @@ int sf_sysone_answer_suffixes(sf_sysone *so, ds4_session *s, const ds4_tokens *p
                               const double *temperature, sf_sysone_answer *answers,
                               char *err, size_t errlen, sf_sysone_timing *timing) {
     if (ds4_session_steering(s)) { snprintf(err, errlen, "system one needs an unsteered session"); return 1; }
-    for (int k = 0; k < n_questions; k++) if (!question_valid(&q[k], k, err, errlen)) return 1;
+    for (int k = 0; k < n_questions; k++) {
+        if (!question_valid(&q[k], k, err, errlen)) return 1;
+        if (suffixes && is_big(&q[k])) {
+            snprintf(err, errlen, "question %d: more than 26 options is not supported on a live state", k);
+            return 1;
+        }
+    }
 
     ds4_tokens full = {0};
     ds4_session_snapshot own = {0};
@@ -282,6 +411,18 @@ int sf_sysone_answer_suffixes(sf_sysone *so, ds4_session *s, const ds4_tokens *p
         if (ds4_session_sync(s, &full, err, errlen) != 0) goto done;
         a->eval_ms = now_ms() - te;
         dirty = 1;
+        if (is_big(&q[k])) {
+            int paths[SF_SYSONE_MAX_CHOICE * SF_SYSONE_TRIE_DEPTH], lens[SF_SYSONE_MAX_CHOICE];
+            trie_session ts = {so, s, {0}, 0, err, errlen};
+            int trc = big_paths(so, q[k].n_options, paths, lens, err, errlen);
+            if (!trc) trc = sf_sysone_trie_probs(paths, lens, q[k].n_options, trie_read_session, &ts,
+                                                 a->logit, &a->legal_mass, &a->evaluated_nodes, err, errlen);
+            ds4_session_snapshot_free(&ts.root);
+            if (trc) goto done;
+            sf_sysone_finish(q[k].type, t, a);
+            a->ms = now_ms() - t0;
+            continue;
+        }
         for (int i = 0; i < a->n_options; i++) {
             ds4_token_score sc;
             if (!ds4_session_token_logprob(s, sf_sysone_symbol_token(so, q[k].type, i), &sc)) {

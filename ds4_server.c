@@ -14192,7 +14192,7 @@ static bool sysone_build_question(sysone_qparse *qp, sf_sysone_question *q) {
         const char *t = p;
         if (t) json_ws(&t);
         if (!qp->has_criteria || !t || *t != '{')
-            return sysone_fail(e, 422, "criteria must be an object of 1-26 options", "questions", n, "criteria");
+            return sysone_fail(e, 422, "criteria must be an object of 1-255 options", "questions", n, "criteria");
         if (!sysone_object(&p, sysone_choice_member, &c)) {
             sysone_crit_free(&c);
             return e->status ? false : sysone_fail(e, 422, "invalid criteria", "questions", n, "criteria");
@@ -14200,10 +14200,6 @@ static bool sysone_build_question(sysone_qparse *qp, sf_sysone_question *q) {
         if (c.n < 1 || c.n > 255) {
             sysone_crit_free(&c);
             return sysone_fail(e, 422, "criteria must have 1-255 options", "questions", n, "criteria");
-        }
-        if (c.n > SF_SYSONE_MAX_OPTIONS) {
-            sysone_crit_free(&c);
-            return sysone_fail(e, 422, "more than 26 options is not supported yet", "questions", n, "criteria");
         }
         q->n_options = c.n;
         q->option_names = (const char *const *)c.names;
@@ -14433,6 +14429,9 @@ static bool parse_sysone_request(const char *body, sysone_request *sr, sysone_er
     if (ok && !t.has_questions) ok = sysone_fail(e, 422, "field required", "questions", NULL, NULL);
     if (ok && sr->n == 0) ok = sysone_fail(e, 422, "at least one question", "questions", NULL, NULL);
     if (ok && sr->live) ok = sysone_parse_messages(sr, e);
+    for (int k = 0; ok && sr->live && k < sr->n; k++)  /* sf: a040: a live turn has no "[" prefill for the id trie */
+        if (sr->q[k].type == SF_SYSONE_CHOICE && sr->q[k].n_options > SF_SYSONE_MAX_OPTIONS)
+            ok = sysone_fail(e, 422, "more than 26 options is not supported on a messages state", "questions", sr->names[k], "criteria");
     if (!ok) sysone_request_free(sr);
     return ok;
 }
@@ -14536,6 +14535,7 @@ static void sysone_response_json(buf *b, const char *model, int template_version
                 sysone_num(b, temperature[k]);
             }
             if (a[k].unstable) buf_puts(b, ",\"unstable\":true");
+            if (a[k].evaluated_nodes) buf_printf(b, ",\"evaluated_nodes\":%d", a[k].evaluated_nodes);  /* sf: a040 */
             if (sr->sf_debug) {
                 buf_puts(b, ",\"logits\":{");
                 for (int i = 0; i < sr->q[k].n_options; i++) {
@@ -20637,17 +20637,25 @@ static void test_sysone_parse_table(void) {
     TEST_ASSERT(sysone_parse_status(SYSONE_Q("{\"type\":\"choice\"}"), "criteria") == 422);
     TEST_ASSERT(sysone_parse_status(SYSONE_Q("{\"type\":\"choice\",\"criteria\":{}}"), "criteria") == 422);
     TEST_ASSERT(sysone_parse_status(SYSONE_Q("{\"type\":\"choice\",\"criteria\":{\"x\":1,\"x\":2}}"), "criteria") == 422);
-    {
+    /* sf: a040: 26, 27 and 255 options parse (above 26 the readout is a trie); 256 is refused */
+    static const int SIZES[] = {26, 27, 255, 256};
+    for (int si = 0; si < 4; si++) {
+        const int n = SIZES[si];
         buf b = {0};
         buf_puts(&b, SYSONE_Q("{\"type\":\"choice\",\"criteria\":{"));
         b.len -= 2; /* drop the macro's closing "}}" */
         b.ptr[b.len] = '\0';
-        for (int i = 0; i < 27; i++) buf_printf(&b, "%s\"o%d\":null", i ? "," : "", i);
+        for (int i = 0; i < n; i++) buf_printf(&b, "%s\"o%d\":null", i ? "," : "", i);
         buf_puts(&b, "}}}}");
         sysone_request sr;
         sysone_error e;
-        TEST_ASSERT(!parse_sysone_request(b.ptr, &sr, &e));
-        TEST_ASSERT(e.status == 422 && strstr(e.msg, "more than 26") != NULL);
+        bool ok = parse_sysone_request(b.ptr, &sr, &e);
+        if (n <= 255) {
+            TEST_ASSERT(ok && sr.q[0].n_options == n);
+            if (ok) sysone_request_free(&sr);
+        } else {
+            TEST_ASSERT(!ok && e.status == 422 && strstr(e.msg, "1-255") != NULL);
+        }
         buf_free(&b);
     }
     /* score.criteria */
@@ -20860,6 +20868,15 @@ static void test_sysone_live_parse(void) {
     TEST_ASSERT(sysone_parse_status("{\"model\":\"m\",\"sf\":{\"state\":\"messages\"},\"state\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\"}]}],\"questions\":{\"q\":{\"type\":\"noul\"}}}", "content") == 422);
     TEST_ASSERT(sysone_parse_status("{\"model\":\"m\",\"sf\":{\"state\":\"messages\"},\"state\":[{\"role\":\"user\"}],\"questions\":{\"q\":{\"type\":\"noul\"}}}", "content") == 422);
     TEST_ASSERT(sysone_parse_status("{\"model\":\"m\",\"sf\":{\"state\":\"messages\"},\"state\":[{\"role\":\"assistant\",\"content\":\"a\",\"tool_calls\":[]}],\"questions\":{\"q\":{\"type\":\"noul\"}}}", "tool_calls") == 422);
+    {   /* sf: a040: a 27-option choice on a messages state is refused */
+        buf b = {0};
+        buf_puts(&b, "{\"model\":\"m\",\"sf\":{\"state\":\"messages\"},\"state\":[{\"role\":\"user\",\"content\":\"u\"}],"
+                     "\"questions\":{\"q\":{\"type\":\"choice\",\"criteria\":{");
+        for (int i = 0; i < 27; i++) buf_printf(&b, "%s\"o%d\":null", i ? "," : "", i);
+        buf_puts(&b, "}}}}");
+        TEST_ASSERT(sysone_parse_status(b.ptr, "criteria") == 422);
+        buf_free(&b);
+    }
     TEST_ASSERT(sysone_parse_status("{\"model\":\"m\",\"sf\":{\"state\":\"messages\"},\"state\":\"text\",\"questions\":{\"q\":{\"type\":\"noul\"}}}", "state") == 422);
     TEST_ASSERT(sysone_parse_status("{\"model\":\"m\",\"sf\":{\"state\":\"messages\"},\"state\":[],\"questions\":{\"q\":{\"type\":\"noul\"}}}", "state") == 422);
 }

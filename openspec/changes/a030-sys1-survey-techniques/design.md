@@ -6,9 +6,14 @@ not edit `ds4.c`, `ds4_metal.m` or `ds4.h`.
 
 ## Probe 1: rotation averaging (no new model code)
 
-Inputs: two `run.py --mode sysone` result files on the full typed-decisions
-`choice` items, `--rotate 0` and `--rotate 1` (run them; `820`'s were a
-150-item subset).
+Inputs: two `run.py --mode sysone` result files on every `choice` item of the
+`a010` sets, `--rotate 0` and `--rotate 1`: jevbench (139 `choice` items),
+`policy-29`, `policy-hard-52` and the five system-one-bench `choice` suites
+(AG News, SST-5, XNLI en, XNLI fr, Emotion; 700 items), about 920 in all.
+Rotation 0 is the `a010` plain run (its result files; the letter readout has
+not changed since, `a040` checked it bitwise); run only rotation 1. Build the
+item files with `convert.py` as `a010` did (`sysone-bench/record.md`, "Public
+benchmarks").
 
 `sysone-bench/rotation_avg.py --a R0.jsonl --b R1.jsonl [--temperature T]`
 prints, with state-level bootstrap intervals from `metrics.py`:
@@ -67,8 +72,17 @@ are bound to a layout: with `chain` the server uses temperature 1 and says
 
 ### Bench
 
-typed-decisions states carry several questions each (`run.py` already sends
-one request per state). Run all states isolated and with
+No `a010` set asks several questions of one state (jevbench groups are
+variants with different states). Build one from system-one-bench SST-5, the
+way SST-2 was derived from the same treebank: each SST-5 state whose label is
+not 2 (neutral) gets two questions, the SST-5 `score` question and a `noul`
+question "Is the sentiment of `text` positive?" labelled true for labels 3-4
+and false for 0-1. Add it as `convert.py --source s1b-pairs` (same rows and
+cache as `--source s1b --suite sst5`, consecutive items sharing one
+`state_id`, out `s1b-sst5-pairs.jsonl`, about 160 states and 320 questions)
+with a unit test in `tests/test_sysone_bench.py` on two synthetic rows
+(label 1 gives false, label 2 is skipped). `run.py` already sends one request
+per state. Run all states isolated and with
 `--sf '{"chain":true}'`; also chained with the questions in reverse order
 (add `--reverse-questions` to `run.py`) to see order effects.
 
@@ -100,7 +114,8 @@ A second `noul` suffix, selected by `"sf":{"noul":"graded"}`:
 `criteria.true` / `criteria.false`, when present, are written before the
 rating line as `Yes means: ...` / `No means: ...`.
 
-Bench: all `noul` items of typed-decisions and the fixtures, two-letter
+Bench: all `noul` items of the `a010` sets (jevbench 74, system-one-bench
+BoolQ and SST-2, 400) and `fixtures-it.jsonl`, two-letter
 against graded: accuracy at threshold 0.5, NLL, ECE, raw and with a
 temperature fitted on the even-id half (for graded, fit the temperature on
 the nine logits before the expectation).

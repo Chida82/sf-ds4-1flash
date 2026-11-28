@@ -1,0 +1,15 @@
+{
+ "binding": {
+  "model_bytes": 365713686528,
+  "model_mtime": 1792535775,
+  "template_version": 2,
+  "layout": "state_first"
+ },
+ "temperature": {
+  "noul": 6.3496,
+  "choice": 2.2449,
+  "score": 2.5198
+ },
+ "fitted_on": "r-jevbench-sys.jsonl even ids, 115 items",
+ "date": "2026-11-24"
+}

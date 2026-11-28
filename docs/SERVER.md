@@ -100,8 +100,19 @@ curl http://127.0.0.1:8002/v1/systemone \
                     "satisfied":{"type":"noul","instructions":"The customer is satisfied."}}}'
 ```
 
-- Types: `noul` (probability of yes), `choice` (1-26 options), `score` (1-10
-  levels). `box`, `assets` and more than 26 options answer 422.
+- Types: `noul` (probability of yes), `choice` (1-255 options), `score` (1-10
+  levels). `box`, `assets` and more than 255 options answer 422.
+- A `choice` of 1-26 options reads one letter. From 27 options (change
+  `a040`) the options are listed as `[0]`, `[1]`, ... and the answer opens
+  with `[`; each id's token path (`12]` may be `1`, `2`, `]`) is scored
+  through a trie from that one prefill, renormalized over the legal
+  continuations at each node. A node with one continuation is not evaluated
+  and one under probability 1e-4 is not expanded. Each evaluated node below
+  the root costs a snapshot restore and its path tokens (about 31 ms each);
+  `sf.questions.<q>.evaluated_nodes` reports how many were read, root
+  included. The option list itself is part of the suffix: Banking77's 77
+  options of a few words are about 1,000 tokens, a prefill sweep rather than token-by-token
+  steps. Not supported on a live state (`sf.state: "messages"`): 422.
 - Any `model` name is accepted and answered by the loaded model; the response
   carries the local id. `GET /v1/models` also lists Jev's `models` array.
 - Errors: 422 with a `detail` list of `{loc, msg, type}`; 400 with

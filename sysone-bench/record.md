@@ -460,48 +460,311 @@ python3 sysone-bench/run.py --items $W/inj-td.jsonl --mode sysone --out $W/r-td-
 python3 sysone-bench/inject.py --report $W/r-td-N.jsonl --items $W/inj-td.jsonl
 ```
 
-## Public benchmarks (a010, in progress, 2026-11-13)
+## Public benchmarks (a010, 2026-11-24)
 
-Partial: plain readout (`--mode sysone`, template 2) on the jevify suites and jevbench only.
-Still missing are `td-full`, the calibration split per set, and `think` on 60
-items per set. Same server settings as above.
+Build: uncommitted, branch `sys1` working tree, template 2, SSD streaming,
+82 GB expert cache, `--ctx 32768`, no calibration file loaded (raw). Plain
+readout: `run.py --mode sysone`. Thinking: `run.py --mode think --effort
+medium --max-tokens 8192` (`reasoning_effort: "medium"`, effort level 50;
+the answer is the first option symbol in `content`, the reasoning in
+`reasoning_content` is never parsed). Sets chosen by the owner on
+2026-11-19: typed-decisions (teacher-model labels) and jevify
+`long-state-24` (no published figures) are left out.
 
-Sources (read as data only, `convert.py` run with `python3 -I`):
+Sources (read as data only, never run; converters in `convert.py`):
 
 | Set | Source | Licence | Revision | Items | Skipped |
 |---|---|---|---|---|---|
-| `jevbench-231` | `github.com/fstandhartinger/jevbench`, `datasets/public/{original,easy,hard}.jsonl`, protocol `jevbench::v1.2` | MIT | `609a664e81f46e03731600bd7bd9f1b7a61257c5` | 231 | 0 |
-| `jevify` | `github.com/fidecastro/jevify`, `suites/policy-29.jsonl`, `policy-hard-52.jsonl`, `long-state-24.jsonl` | MIT | `0f60a5328cd560f2675844330692ac5b405732c9` | 29 + 52 + 24 | `doom-frames-41` not converted (images) |
+| `jevbench` | `github.com/fstandhartinger/jevbench`, `datasets/public/{original,easy,hard}.jsonl`, protocol `jevbench::v1.2` | MIT | `609a664e81f46e03731600bd7bd9f1b7a61257c5` | 231 | 0 |
+| `policy-29`, `policy-hard-52` | `github.com/fidecastro/jevify`, `suites/` | MIT | `0f60a5328cd560f2675844330692ac5b405732c9` | 29 + 52 | 0 |
+| `s1b-*` | `github.com/alilibx/system-one-bench`, rebuilt as its `build_suites.py` does from the Hugging Face datasets-server rows; every suite hashes to its `data.lock.json` value | Apache-2.0 (cases keep their sources' licences) | `40d9b094b51f177b483136ff8441614661ab48a3` | 7 suites, 1,300 | 0 (banking77 is `a040`'s) |
 
-| Set | Mode | n | accuracy (95% CI) | NLL | Brier | ECE | mass mean | p50 ms | p95 ms | Published, stock model by logits (self-reported, not reproduced) |
-|---|---|---|---|---|---|---|---|---|---|---|
-| policy-29 | sysone | 29 | 1.000 (29/29) | 0.000 | 0.000 | 0.000 | 1.0000 | 2797 | 4655 | DeepSeek-V4-Flash 28/29, 428 ms (jevify README, recipe `deepseek-v4-flash-vision-exp-keys.vllm`) |
-| policy-hard-52 | sysone | 52 | 0.942 (0.865-1.000), 49/52 | 0.538 | 0.116 | 0.059 | 1.0000 | 3722 | 9303 | DeepSeek-V4-Flash 47/52 (same recipe) |
-| jevbench-231 | sysone | 231 | 0.866 (0.785-0.924) | 0.598 | 0.233 | 0.098 | 0.9828 | 4443 | 15626 | none like for like (see below) |
-| long-state-24 | sysone | 24 | 1.000 (24/24) | 0.000 | 0.000 | 0.000 | 1.0000 | 23929 | 47662 | DeepSeek-V4-Flash 24/24; warm 20 s at 32k, 359 ms per question after warm (same recipe) |
+The jevbench `easy` split has no `group`: the converter now takes the item id
+as its state there (it was `None`, which put 48 items into one bootstrap
+cluster and widened the interval to 0.785-0.924; 0.820-0.907 after the fix).
 
-jevbench by type: choice 139 items at 0.885, noul 74 at 0.838, score 18 at
-0.833. Nine items have legal mass under 0.9, all in the `hard` split; the
-lowest is `hard-opus-a-temporal_numeric-12` at 0.141, a score item.
+Incident: from 00:18 to 00:24 a second queue runner sent thinking requests to
+the same server while the jevbench plain run was going (items about 47-75).
+Items 41-90 were run again alone afterwards: 50/50 option logits bitwise
+equal, so the answers are unaffected; the plain jevbench latency figures
+include that window.
 
-The jevbench reference the proposal named ("Qwen3.5-4B via LLM2Jev 76.2%")
-is not in the repository at this revision. Its leaderboard
-(`RESULTS-v1.2.md`, titled v1.3.0) scores a frozen held-out set, not these 231
-public items, with a chance-corrected "Intelligence" score. One example: jqv,
-a stock Qwen3-32B read by option logits, gets Intelligence 79.3. That is not
-accuracy on our items, so jevbench-231 has **no comparable reference**: 0.866
-is recorded as is.
+### Results
 
-Verdict so far (the design's rule: the interval against the reference):
-- policy-29 and policy-hard-52: **level**, because the intervals contain the
-  reference (28/29 = 0.966, 47/52 = 0.904). The counts are one and two
-  answers better.
-- long-state-24: **level** (24/24 both). Every state fits `--ctx 32768`
-  (the largest is 142,934 characters), so none is skipped. The wall time per
-  request, all of it a cold state prefill plus one question, is about 10 s at
-  2k tokens, 18 s at 8k, 30 s at 16k and 47-48 s at 32k. jevify's warm step
-  at 32k took 20 s on vLLM.
-- Latency: p50 2.8 s on policy-29 against 428 ms published for
-  DeepSeek-V4-Flash on vLLM over two DGX Sparks. Our model streams from SSD.
+References are the published figures, self-reported by each benchmark or
+project and not reproduced here: jevbench `results/v1.2/jevbench-v1.2-per-task.json`
+(per item) and `results/v1.4.2.2/jevbench-v1.4.2.2-results.json` (CLM-8B,
+NInfer: aggregate `public_accuracy`, checked to be a whole number of the 231
+items); jevify `README.md`; system-one-bench `results.json` `suite:<name>.acc`
+(Jev 1.13.0 through its own API on 7 Oct 2026). "Best Qwen-derived" is NInfer
+Qwen3.8-Flash-Next on jevbench (207/231), the Qwen3-VL rerankers on the policy
+suites, and Mammoth-1 (Qwen3.5-27B, the largest system there with a declared
+Qwen base) on system-one-bench. "Best other" is the best non-DeepSeek,
+non-reasoning figure; on system-one-bench it includes small fine-tunes that
+may have trained on the source (Mercury's 0.915 on emotion). Rizzo Flow
+publishes only typed-decisions, CLM-8B only jevbench: their other cells are
+empty. Verdict in brackets: the interval rule of the design (ahead / level /
+behind the reference). `think medium` on system-one-bench is the first 30
+items of each suite (the suites' order is already a random draw).
 
-The overall line waits for `td-full`.
+| Set | Mode | n | accuracy (95% CI) | NLL | ECE | p50 ms | tokens p50 | Jev 1.13.0 | CLM-8B | best Qwen-derived | Rizzo | best other |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| jevbench | plain | 231 | 0.866 (0.820-0.907) | 0.598 | 0.098 | 4594 | 0 | 0.866 (level) | 0.407 (ahead) | 0.896 (level) | - | 0.896 (level) |
+| jevbench | think medium | 231 | 0.978 (0.957-0.996) | - | - | 7975 | 57 | 0.866 (ahead) | 0.407 (ahead) | 0.896 (ahead) | - | 0.896 (ahead) |
+| policy-29 | plain | 29 | 1.000 (1.000-1.000) | 0.000 | 0.000 | 2671 | 0 | - | - | 0.897 (ahead) | - | 1.000 (level) |
+| policy-29 | think medium | 29 | 1.000 (1.000-1.000) | - | - | 4761 | 27 | - | - | 0.897 (ahead) | - | 1.000 (level) |
+| policy-hard-52 | plain | 52 | 0.942 (0.865-1.000) | 0.538 | 0.059 | 3658 | 0 | - | - | 0.654 (ahead) | - | 0.885 (level) |
+| policy-hard-52 | think medium | 52 | 0.962 (0.904-1.000) | - | - | 6514 | 36 | - | - | 0.654 (ahead) | - | 0.885 (ahead) |
+| s1b-ag_news | plain | 200 | 0.860 (0.810-0.905) | 1.246 | 0.129 | 5087 | 0 | 0.875 (level) | - | 0.920 (behind) | - | 0.925 (behind) |
+| s1b-ag_news | think medium | 30 | 0.933 (0.833-1.000) | - | - | 8494 | 29 | 0.875 (level) | - | 0.920 (level) | - | 0.925 (level) |
+| s1b-boolq | plain | 200 | 0.905 (0.865-0.945) | 0.599 | 0.077 | 6622 | 0 | 0.895 (level) | - | 0.920 (level) | - | 0.930 (level) |
+| s1b-boolq | think medium | 30 | 0.933 (0.833-1.000) | - | - | 11355 | 50 | 0.895 (level) | - | 0.920 (level) | - | 0.930 (level) |
+| s1b-sst2 | plain | 200 | 0.965 (0.935-0.990) | 0.252 | 0.034 | 2509 | 0 | 0.945 (level) | - | 0.960 (level) | - | 0.980 (level) |
+| s1b-sst2 | think medium | 30 | 0.967 (0.900-1.000) | - | - | 5180 | 32 | 0.945 (level) | - | 0.960 (level) | - | 0.980 (level) |
+| s1b-sst5 | plain | 200 | 0.555 (0.485-0.625) | 1.767 | 0.332 | 2961 | 0 | 0.635 (behind) | - | 0.590 (level) | - | 0.635 (behind) |
+| s1b-sst5 | think medium | 30 | 0.600 (0.433-0.767) | - | - | 7165 | 66 | 0.635 (level) | - | 0.590 (level) | - | 0.635 (level) |
+| s1b-xnli_en | plain | 150 | 0.847 (0.787-0.900) | 0.769 | 0.148 | 4298 | 0 | 0.880 (level) | - | 0.913 (behind) | - | 0.953 (behind) |
+| s1b-xnli_en | think medium | 30 | 0.767 (0.600-0.900) | - | - | 10154 | 79 | 0.880 (level) | - | 0.913 (behind) | - | 0.953 (behind) |
+| s1b-xnli_fr | plain | 150 | 0.713 (0.633-0.787) | 1.907 | 0.267 | 5367 | 0 | 0.767 (level) | - | 0.860 (behind) | - | 0.913 (behind) |
+| s1b-xnli_fr | think medium | 30 | 0.667 (0.500-0.833) | - | - | 12508 | 129 | 0.767 (level) | - | 0.860 (behind) | - | 0.913 (behind) |
+| s1b-emotion | plain | 200 | 0.555 (0.485-0.620) | 3.199 | 0.394 | 5300 | 0 | 0.565 (level) | - | 0.590 (level) | - | 0.915 (behind) |
+| s1b-emotion | think medium | 30 | 0.467 (0.300-0.633) | - | - | 11618 | 98 | 0.565 (level) | - | 0.590 (level) | - | 0.915 (behind) |
+
+Completion tokens with thinking (p50 / p95 / max): jevbench 57 / 935 / 4669,
+policy-29 27 / 48 / 63, policy-hard-52 36 / 171 / 1988, system-one-bench
+29-129 / 89-1071 / 160-2275 per suite. No answer hit the 8192 limit.
+
+Per item against jevbench's systems (`jb_compare.py`, exact two-sided sign
+test on the discordant items):
+
+| Ours | System | Ours right | Theirs right | Ours only | Theirs only | p |
+|---|---|---|---|---|---|---|
+| plain | Jev 1.13.0 | 200 | 200 | 13 | 13 | 1 |
+| plain | reflex-27b (Qwen3.8-27B, logit readout) | 200 | 201 | 9 | 10 | 1 |
+| plain | SimpleJev Qwen3.8-27B | 200 | 200 | 12 | 12 | 1 |
+| plain | openjev-sglang (Qwen3.6-35B-A3B) | 200 | 197 | 16 | 13 | 0.71 |
+| think medium | Jev 1.13.0 | 226 | 200 | 28 | 2 | 8.7e-7 |
+| think medium | reflex-27b | 226 | 201 | 28 | 3 | 4.7e-6 |
+| think medium | GPT-5.6 Luna (low effort) | 226 | 225 | 5 | 4 | 1 |
+| think medium | **DeepSeek V4.1 Flash (thinking default), production API** | 226 | 226 | 4 | 4 | 1 |
+
+Four of our five thinking misses on jevbench are the right option written
+by name instead of its letter (`tier3_cfo`, `order_b`, `sep_18_book_set`,
+`eur_498_81`): the strict parse counts them wrong. Accepting names it would be
+230/231. The fifth (`hard-sol-b-judge_hard-02`) is one the API run also
+misses.
+
+Thinking against plain readout on the same items:
+
+| Set | n | plain right | think right | think only | plain only |
+|---|---|---|---|---|---|
+| jevbench | 231 | 200 | 226 | 28 | 2 |
+| policy-29 + policy-hard-52 | 81 | 78 | 79 | - | - |
+| system-one-bench, 30 per suite | 210 | 159 | 160 | 11 | 10 |
+
+Calibration (fit on even-hash items, score odd; one temperature per type;
+accuracy does not move): jevbench held-out NLL 0.514 → 0.335, ECE 0.100 →
+0.079 (T noul 6.35, choice 2.24, score 2.52); policy-hard-52 NLL 0.391 → 0.206
+(T 3.56); system-one-bench NLL 1.475 → 0.648, ECE 0.200 → 0.065 (T noul 3.36,
+choice 4.0, score 3.36). The raw readout is over-confident everywhere,
+emotion and SST-5 worst (raw ECE 0.39 and 0.33).
+
+Latency, p50 per decision: ours 2.5-6.6 s plain, 4.8-12.5 s with thinking
+(jevbench 8.0 s, p95 45 s). jevbench's own `speed.p50_s_raw`: Jev 1.13.0
+0.65 s, reflex-27b 1.89 s, NInfer 0.08 s, the DeepSeek API 1.42 s.
+
+Sealed set: not run (it needs a public endpoint, which the owner does not
+want now). Published sealed accuracy, chance 0.293: DeepSeek API 0.948, Jev
+1.13.0 0.367, NInfer 0.341, reflex-27b 0.295, CLM-8B 0.240.
+
+### Verdict
+
+- **Plain readout.** jevbench: level with Jev, reflex-27b and SimpleJev item
+  for item (p = 1), level with NInfer by interval. Policy suites: ahead of the
+  Qwen rerankers, level with the best (ternary-bonsai). system-one-bench:
+  level with Jev on six suites, behind on SST-5 (0.555 against 0.635); level
+  with Mammoth-1 on four, **behind on three** (AG News, XNLI English, XNLI
+  French), ahead on none.
+- **Overall line: no quality advantage in plain readout.** The plain readout
+  is never ahead of the best Qwen-derived system and is behind it on three
+  sets.
+- **Thinking (medium).** jevbench: ahead of every reference (0.978, 95% CI
+  0.957-0.996; ahead of Jev and reflex-27b item for item, p < 1e-5).
+  system-one-bench and the policy suites: no gain over plain (160 against 159
+  of 210; 79 against 78 of 81). **The advantage exists only with reasoning,
+  and only on the set that needs reasoning** (jevbench's multi-hop, numeric,
+  temporal and long-policy items): it points to `a025` and `a035`, not to
+  the plain readout.
+- **Quantization.** Our Q2 with medium thinking equals the production API at
+  full precision on the 231 public items: 226 against 226, 4 discordant each
+  way, p = 1. **No measurable quantization loss on this set.** Limits: the
+  API run used jevbench's own prompt adapter and an undocumented default
+  effort, and a set this close to saturation can hide a loss of a few points.
+
+## Choices above 26 options (a040, 2026-11-24)
+
+Build: uncommitted, branch `sys1` working tree; server and tests as in the
+public-benchmarks section. A `choice` of 27-255 options lists its options as
+`[k] name: text` and reads the id through a token trie after a `[` prefill
+(`sf_sysone_trie_probs`, `docs/SERVER.md`).
+
+Model-backed checks (`./tests/test_sysone deepseek-v4.1-flash.gguf`, both
+template versions): the 12 fixtures, isolation and determinism as before; a
+40-option choice of Italian number names on "Il numero scelto è ventisette."
+answers option 26 with p 1.0000, legal mass 1.0000, probabilities summing to
+1 within 1e-9, bitwise equal when repeated. It evaluated one node: this
+tokenizer has whole-number tokens up to at least 39, so every `k]` path starts
+with a different token and the root reads them all. The 287-token suffix ran
+as a prefill sweep, 6.9 s.
+
+Letter path unchanged: the first 40 jevbench items through the server built
+with this change give logits bitwise equal to the `a010` run made before it
+(40/40, max |Δlogit| 0).
+
+Banking77, the system-one-bench suite (200 items, 77 intents, rebuilt and
+hash-checked like the `a010` suites; the option names are every
+`label_text` of the test split, sorted). Plain readout, template 2, same
+server as `a010`:
+
+| n | accuracy (95% CI) | NLL | ECE | legal mass mean / min | evaluated nodes | tokens per decision p50 | p50 / p95 ms |
+|---|---|---|---|---|---|---|---|
+| 200 | 0.775 (0.715-0.830) | 1.448 | 0.153 | 1.0000 / 0.9987 | 1 (10 of 10 sampled) | 1090 | 8387 / 10865 |
+
+Published on the same items (system-one-bench `results.json`, self-reported):
+Jev 1.13.0 0.795 (level), Mammoth-1 (Qwen3.5-27B) 0.945 (behind), Laya
+Router 0.440 (ahead), best Clef Flash 0.985 (behind; Clef and the Kev models
+list Banking77 among their training sets). Calibrated on the even half,
+choice T 2.0: held-out NLL 1.193 → 0.816, ECE 0.110 → 0.051.
+
+The ids 0-76 are one token each, so the trie reads only the root: a 77-option
+answer costs the readout of one position, like a letter. The cost is the
+option list: about 1,000 suffix tokens, one prefill sweep, 8.4 s p50 per
+decision with a fresh state. Kept by the design's rule (model-backed tests
+pass; p50 is the suffix's own time, the trie adds no evaluation).
+
+## Prior contrast (a020, 2026-11-24)
+
+`p = softmax((z − β·u) / T0)` with `u` a centred prior over the options,
+β fitted on the even-hash states by NLL from {0, 0.25, ..., 1.5}, reported
+on the odd half against β = 0 (paired state bootstrap, 2000 resamples). `T0`
+is the per-type temperature fitted on the same even half. Data: the `a010`
+plain-readout rows (template 2). Content-free prior: `run.py --blank-state`
+(the state replaced by "(no state given)", one request per distinct
+question: 7 for system-one-bench, 231 + 29 + 52 for jevbench and the policy
+suites). Batch prior: the mean log-softmax of the other fit-half states
+asked the same question (needs 8; only system-one-bench has them). No
+rotation runs were made, so the flip-rate half of the gate is not measured.
+
+| Set | Prior | Type | Test n | T0 | β* | NLL β0 | NLL β* | ΔNLL 95% CI | Acc β0 | Acc β* | ΔAcc 95% CI | Gate |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| system-one-bench (7 suites) | content-free | noul | 213 | 2.67 | 0.5 | 0.2870 | 0.2722 | −0.052 to +0.024 | 0.901 | 0.897 | −0.028 to +0.019 | drop |
+| system-one-bench | content-free | choice | 359 | 4.24 | 0.25 | 0.7512 | 0.7319 | −0.034 to −0.006 | 0.733 | 0.741 | −0.008 to +0.028 | keep |
+| system-one-bench | content-free | score | 116 | 2.83 | 0.25 | 1.1036 | 1.0543 | −0.078 to −0.021 | 0.526 | 0.534 | −0.017 to +0.034 | not gated |
+| system-one-bench | batch | noul | 213 | 2.67 | 0 | 0.2870 | 0.2870 | 0 | 0.901 | 0.901 | 0 | drop |
+| system-one-bench | batch | choice | 359 | 4.24 | 0.25 | 0.7512 | 0.7505 | −0.006 to +0.005 | 0.733 | 0.738 | −0.006 to +0.017 | drop |
+| system-one-bench | batch | score | 116 | 2.83 | 0.5 | 1.1036 | 1.1225 | −0.016 to +0.052 | 0.526 | 0.526 | −0.043 to +0.043 | not gated |
+| jevbench + policy | content-free | noul | 32 | 5.34 | 0.5 | 0.2445 | 0.2659 | −0.035 to +0.069 | 0.938 | 0.938 | 0 | drop |
+| jevbench + policy | content-free | choice | 112 | 2.52 | 0.25 | 0.2554 | 0.2559 | −0.026 to +0.025 | 0.911 | 0.911 | −0.027 to +0.027 | drop |
+
+(The batch rows on jevbench and policy have 6 and 2 test items: too few
+states share a question there, so they are not shown.)
+
+Reading: the content-free prior passes the gate on system-one-bench `choice`
+only, at the smallest non-zero strength (β 0.25), for 0.019 nats and no
+measurable accuracy change; on jevbench and the policy suites, where each
+question is asked once, it does nothing. The batch prior does nothing
+anywhere. Per-suite, the batch prior was also flat on each suite alone
+(AG News, BoolQ, SST-2, SST-5, XNLI-en). `a015`'s fixed β = 1 is not
+supported by these numbers: β* is 0.25-0.5 wherever the prior helps at all.
+Decision (owner, 2026-11-24): not applied. `a015` was dropped, and 0.019 nats
+on one question type does not pay for a prior readout per new question.
+
+## Schema-first layout (a015, 2026-11-24): dropped
+
+The questions before the state, one cached schema snapshot per question, a
+pointer suffix `"\n\nAnswer Q1 with the identifier only."` + assistant prefix
+(11 tokens) per decision. Measured with `tests/test_sysone MODEL
+--schema-first` (no server: the test keeps the schema snapshot as the
+server's schema cache would) on the first 60 items of each system-one-bench
+suite, 420 decisions, as a stream of states sharing one question; compared
+with the `a010` `state_first` server rows of the same items. Template 2
+option lines; ctx 4096; SSD streaming. The two XNLI suites ask the same
+question, so they shared one schema (6 schema prefills, 3.9-8.4 s each).
+
+| set | n | state_first | schema_first | difference (95% CI) | mass mean | p50 ms state_first | p50 ms schema_first (hits) |
+|---|---|---|---|---|---|---|---|
+| ag_news | 60 | 0.883 | 0.933 | +0.050 (+0.000 to +0.117) | 0.9999 | 5082 | 3479 |
+| boolq | 60 | 0.917 | 0.900 | -0.017 (-0.100 to +0.050) | 0.9998 | 6300 | 7387 |
+| emotion | 60 | 0.533 | 0.517 | -0.017 (-0.100 to +0.067) | 0.9972 | 5348 | 1897 |
+| sst2 | 60 | 1.000 | 0.950 | -0.050 (-0.100 to +0.000) | 0.9999 | 2551 | 2452 |
+| sst5 | 60 | 0.633 | 0.617 | -0.017 (-0.133 to +0.100) | 0.9968 | 2975 | 2263 |
+| xnli_en | 60 | 0.833 | 0.850 | +0.017 (-0.033 to +0.067) | 0.9997 | 4092 | 3152 |
+| xnli_fr | 60 | 0.700 | 0.650 | -0.050 (-0.150 to +0.067) | 0.9996 | 5277 | 3618 |
+| all | 420 | 0.786 | 0.774 | -0.012 (-0.043 to +0.019) | 0.9990 | 4717 | 3103 |
+
+rule: difference interval not wholly below -0.010: ok; p50 latency at most half: FAIL -> DROP
+
+Cost of a decision with the schema cached (p50): 2.4 s for the state
+(42 tokens) and 0.66 s for the pointer suffix and readout. BoolQ is slower than
+`state_first` (7.4 s against 6.3 s): its states are about 117 tokens, and a
+remainder under 256 tokens appended to a cached prefix runs token by token
+(57 ms per token here), while `state_first` prefills system, state and all
+as one sweep. The design's cost model missed that the prefill schedule's
+256-token minimum decides which layout is faster.
+
+Rule (accuracy interval of schema − state not wholly below −1 point: **ok**,
+−0.012, −0.043 to +0.019; p50 latency at most half: **fails**, 3.1 s against
+4.7 s, −34%): **dropped**. The layout code was removed;
+`openspec/changes/a015-sys1-schema-first/dropped-layout.patch` re-applies it
+(`sf_sysone.c/.h`, the test mode, `sysone-bench/schema_first.py`).
+
+## Think trajectory (a025 step 0, 2026-11-24): go
+
+`tests/test_sysone MODEL --think-trajectory ITEMS OUT 50` (no server, ctx
+8192): the thinking prompt at effort level 50 (the server's `medium`), greedy
+reasoning up to 1024 tokens, and every 32 tokens a probe: snapshot, a forced
+`</think>`, the option logits, restore. 200 items from the `a010` sets (the 58
+where plain readout and the server's medium thinking disagree, then 142 at
+random, seed 0; jevbench, the policy suites and the first 30 of each
+system-one-bench suite). On these items the plain readout gets 144/200 right
+and the server's medium thinking 172/200. An item that stopped before N is
+read at its natural end.
+
+| N | n | accuracy | 95% CI (states) | ECE | mean legal mass of the forced close |
+|---|---|---|---|---|---|
+| 0 | 200 | 0.740 | 0.680-0.798 | 0.207 | 0.984 |
+| 32 | 200 | 0.700 | 0.633-0.763 | 0.240 | 0.988 |
+| 64 | 200 | 0.745 | 0.683-0.806 | 0.207 | 0.995 |
+| 96 | 200 | 0.770 | 0.710-0.828 | 0.187 | 0.982 |
+| 128 | 200 | 0.800 | 0.742-0.852 | 0.169 | 0.990 |
+| 192 | 200 | 0.810 | 0.753-0.861 | 0.174 | 0.996 |
+| 256 | 200 | 0.825 | 0.773-0.874 | 0.156 | 0.990 |
+| 320 | 200 | 0.820 | 0.767-0.870 | 0.160 | 0.991 |
+| 384 | 200 | 0.825 | 0.773-0.875 | 0.155 | 0.995 |
+| 448 | 200 | 0.850 | 0.802-0.899 | 0.143 | 0.995 |
+| 512 | 200 | 0.855 | 0.806-0.901 | 0.132 | 0.995 |
+| 640 | 200 | 0.860 | 0.809-0.905 | 0.125 | 0.992 |
+| 768 | 200 | 0.860 | 0.811-0.906 | 0.130 | 0.992 |
+| 896 | 200 | 0.875 | 0.829-0.920 | 0.126 | 0.987 |
+| 1024 | 200 | 0.865 | 0.817-0.910 | 0.128 | 0.986 |
+
+- The reasoning ended by itself on 188 items and hit the 1024 cap on 12;
+  reasoning tokens p50 70, p95 1024.
+- Forcing `</think>` keeps the answer on the options: legal mass 0.98-0.996
+  at every N, so the design's worry (a forced close that loses the format)
+  does not happen on this model.
+- N = 0 with the thinking prompt (0.740) is the plain readout's level (0.72);
+  128 tokens give 0.800, 256 give 0.825, about half of the gain; the full
+  gain (0.86-0.875, the server's own thinking) arrives by 450-900 tokens.
+- Stabilisation: 140 of 200 items never change their top after N = 0; 143
+  stabilise before a quarter of their natural length. The design asks to say
+  so and to ask the owner: most items gain nothing from thinking, which is
+  the case for `a035` (think only when the readout is uncertain), not for
+  stopping on convergence.
+- Control (task 0.2): the first item run without probes ends with the same
+  final row as with them (tokens, top, legal mass, logits): the probes do not
+  change the reasoning.
+
+Rule: legal mass at 64 = 0.995 (needs 0.5); N ≤ 256 with an accuracy interval
+wholly above N = 0's accuracy: 128, 192, 224, 256. **Go** to the option
+(sections 1-2 of the change).

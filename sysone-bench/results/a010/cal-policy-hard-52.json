@@ -1,0 +1,13 @@
+{
+ "binding": {
+  "model_bytes": 365713686528,
+  "model_mtime": 1792535775,
+  "template_version": 2,
+  "layout": "state_first"
+ },
+ "temperature": {
+  "choice": 3.5636
+ },
+ "fitted_on": "r-policy-hard-52-sys.jsonl even ids, 24 items",
+ "date": "2026-11-24"
+}

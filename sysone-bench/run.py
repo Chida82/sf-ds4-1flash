@@ -3,6 +3,7 @@
 
     run.py --base-url http://127.0.0.1:8002 --items FILE --mode sysone|gen|think|teacher
            [--limit N] [--rotate K] [--sf JSON] [--out results.jsonl] [--label TEXT]
+           [--effort LEVEL] [--max-tokens N]
 
 sysone: POST /v1/systemone with "sf":{"debug":true} (merged with --sf). Consecutive
 items of one state go in one request (questions are isolated, so this is the same
@@ -166,6 +167,7 @@ def run_sysone(base, items, rotate, sf_extra, deadline=None):
                         "legal_mass": q["legal_mass"], "ms": q["ms"] + share,
                         "tokens": q["suffix_tokens"] + sfr["prefix_tokens"] / len(group),
                         "unstable": q.get("unstable", False), "temperature": q.get("temperature"),
+                        "evaluated_nodes": q.get("evaluated_nodes", 0),
                         "wall_ms": wall / len(group)})
         print(f"run: {i}/{len(items)}", file=sys.stderr, flush=True)
     return out
@@ -181,13 +183,16 @@ def chat_answer(base, item, rotate, effort, max_tokens, seed=None, temperature=0
         body["seed"] = seed
     status, r, wall = post(base, "/v1/chat/completions", body)
     if status != 200:
-        return None, "", wall, 0
-    reply = r["choices"][0]["message"].get("content") or ""
-    toks = r.get("usage", {}).get("total_tokens", 0)
-    return extract_symbol(reply, q), reply, wall, toks
+        return None, "", wall, 0, {"error": status}
+    ch = r["choices"][0]
+    reply = ch["message"].get("content") or ""  # the answer; reasoning_content is never parsed
+    usage = r.get("usage", {})
+    meta = {"completion_tokens": usage.get("completion_tokens", 0), "finish_reason": ch.get("finish_reason"),
+            "reasoning_chars": len(ch["message"].get("reasoning_content") or "")}
+    return extract_symbol(reply, q), reply, wall, usage.get("total_tokens", 0), meta
 
 
-def run_chat(base, items, rotate, mode, deadline=None):
+def run_chat(base, items, rotate, mode, deadline=None, effort="high", max_tokens=4096):
     out = []
     for n, it in enumerate(items, 1):
         if deadline and time.time() > deadline:
@@ -195,18 +200,20 @@ def run_chat(base, items, rotate, mode, deadline=None):
             break
         keys = option_keys(it["question"])
         if mode == "gen":
-            ans, reply, wall, toks = chat_answer(base, it, rotate, "none", 8)
+            ans, reply, wall, toks, meta = chat_answer(base, it, rotate, "none", 8)
         else:
-            ans, reply, wall, toks = chat_answer(base, it, rotate, "high", 4096)
+            ans, reply, wall, toks, meta = chat_answer(base, it, rotate, effort, max_tokens)
         rec = {"id": it["id"], "state_id": it["state_id"], "type": it["question"]["type"],
                "label": label_key(it), "answer": ans, "parse_failure": ans is None,
-               "reply": reply[-200:], "ms": wall, "tokens": toks}
+               "reply": reply[-200:], "ms": wall, "tokens": toks, **meta}
         if mode == "teacher":
-            ans2, _, wall2, _ = chat_answer(base, it, rotate, "high", 4096, seed=1, temperature=0.7)
+            ans2, _, wall2, _, _ = chat_answer(base, it, rotate, effort, max_tokens, seed=1, temperature=0.7)
             rec["answer2"] = ans2
             rec["teacher_label"] = ans if ans is not None and ans == ans2 else None
             rec["ms"] += wall2
         rec["probs"] = {k: float(k == ans) for k in keys}
+        if ans is None:  # a parse failure is wrong: all-zero probs would tie to the first option
+            rec["probs"] = {"(no answer)": 1.0, **rec["probs"]}
         out.append(rec)
         print(f"run: {n}/{len(items)} {mode} -> {ans}", file=sys.stderr, flush=True)
     return out
@@ -232,6 +239,11 @@ def report(results, mode, label):
               f"{fmt(s['p50_ms'], 0)} | {fmt(s['p95_ms'], 0)} | {fmt(s['tokens'], 0)} |")
     s = rows[-1][1]
     fails = sum(r.get("parse_failure", False) for r in results)
+    ct = sorted(r["completion_tokens"] for r in results if r.get("completion_tokens"))
+    if ct:
+        cut = sum(r.get("finish_reason") == "length" for r in results)
+        print(f"completion tokens: p50 {metrics.percentile(ct, 0.5):.0f}, p95 {metrics.percentile(ct, 0.95):.0f}, "
+              f"max {ct[-1]}; finish_reason length {cut}")
     print(f"\nrecord: | {label} | {mode} | {s['n']} | {fmt(s['accuracy'])} ({fmt(s['ci95'][0])}-{fmt(s['ci95'][1])}) | "
           f"{fmt(s['nll'])} | {fmt(s['brier'])} | {fmt(s['ece'])} | {fmt(s['mass_mean'], 4)} | {fmt(s['p50_ms'], 0)} | {fmt(s['p95_ms'], 0)} |"
           + (f" parse failures {fails}" if mode != "sysone" else ""))
@@ -312,6 +324,25 @@ def run_live(base, items, n_states=20, deadline=None):
     return out
 
 
+BLANK_STATE = "(no state given)"
+
+
+def question_key(q):
+    """a020: identity of a question (type, instructions, options), as JSON text."""
+    return json.dumps([q["type"], q.get("instructions"), q.get("criteria")], sort_keys=True, ensure_ascii=False)
+
+
+def blank_items(items):
+    """a020: one item per distinct question, its state replaced by BLANK_STATE; id is the question key."""
+    seen, out = set(), []
+    for it in items:
+        k = question_key(it["question"])
+        if k not in seen:
+            seen.add(k)
+            out.append(dict(it, id=k, state=BLANK_STATE, state_id="blank"))
+    return out
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--base-url", default="http://127.0.0.1:8002")
@@ -319,14 +350,20 @@ def main():
     ap.add_argument("--mode", choices=("sysone", "gen", "think", "teacher"), default="sysone")
     ap.add_argument("--limit", type=int)
     ap.add_argument("--rotate", type=int, default=0)
+    ap.add_argument("--effort", default="high", help="think/teacher: reasoning_effort (a010 runs medium)")
+    ap.add_argument("--max-tokens", type=int, default=4096, help="think/teacher: completion budget")
     ap.add_argument("--sf", default="{}", help="JSON merged into the request's sf object")
     ap.add_argument("--out")
     ap.add_argument("--label", default="")
+    ap.add_argument("--blank-state", action="store_true",
+                    help="a020: one sysone request per distinct question with the state '(no state given)'; row id is the question key")
     ap.add_argument("--deadline", type=float, help="unix time: send no new item after it, keep what was answered")
     ap.add_argument("--scenario", choices=("repeat", "extended", "live"),
                     help="830: per-state repeat and extension (needs --out); 'extended' sends only the extended states")
     a = ap.parse_args()
     items = load_items(a.items, a.limit)
+    if a.blank_state:
+        items = blank_items(items)
     base = a.base_url.rstrip("/")
     if a.scenario:
         results = (run_live(base, items, deadline=a.deadline) if a.scenario == "live"
@@ -338,7 +375,7 @@ def main():
     if a.mode == "sysone":
         results = run_sysone(base, items, a.rotate, json.loads(a.sf), a.deadline)
     else:
-        results = run_chat(base, items, a.rotate, a.mode, a.deadline)
+        results = run_chat(base, items, a.rotate, a.mode, a.deadline, a.effort, a.max_tokens)
     if a.out:
         with open(a.out, "w") as f:
             for r in results:

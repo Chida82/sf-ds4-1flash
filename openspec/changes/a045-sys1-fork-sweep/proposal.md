@@ -21,7 +21,7 @@ state tile, then each branch tile from the same starting state, restoring
 between branches the few things a tile writes.
 
 This is the only design in the series that makes the default, strictly
-isolated, Jev-compatible path fast; `a015` is faster per question only by
+isolated, Jev-compatible path fast; `a015` (dropped 2026-11-24, p50 −34%) was faster per question only by
 giving up isolation. It also gives what `docs/system-one.md` lists as
 unavailable: several independent short states answered in one sweep.
 
